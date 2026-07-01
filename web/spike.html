@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>RIFE WebGPU spike</title></head>
+<body>
+<h3>RIFE ONNX on WebGPU — de-risk spike</h3>
+<pre id="log"></pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script>
+const logEl = document.getElementById('log');
+function log(m){ console.log('[spike] '+m); logEl.textContent += m + '\n'; }
+
+async function main(){
+  try{
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+    log('ort loaded');
+
+    // 1) WebGPU availability
+    if(!navigator.gpu){ log('navigator.gpu = MISSING (no WebGPU in this browser/context)'); }
+    else {
+      const ad = await navigator.gpu.requestAdapter();
+      if(!ad){ log('requestAdapter() = NULL (no GPU adapter)'); }
+      else { log('WebGPU adapter OK: ' + (ad.info ? JSON.stringify(ad.info) : 'no-info')); }
+    }
+
+    // 2) Load the model, try WebGPU EP, fall back to wasm to compare
+    const url = '/assets/rife_lite_inlined.onnx';
+    log('fetching model ' + url + ' ...');
+    let sess, ep;
+    try {
+      sess = await ort.InferenceSession.create(url, { executionProviders: ['webgpu'] });
+      ep = 'webgpu';
+      log('session created on WEBGPU');
+    } catch(e) {
+      log('WEBGPU session FAILED: ' + (e.message || e));
+      log('retrying on wasm (CPU)...');
+      sess = await ort.InferenceSession.create(url, { executionProviders: ['wasm'] });
+      ep = 'wasm';
+      log('session created on WASM (cpu fallback)');
+    }
+
+    const inNames = sess.inputNames, outNames = sess.outputNames;
+    log('inputs=' + inNames + ' outputs=' + outNames);
+
+    const dims = [1,3,736,1280];
+    const n = 1*3*736*1280;
+    const a = new Float32Array(n).fill(0.5);
+    const b = new Float32Array(n).fill(0.5);
+    const feeds = {};
+    feeds[inNames[0]] = new ort.Tensor('float32', a, dims);
+    feeds[inNames[1]] = new ort.Tensor('float32', b, dims);
+
+    // 3) warmup + timing
+    let out = await sess.run(feeds);
+    const N = 10, ts = [];
+    for(let i=0;i<N;i++){ const t=performance.now(); out = await sess.run(feeds); ts.push(performance.now()-t); }
+    ts.sort((x,y)=>x-y);
+
+    const od = out[outNames[0]].data;
+    let mn=1e9,mx=-1e9,s=0;
+    for(let i=0;i<od.length;i++){ const v=od[i]; s+=v; if(v<mn)mn=v; if(v>mx)mx=v; }
+    log(`RESULT ep=${ep} p50=${ts[5].toFixed(1)}ms p10=${ts[1].toFixed(1)}ms fps=${(1000/ts[5]).toFixed(1)}`);
+    log(`OUTPUT mean=${(s/od.length).toFixed(4)} min=${mn.toFixed(3)} max=${mx.toFixed(3)} (all-zero => broken)`);
+    log('DONE');
+  } catch(err){
+    log('FATAL: ' + (err.stack || err.message || err));
+  }
+}
+main();
+</script>
+</body>
+</html>
