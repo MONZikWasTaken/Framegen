@@ -107,7 +107,7 @@ pub fn interpolate_video(
     let mut dec_out = dec.stdout.take().unwrap();
 
     let out_fps = meta.fps * times as f64;
-    let mut enc = spawn_encoder(output, w, h, out_fps)?;
+    let mut enc = spawn_encoder(output, w, h, out_fps, Some(input))?;
     let mut enc_in = enc.stdin.take().unwrap();
 
     let start = Instant::now();

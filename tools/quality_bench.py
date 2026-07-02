@@ -14,8 +14,18 @@ import onnxruntime as ort
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 step = int(next((a.split("=")[1] for a in sys.argv if a.startswith("--step=")), 6))
 video, models = args[0], args[1:]
-W, H = 1280, 720
-PW, PH = 1280, 736
+
+
+def probe_wh(path):
+    r = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=width,height", "-of", "csv=p=0", path], capture_output=True, text=True, check=True)
+    w, h = r.stdout.strip().split(",")
+    return int(w), int(h)
+
+
+W, H = probe_wh(video)  # frames at native size; models must be exported for >= this
+PW, PH = ((W - 1) // 32 + 1) * 32, ((H - 1) // 32 + 1) * 32
 
 
 def read_frames(path):
