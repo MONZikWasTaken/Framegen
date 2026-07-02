@@ -23,6 +23,7 @@
   <select id="ep"><option value="webnn">webnn (нужен флаг)</option><option value="webgpu">webgpu</option></select>
   <select id="res"><option value="auto">авто (макс качество+фпс)</option><option value="1080">1080p (вставки 480p)</option><option value="720">720p (вставки 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p честный (медленно)</option></select>
   <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option></select>
+  <select id="factor"><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option><option value="6">6×</option></select>
 </div>
 <div style="margin-top:8px">
   <button id="playBtn" disabled>Play</button>
@@ -130,7 +131,7 @@ function onWorkerMessage(ev) {
   const m = ev.data;
   if (m.type === 'mid') {
     interpMs = m.interpMs; halfRate = m.halfRate; midCfg = m.cfg;
-    const due = m.ts + DELAY_MS + intervalMs / 2;
+    const due = m.ts + DELAY_MS + (m.frac ?? 0.5) * intervalMs;
     if (performance.now() <= due + intervalMs / 4) {
       createImageBitmap(new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h))
         .then(bmp => queue.push({ payload: bmp, at: due }));
@@ -173,7 +174,7 @@ function ensureWorker() {
   lctx = letterbox.getContext('2d');
   letterboxC = new OffscreenCanvas(CW, CH);
   lcctx = letterboxC.getContext('2d');
-  worker = new Worker('player_worker.js?v=4'); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=6', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (webnn собирает граф несколько секунд, один раз)`);
@@ -185,13 +186,15 @@ function ensureWorker() {
       else orig(ev);
     };
     worker.postMessage({ type: 'init', ep, auto: res === 'auto', res: mode.f32res, quality: q,
-      animeMode: $('animeMode').checked, interpOn: $('interpOn').checked });
+      animeMode: $('animeMode').checked, interpOn: $('interpOn').checked,
+      factor: +$('factor').value });
   });
 }
 
-$('animeMode').onchange = $('interpOn').onchange = () => {
+$('animeMode').onchange = $('interpOn').onchange = $('factor').onchange = () => {
   if (worker) worker.postMessage({ type: 'opts',
-    animeMode: $('animeMode').checked, interpOn: $('interpOn').checked });
+    animeMode: $('animeMode').checked, interpOn: $('interpOn').checked,
+    factor: +$('factor').value });
 };
 
 $('file').onchange = e => {

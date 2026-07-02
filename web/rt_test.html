@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Framecast — custom RT test</title>
+<style>body{font:14px/1.6 monospace;margin:20px;background:#181818;color:#ddd}
+canvas{border:1px solid #444;margin-right:8px}</style></head>
+<body>
+<h3>Custom WebGPU runtime — correctness vs ONNX + bench</h3>
+<div id="log">loading...</div>
+<div><canvas id="c0" width="448" height="256"></canvas><canvas id="c1" width="448" height="256"></canvas></div>
+<p>слева — наш рантайм, справа — эталон ONNX</p>
+<script type="module">
+import { createRT } from './rt/rt.js';
+const log = m => { document.getElementById('log').innerHTML += '<br>' + m; };
+
+async function imgRGBA(url, w, h) {
+  const img = new Image();
+  await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+  const c = new OffscreenCanvas(w, h);
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.drawImage(img, 0, 0);
+  return x.getImageData(0, 0, w, h).data;
+}
+
+(async () => {
+  try {
+    const W = 448, H = 256;
+    if (!navigator.gpu) { log('НЕТ WebGPU'); return; }
+    const adapter = await navigator.gpu.requestAdapter();
+    const device = await adapter.requestDevice();
+    log('adapter OK');
+
+    const [bin, man] = await Promise.all([
+      fetch('/assets/rt_1blk.bin').then(r => r.arrayBuffer()),
+      fetch('/assets/rt_1blk.json').then(r => r.json())]);
+    const rt = await createRT(device, { w: W, h: H, weightsBin: bin, weightsManifest: man });
+    log('runtime created (weights ' + (bin.byteLength >> 20) + ' MB)');
+
+    const [a, b] = await Promise.all([imgRGBA('/demo/I0_0.png', W, H), imgRGBA('/demo/I0_1.png', W, H)]);
+    const exp = new Uint8Array(await fetch('/demo/rt_expected_256.rgb').then(r => r.arrayBuffer()));
+
+    const out = await rt.run(a, b); // rgba
+    // compare rgb vs expected
+    let sum = 0, mx = 0, n = 0;
+    for (let i = 0, j = 0; j < exp.length; i += 4, j += 3) {
+      for (let k = 0; k < 3; k++) {
+        const d = Math.abs(out[i + k] - exp[j + k]);
+        sum += d; if (d > mx) mx = d; n++;
+      }
+    }
+    const mean = sum / n;
+    log(`<b>correctness: mean|Δ|=${mean.toFixed(4)} max|Δ|=${mx}</b> ${mean < 1 && mx <= 8 ? '✅ PASS' : '❌ FAIL'}`);
+
+    // draw both
+    const put = (id, rgba) => document.getElementById(id).getContext('2d')
+      .putImageData(new ImageData(new Uint8ClampedArray(rgba), W, H), 0, 0);
+    put('c0', out);
+    const expRgba = new Uint8ClampedArray(W * H * 4);
+    for (let i = 0, j = 0; j < exp.length; i += 4, j += 3) {
+      expRgba[i] = exp[j]; expRgba[i + 1] = exp[j + 1]; expRgba[i + 2] = exp[j + 2]; expRgba[i + 3] = 255;
+    }
+    put('c1', expRgba);
+
+    // bench at this size
+    for (let i = 0; i < 3; i++) await rt.run(a, b); // warm
+    const ts = [];
+    for (let i = 0; i < 15; i++) { const t = performance.now(); await rt.run(a, b); ts.push(performance.now() - t); }
+    ts.sort((x, y) => x - y);
+    log(`bench ${W}x${H}: p50=${ts[7].toFixed(1)}ms p10=${ts[1].toFixed(1)}ms`);
+
+    // bench 720p (synthetic input)
+    const rt720 = await createRT(device, { w: 1280, h: 720, weightsBin: bin, weightsManifest: man });
+    const za = new Uint8Array(1280 * 720 * 4).fill(128), zb = new Uint8Array(1280 * 720 * 4).fill(140);
+    for (let i = 0; i < 3; i++) await rt720.run(za, zb);
+    const t7 = [];
+    for (let i = 0; i < 15; i++) { const t = performance.now(); await rt720.run(za, zb); t7.push(performance.now() - t); }
+    t7.sort((x, y) => x - y);
+    log(`<b>bench 1280x720: p50=${t7[7].toFixed(1)}ms p10=${t7[1].toFixed(1)}ms fps=${(1000 / t7[7]).toFixed(1)}</b>`);
+    log('DONE');
+  } catch (e) { log('<span style="color:#f66">FATAL: ' + (e.stack || e.message || e) + '</span>'); }
+})();
+</script>
+</body>
+</html>

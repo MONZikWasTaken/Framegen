@@ -58,10 +58,10 @@ def load_ifnet(weights_pkl, device):
     return net.to(device)
 
 
-def two_block_forward(net, img0, img1, scales=(4, 2)):
+def two_block_forward(net, img0, img1, scales=(4, 2), t=0.5):
     """Student inference path (matches export_ablation configs). Returns (merged, flow).
-    len(scales) picks how many IFBlocks run (1..3)."""
-    timestep = (img0[:, :1] * 0 + 1) * 0.5
+    len(scales) picks how many IFBlocks run (1..3). t: scalar or [B,1,1,1] tensor."""
+    timestep = (img0[:, :1] * 0 + 1) * t
     stu = [net.block0, net.block1, net.block2][: len(scales)]
     flow = None
     mask = None
@@ -82,26 +82,39 @@ def two_block_forward(net, img0, img1, scales=(4, 2)):
 
 
 @torch.no_grad()
-def teacher_forward(net, img0, img1):
-    """Full frozen teacher: 3 blocks + refinement. Returns (merged_refined, flow)."""
+def teacher_forward(net, img0, img1, t=0.5):
+    """Full frozen teacher: 3 blocks + refinement. Returns (merged_refined, flow).
+    IFNet_m is natively arbitrary-t; t may be a [B,1,1,1] tensor."""
     x = torch.cat((img0, img1), 1)
-    flow_list, mask, merged, *_ = net(x, scale=[4, 2, 1], timestep=0.5)
+    flow_list, mask, merged, *_ = net(x, scale=[4, 2, 1], timestep=t)
     return merged[2], flow_list[2]
 
 
 class TripletData(Dataset):
-    def __init__(self, data_root, crop):
+    """arbitrary_t=False: (i-1, i, i+1) pairs, t=0.5 (classic).
+    arbitrary_t=True: half the samples additionally use stride-4 pairs (i-2, i+2)
+    with GT at i-2+k, t=k/4 — real ground truth at t=0.25/0.5/0.75, which keeps
+    the student's timestep conditioning alive (a t=0.5-only fine-tune destroys it)."""
+
+    def __init__(self, data_root, crop, arbitrary_t=False):
         self.crop = crop
+        self.arbitrary_t = arbitrary_t
+        self.counts = {}
         self.items = []
         for stem in os.listdir(data_root):
             idx_file = os.path.join(data_root, stem, "triplets.txt")
             if not os.path.isfile(idx_file):
                 continue
+            d = os.path.join(data_root, stem)
+            mx = 0
             with open(idx_file) as f:
                 for line in f:
                     line = line.strip()
                     if line:
-                        self.items.append((os.path.join(data_root, stem), int(line)))
+                        i = int(line)
+                        self.items.append((d, i))
+                        mx = max(mx, i)
+            self.counts[d] = mx + 2  # frames 0..mx+1 are known to exist
         if not self.items:
             raise RuntimeError(f"no triplets found under {data_root}")
 
@@ -116,7 +129,14 @@ class TripletData(Dataset):
 
     def __getitem__(self, k):
         d, i = self.items[k]
-        f = [self._read(d, i - 1), self._read(d, i), self._read(d, i + 1)]
+        t = 0.5
+        if (self.arbitrary_t and random.random() < 0.5
+                and i - 2 >= 0 and i + 2 < self.counts[d]):
+            kk = random.randint(1, 3)  # GT at i-2+kk, pair (i-2, i+2)
+            f = [self._read(d, i - 2), self._read(d, i - 2 + kk), self._read(d, i + 2)]
+            t = kk / 4.0
+        else:
+            f = [self._read(d, i - 1), self._read(d, i), self._read(d, i + 1)]
         h, w = f[0].shape[:2]
         c = self.crop
         y, x = random.randint(0, h - c), random.randint(0, w - c)
@@ -127,8 +147,10 @@ class TripletData(Dataset):
             f = [im[::-1, :] for im in f]
         if random.random() < 0.5:
             f = [f[2], f[1], f[0]]
-        return torch.from_numpy(
+            t = 1.0 - t  # temporal swap mirrors the timestep
+        frames = torch.from_numpy(
             np.ascontiguousarray(np.stack(f).transpose(0, 3, 1, 2))).float() / 255.0  # [3,C,c,c]
+        return frames, torch.tensor(t, dtype=torch.float32)
 
 
 def load_eval_triplets(step=25):
@@ -192,6 +214,8 @@ def main():
     ap.add_argument("--resume", default="")
     ap.add_argument("--scales", default="4,2",
                     help="IFBlock scales, e.g. '4,2' (2 blocks), '8,4', '4' (1 block)")
+    ap.add_argument("--arbitrary-t", action="store_true",
+                    help="mix stride-4 samples with t=0.25/0.5/0.75 (keeps timestep alive)")
     args = ap.parse_args()
     scales = tuple(int(s) for s in args.scales.split(","))
     prefixes = tuple(f"block{i}." for i in range(len(scales)))
@@ -220,7 +244,7 @@ def main():
         p.requires_grad_(name.startswith(prefixes))
     train_params = [p for p in student.parameters() if p.requires_grad]
 
-    data = TripletData(args.data, args.crop)
+    data = TripletData(args.data, args.crop, arbitrary_t=args.arbitrary_t)
     loader = DataLoader(data, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                         pin_memory=True, drop_last=True, persistent_workers=args.workers > 0)
     eval_sets = load_eval_triplets()
@@ -243,15 +267,16 @@ def main():
     run_loss = 0.0
     student.train()
     while step < args.steps:
-        for batch in loader:
+        for batch, bt in loader:
             if step >= args.steps:
                 break
             for g in opt.param_groups:
                 g["lr"] = lr_at(step)
             batch = batch.to(device, non_blocking=True)
+            t = bt.to(device, non_blocking=True).view(-1, 1, 1, 1)
             img0, gt, img1 = batch[:, 0], batch[:, 1], batch[:, 2]
-            tea_out, tea_flow = teacher_forward(teacher, img0, img1)
-            pred, flow = two_block_forward(student, img0, img1, scales)
+            tea_out, tea_flow = teacher_forward(teacher, img0, img1, t)
+            pred, flow = two_block_forward(student, img0, img1, scales, t)
             loss = (lap(pred, gt)
                     + LAMBDA_TEA * lap(pred, tea_out)
                     + LAMBDA_FLOW * F.l1_loss(flow, tea_flow))
