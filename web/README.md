@@ -40,11 +40,12 @@ Measured webgpu p50 on the 4060 Ti: **720p = 1957 ms · 480p = 1064 ms · 360p =
 
 ## Quality tiers (quality dropdown)
 
-Training-free ablations of the net (see `../docs/phase5_ablation.md`):
+Tiers (see `../docs/phase5_ablation.md`):
 **full** (whole net) · **fast** (refinement cut: ~1.5× on webgpu, −1.3..+0.2 dB) ·
-**fastest** (block2 + refinement cut: ~4× on webgpu, −2.6..−0.8 dB).
-Measured stack on the 4060 Ti: 480p/fastest on plain webgpu = **237 ms (4.2 fps)**;
-on WebNN expected ~68 ms (~15 fps).
+**fastest** (distilled 2-block student: ~4× on webgpu, −0.5..−1.4 dB vs full).
+Measured on the 4060 Ti: 480p/fastest webgpu = **~250 ms (4 fps)**; on WebNN (DirectML)
+= **96 ms (10.4 fps)**, 360p/fastest WebNN = **59 ms (16.9 fps)** — measured in real
+Chrome via `web/webnn_autotest.html` + `tools/collect_server.py`.
 
 Regenerate the models (assets/ is gitignored):
 

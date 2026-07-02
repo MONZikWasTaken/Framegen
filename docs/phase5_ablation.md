@@ -17,6 +17,23 @@ Best checkpoint @17k. Weights of record: `models/rife_lite_student_2blk.safetens
 Recovered +1.24 dB of the −2.60 on animation (now −1.36 vs teacher), −0.53 on live action,
 at identical inference cost. Visual check on the max-motion BBB triplet:
 `docs/student_vs_full_bbb.jpg` — the four variants are hard to tell apart at full size.
+
+**WebNN (DirectML) — MEASURED in real Chrome with the feature flag (2026-07-02,
+`--enable-features=WebMachineLearningNeuralNetwork`, auto-test `web/webnn_autotest.html`
++ `tools/collect_server.py`):**
+
+| config | webgpu | webnn | webnn fps |
+|---|---:|---:|---:|
+| 720p full | 1957 ms | 558 ms | 1.8 |
+| 480p full | 1064 ms | 240 ms | 4.2 |
+| 720p student | ~495 ms | 211 ms | 4.7 |
+| 480p student | ~250 ms | **96 ms** | **10.4** |
+| 360p student | — | **59 ms** | **16.9** |
+
+The WebNN multiplier shrinks as the graph shrinks (3.5× on the full net, ~2.5× on the
+student — DirectML has less dispatch overhead to erase), so the stacked total is
+**1957 → 59 ms = 33× in one day**. 360p at ~17 fps is playable; 480p slow-mo precompute
+runs at 10 interp/s.
 The `fastest` tier in the web app now points at the student ONNX
 (`assets/rife_lite_{720,480,360}p_2blk_noref_student.onnx`; regenerate with
 `FRAMECAST_WEIGHTS=<dir with flownet.pkl from models/…safetensors + tools/restore_pkl.py>`

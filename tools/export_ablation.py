@@ -86,6 +86,8 @@ CONFIGS = {
     "s842_noref": dict(scales=[8, 4, 2], nblocks=3, refine=False),
     "2blk":       dict(scales=[4, 2],    nblocks=2, refine=True),
     "2blk_noref": dict(scales=[4, 2],    nblocks=2, refine=False),
+    "2blk_s84":   dict(scales=[8, 4],    nblocks=2, refine=False),
+    "1blk_s4":    dict(scales=[4],       nblocks=1, refine=False),
 }
 
 ph = ((H - 1) // 32 + 1) * 32

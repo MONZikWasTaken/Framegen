@@ -59,13 +59,14 @@ def load_ifnet(weights_pkl, device):
 
 
 def two_block_forward(net, img0, img1, scales=(4, 2)):
-    """Student inference path (matches export_ablation 2blk_noref). Returns (merged, flow)."""
+    """Student inference path (matches export_ablation configs). Returns (merged, flow).
+    len(scales) picks how many IFBlocks run (1..3)."""
     timestep = (img0[:, :1] * 0 + 1) * 0.5
-    stu = [net.block0, net.block1]
+    stu = [net.block0, net.block1, net.block2][: len(scales)]
     flow = None
     mask = None
     warped_img0, warped_img1 = img0, img1
-    for i in range(2):
+    for i in range(len(scales)):
         if flow is not None:
             flow_d, mask_d = stu[i](
                 torch.cat((img0, img1, timestep, warped_img0, warped_img1, mask), 1),
@@ -146,7 +147,7 @@ def load_eval_triplets(step=25):
 
 
 @torch.no_grad()
-def eval_psnr(net, eval_sets, device):
+def eval_psnr(net, eval_sets, device, scales=(4, 2)):
     """Full-720p uint8 PSNR, same pre/post as quality_bench.py."""
     W, H, PW, PH = 1280, 720, 1280, 736
     res = {}
@@ -158,7 +159,7 @@ def eval_psnr(net, eval_sets, device):
                 x[0, :, :H, :W] = torch.from_numpy(
                     im.transpose(2, 0, 1).astype(np.float32) / 255.0).to(device)
                 return x
-            pred, _ = two_block_forward(net, prep(f0), prep(f1))
+            pred, _ = two_block_forward(net, prep(f0), prep(f1), scales)
             pred = (pred[0, :, :H, :W].clamp(0, 1) * 255).byte().cpu().numpy().transpose(1, 2, 0)
             mse = np.mean((pred.astype(np.float64) - gt.astype(np.float64)) ** 2)
             scores.append(99.0 if mse == 0 else 10 * np.log10(255.0 ** 2 / mse))
@@ -166,11 +167,11 @@ def eval_psnr(net, eval_sets, device):
     return res
 
 
-def save_full_state(student, teacher_sd, path):
-    """Full IFNet_m dict: trained block0/block1 over the teacher's remaining weights."""
+def save_full_state(student, teacher_sd, path, prefixes):
+    """Full IFNet_m dict: trained blocks over the teacher's remaining weights."""
     sd = dict(teacher_sd)
     for k, v in student.state_dict().items():
-        if k.startswith("block0.") or k.startswith("block1."):
+        if k.startswith(prefixes):
             sd[k] = v.detach().cpu()
     torch.save({"module." + k: v for k, v in sd.items()}, path)
 
@@ -189,7 +190,11 @@ def main():
     ap.add_argument("--eval-every", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--resume", default="")
+    ap.add_argument("--scales", default="4,2",
+                    help="IFBlock scales, e.g. '4,2' (2 blocks), '8,4', '4' (1 block)")
     args = ap.parse_args()
+    scales = tuple(int(s) for s in args.scales.split(","))
+    prefixes = tuple(f"block{i}." for i in range(len(scales)))
 
     device = torch.device("cuda")
     torch.backends.cuda.matmul.allow_tf32 = True  # fp32 train, TF32 tensor cores
@@ -210,9 +215,9 @@ def main():
     teacher_sd = {k: v.cpu() for k, v in teacher.state_dict().items()}
 
     student = load_ifnet(args.resume if args.resume else args.weights, device)
-    # only block0/block1 are trained (and exported); freeze the rest to save memory
+    # only the blocks the student actually runs are trained; freeze the rest
     for name, p in student.named_parameters():
-        p.requires_grad_(name.startswith("block0.") or name.startswith("block1."))
+        p.requires_grad_(name.startswith(prefixes))
     train_params = [p for p in student.parameters() if p.requires_grad]
 
     data = TripletData(args.data, args.crop)
@@ -228,8 +233,8 @@ def main():
         t = (step - args.warmup) / max(1, args.steps - args.warmup)
         return 1e-5 + 0.5 * (args.lr - 1e-5) * (1 + math.cos(math.pi * t))
 
-    base = eval_psnr(student, eval_sets, device)
-    log(f"init (== 2blk_noref ablation): {base}  | {len(data)} triplets, "
+    base = eval_psnr(student, eval_sets, device, scales)
+    log(f"init (untrained cut, scales={scales}): {base}  | {len(data)} triplets, "
         f"batch {args.batch}, {args.steps} steps")
     best = sum(base.values())
 
@@ -246,7 +251,7 @@ def main():
             batch = batch.to(device, non_blocking=True)
             img0, gt, img1 = batch[:, 0], batch[:, 1], batch[:, 2]
             tea_out, tea_flow = teacher_forward(teacher, img0, img1)
-            pred, flow = two_block_forward(student, img0, img1)
+            pred, flow = two_block_forward(student, img0, img1, scales)
             loss = (lap(pred, gt)
                     + LAMBDA_TEA * lap(pred, tea_out)
                     + LAMBDA_FLOW * F.l1_loss(flow, tea_flow))
@@ -264,13 +269,15 @@ def main():
                 run_loss = 0.0
             if step % args.eval_every == 0:
                 student.eval()
-                scores = eval_psnr(student, eval_sets, device)
+                scores = eval_psnr(student, eval_sets, device, scales)
                 student.train()
-                save_full_state(student, teacher_sd, os.path.join(args.out, "student_last.pkl"))
+                save_full_state(student, teacher_sd,
+                                os.path.join(args.out, "student_last.pkl"), prefixes)
                 mark = ""
                 if sum(scores.values()) > best:
                     best = sum(scores.values())
-                    save_full_state(student, teacher_sd, os.path.join(args.out, "student_best.pkl"))
+                    save_full_state(student, teacher_sd,
+                                    os.path.join(args.out, "student_best.pkl"), prefixes)
                     mark = "  ** best"
                 log(f"eval @ {step}: {scores}{mark}")
 
