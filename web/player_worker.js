@@ -12,16 +12,17 @@ const ort = ortNS.default ?? ortNS;
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
 
 const SIZE = { 360: [640, 360], 480: [854, 480], 720: [1280, 720] };
-// custom-runtime sizes must be /16-divisible (852->848, 360->352 — sub-1% stretch)
-const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720] };
+// custom-runtime sizes must be /16-divisible (852->848, 360->352, 1080->1072 — sub-1% stretch)
+const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1072] };
 // mids ladder, best quality first; est = initial ms guess (learned at runtime).
 // rt = our own WebGPU runtime (1blk model): bit-exact, no flags, ~3-6x faster than ort.
 const LADDER = [
+  { key: 'rt@1080',     kind: 'rt',  q: 'turbo',   res: 1080, est: 58 },
   { key: 'fastest@720', kind: 'f32', q: 'fastest', res: 720, est: 150 },
-  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 36 },
+  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 27 },
   { key: 'fastest@480', kind: 'f32', q: 'fastest', res: 480, est: 60 },
-  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 16 },
-  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 9 },
+  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 13 },
+  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 7 },
 ];
 const F32 = {
   turbo:   { 360: { url: '/assets/rife_lite_360p_1blk_s4_student1b.onnx', ew: 640, eh: 384 },
@@ -48,7 +49,9 @@ let canvases = new Map(); // "WxH" -> {off, ctx}
 let last = null, lastKey = null, lastTs = 0, lastUniqueTs = 0, transitionNo = 0;
 let busy = false, pending = null;
 let uniqueIntervalMs = 42, goodSince = 0, halfRate = false;
-let animeMode = true, interpOn = true, factor = 2;
+let animeMode = true, interpOn = true, factor = 2, maxRes = 720;
+// mids above the display resolution are wasted work — the ladder is capped by it
+function ladder() { return LADDER.filter(r => r.res <= maxRes + 8); }
 
 function epProvider() {
   return ep === 'webnn'
@@ -79,6 +82,71 @@ async function ensureRtDevice() {
   rtWeights = { bin, man };
 }
 
+// ---- GPU frame path: bitmaps upload straight into textures, dedup runs on the GPU ----
+// round-robin depth 3: a pending job keeps its pair alive while the next frame uploads
+let frameTex = [], frameTexIdx = 0, texW = 0, texH = 0;
+let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupRead = null, dedupSampler = null;
+const DEDUP_N = 48 * 27;
+
+function ensureFrameTextures(w, h) {
+  if (texW === w && texH === h && frameTex.length === 3) return;
+  frameTex.forEach(t => t.destroy());
+  frameTex = [];
+  for (let i = 0; i < 3; i++) {
+    const t = rtDevice.createTexture({
+      label: 'frame' + i, size: [w, h], format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+    frameTex.push(t);
+  }
+  texW = w; texH = h; dedupBg.clear();
+}
+
+function ensureDedup() {
+  if (dedupPipe) return;
+  dedupSampler = rtDevice.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+  dedupStats = rtDevice.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  dedupRead = rtDevice.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  dedupPipe = rtDevice.createComputePipeline({ layout: 'auto', compute: {
+    module: rtDevice.createShaderModule({ code: /* wgsl */`
+@group(0) @binding(0) var t0: texture_2d<f32>;
+@group(0) @binding(1) var t1: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read_write> stats: array<atomic<u32>, 2>;
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= 48 || y >= 27) { return; }
+  let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(48.0, 27.0);
+  let a = textureSampleLevel(t0, samp, uv, 0.0).rgb;
+  let b = textureSampleLevel(t1, samp, uv, 0.0).rgb;
+  let d = u32(dot(abs(a - b), vec3<f32>(255.0, 255.0, 255.0)));
+  atomicAdd(&stats[0], d);
+  atomicMax(&stats[1], d);
+}`}), entryPoint: 'main' } });
+}
+
+async function gpuIsDup(ta, tb) {
+  ensureDedup();
+  const key = ta.label + '|' + tb.label;
+  if (!dedupBg.has(key)) {
+    dedupBg.set(key, rtDevice.createBindGroup({ layout: dedupPipe.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
+      { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
+  }
+  rtDevice.queue.writeBuffer(dedupStats, 0, new Uint32Array([0, 0]));
+  const enc = rtDevice.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
+  pass.dispatchWorkgroups(6, 4);
+  pass.end();
+  enc.copyBufferToBuffer(dedupStats, 0, dedupRead, 0, 8);
+  rtDevice.queue.submit([enc.finish()]);
+  await dedupRead.mapAsync(GPUMapMode.READ);
+  const s = new Uint32Array(dedupRead.getMappedRange().slice(0));
+  dedupRead.unmap();
+  return (s[0] / DEDUP_N) < 2.5 && s[1] < 45;
+}
+
 // NOTE: the u8 rife_web_* graphs are healthy only on MAIN-thread webnn today:
 // the webgpu EP rejects them (JSEP conv-channel bug) and in-worker webnn dies on
 // MLTensor uploads AND poisons the wasm runtime afterwards (memory OOB on every
@@ -87,7 +155,7 @@ async function buildSession(rung) {
   if (rung.kind === 'rt') {
     await ensureRtDevice();
     const [W, H] = SIZE_RT[rung.res];
-    const rt = await createRT(rtDevice, { w: W, h: H,
+    const rt = await createRT(rtDevice, { w: W, h: H, textureInput: true,
       weightsBin: rtWeights.bin, weightsManifest: rtWeights.man });
     return { rt, kind: 'rt', W, H, ms: 0 };
   }
@@ -127,12 +195,13 @@ function estOf(rung) {
 
 function controllerTick() {
   if (!auto) return;
+  const L = ladder();
   const budget = uniqueIntervalMs;
-  const act = LADDER.find(r => r.key === activeKey);
+  const act = L.find(r => r.key === activeKey) || L[L.length - 1];
   const now = performance.now();
   if (estOf(act) > budget) {
     // over budget: step down NOW to the best rung that fits (prefer cached)
-    const fit = LADDER.filter(r => estOf(r) < budget * 0.85);
+    const fit = L.filter(r => estOf(r) < budget * 0.85);
     const cachedFit = fit.find(r => sessions.has(r.key));
     if (cachedFit && cachedFit.key !== activeKey) {
       activeKey = cachedFit.key; last = null; goodSince = now;
@@ -141,9 +210,9 @@ function controllerTick() {
     if (fit[0] && !sessions.has(fit[0].key)) ensureRung(fit[0].key);
   } else {
     // headroom: consider the rung ABOVE after 3s of stability
-    const idx = LADDER.indexOf(act);
+    const idx = L.indexOf(act);
     if (idx > 0) {
-      const up = LADDER[idx - 1];
+      const up = L[idx - 1];
       if (estOf(up) < budget * 0.75) {
         if (!sessions.has(up.key)) { ensureRung(up.key); return; }
         if (now - goodSince > 3000) {
@@ -166,9 +235,7 @@ async function runPair(job) {
       const ts = [];
       for (let k = 1; k < n; k++) ts.push(k / n);
       const t0 = performance.now();
-      const outs = await S.rt.runMulti(
-        new Uint8Array(job.a.buffer, job.a.byteOffset, job.a.length),
-        new Uint8Array(job.b.buffer, job.b.byteOffset, job.b.length), ts);
+      const outs = await S.rt.runMulti(job.a, job.b, ts); // GPUTextures straight in
       const ms = (performance.now() - t0) / ts.length;
       S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
       outs.forEach((out, i) => {
@@ -243,6 +310,7 @@ onmessage = async (ev) => {
   if (m.type === 'init') {
     ep = m.ep; auto = !!m.auto; animeMode = m.animeMode; interpOn = m.interpOn;
     factor = m.factor || 2;
+    maxRes = m.dispH || 720;
     last = null; busy = false; pending = null;
     try {
       let startKey;
@@ -273,45 +341,76 @@ onmessage = async (ev) => {
     return;
   }
   if (m.type === 'frame') {
-    const capKey = activeKey; // controllerTick may switch mid-handler; this frame's pixels belong to capKey's dims
-    const S = sessions.get(capKey);
-    const { off, ctx } = ctxFor(S.W, S.H);
-    ctx.drawImage(m.bmp, 0, 0, S.W, S.H);
+    // handlers await GPU results (dedup) — keep strict frame order via a promise chain
+    frameChain = frameChain.then(() => handleFrame(m))
+      .catch(e => postMessage({ type: 'error', msg: 'frame: ' + (e.message || e) }));
+    return;
+  }
+};
+
+let frameChain = Promise.resolve();
+let lastTex = null;
+
+function scheduleTransition(ts, S, job) {
+  const du = ts - lastUniqueTs;
+  if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
+  lastUniqueTs = ts;
+  transitionNo++;
+  controllerTick();
+  // the factor is a CEILING, not a promise: shrink it until the mids fit the live
+  // budget — a steady 4x beats a stuttering 6x. Below 2x fall back to half-rate.
+  // Margin >1: the 100ms pipeline delay absorbs transient overruns.
+  let effN = S.kind === 'rt' ? factor : 2;
+  const ms = S.ms || 60;
+  while (effN > 2 && (effN - 1) * ms > uniqueIntervalMs * 1.1) effN--;
+  halfRate = (effN - 1) * ms > uniqueIntervalMs * 1.05;
+  const skip = halfRate && (transitionNo & 1);
+  if (interpOn && !skip) {
+    job.n = effN;
+    if (!busy) runPair(job);
+    else { if (pending) postMessage({ type: 'skipped' }); pending = job; }
+  }
+}
+
+async function handleFrame(m) {
+  const S = sessions.get(activeKey);
+  if (S.kind === 'rt') {
+    // GPU path: bitmap -> texture, dedup on GPU, zero CPU pixel work.
+    // Textures are display-sized and session-independent -> rung switches are seamless.
+    ensureFrameTextures(m.bmp.width, m.bmp.height);
+    const tex = frameTex[frameTexIdx];
+    frameTexIdx = (frameTexIdx + 1) % 3;
+    rtDevice.queue.copyExternalImageToTexture({ source: m.bmp }, { texture: tex },
+      [m.bmp.width, m.bmp.height]);
     m.bmp.close();
-    const rgba = ctx.getImageData(0, 0, S.W, S.H).data;
-    const prevFrame = last; // snapshot: controllerTick() may null the global mid-handler
-    if (prevFrame && lastKey === capKey) {
-      const dup = animeMode && isNearDup(prevFrame, rgba);
-      if (dup) {
+    const prevTex = lastTex;
+    if (prevTex) {
+      if (animeMode && await gpuIsDup(prevTex, tex)) {
         postMessage({ type: 'dup', ts: m.ts });
       } else {
-        const du = m.ts - lastUniqueTs;
-        if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
-        lastUniqueTs = m.ts;
-        transitionNo++;
-        controllerTick();
-        const SS = sessions.get(capKey);
-        // the factor is a CEILING, not a promise: shrink it until the mids fit the live
-        // budget — a steady 4x beats a stuttering 6x. Below 2x fall back to half-rate.
-        // Margin is >1: the 100ms pipeline delay absorbs transient overruns, so demand
-        // only sustained throughput, not per-interval slack (0.95 cost a whole rung:
-        // 48fps when 72 was sustainable).
-        let effN = SS.kind === 'rt' ? factor : 2;
-        const ms = SS.ms || 60;
-        while (effN > 2 && (effN - 1) * ms > uniqueIntervalMs * 1.1) effN--;
-        halfRate = (effN - 1) * ms > uniqueIntervalMs * 1.05;
-        const skip = halfRate && (transitionNo & 1);
-        if (interpOn && !skip) {
-          // the job runs on capKey — the session whose dims match these pixels
-          const job = { a: prevFrame, b: rgba, ts: m.ts, key: capKey, n: effN };
-          if (!busy) runPair(job);
-          else { if (pending) postMessage({ type: 'skipped' }); pending = job; }
-        }
+        scheduleTransition(m.ts, S, { a: prevTex, b: tex, ts: m.ts, key: activeKey });
       }
     } else {
       lastUniqueTs = m.ts;
     }
-    last = rgba; lastKey = capKey;
+    lastTex = tex;
     return;
   }
-};
+  // CPU path (ort f32 fallback only): canvas readback + JS dedup
+  const capKey = activeKey;
+  const { off, ctx } = ctxFor(S.W, S.H);
+  ctx.drawImage(m.bmp, 0, 0, S.W, S.H);
+  m.bmp.close();
+  const rgba = ctx.getImageData(0, 0, S.W, S.H).data;
+  const prevFrame = last;
+  if (prevFrame && lastKey === capKey) {
+    if (animeMode && isNearDup(prevFrame, rgba)) {
+      postMessage({ type: 'dup', ts: m.ts });
+    } else {
+      scheduleTransition(m.ts, sessions.get(capKey), { a: prevFrame, b: rgba, ts: m.ts, key: capKey });
+    }
+  } else {
+    lastUniqueTs = m.ts;
+  }
+  last = rgba; lastKey = capKey;
+}

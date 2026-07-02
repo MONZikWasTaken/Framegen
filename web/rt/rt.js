@@ -215,11 +215,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
   let ox0 = i32(wid.x) * 16; let oy0 = i32(wid.y) * 16;   // wg output origin
   let x0 = ox0 + lx * 2; let y0 = oy0 + ly * 2;           // this thread's 2x2 patch
   let cb = i32(wid.z) * ${COC};
-  var acc: array<f32, ${COC * 4}>; // [co][py*2+px]
-  for (var c = 0; c < ${COC}; c++) {
-    let b = bias[cb + c];
-    acc[c * 4] = b; acc[c * 4 + 1] = b; acc[c * 4 + 2] = b; acc[c * 4 + 3] = b;
-  }
+  // 16 scalar accumulators (unrolled — arrays may spill out of registers in WGSL)
+${Array.from({ length: COC }, (_, c) =>
+  `  var a${c}0 = bias[cb + ${c}]; var a${c}1 = a${c}0; var a${c}2 = a${c}0; var a${c}3 = a${c}0;`).join('\n')}
 
   for (var s = 0; s < ${CI}; s += ${SLAB}) {
     let sl = min(${SLAB}, ${CI} - s);
@@ -257,30 +255,79 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
           let t10 = f32(tile[rb + kx + 18]);
           let t11 = f32(tile[rb + kx + 19]);
           let wb = ci * 9 + ky * 3 + kx;
-          for (var c = 0; c < ${COC}; c++) {
-            let wv = f32(wsh[c * (sl * 9) + wb]);
-            acc[c * 4] += t00 * wv;
-            acc[c * 4 + 1] += t01 * wv;
-            acc[c * 4 + 2] += t10 * wv;
-            acc[c * 4 + 3] += t11 * wv;
-          }
+${Array.from({ length: COC }, (_, c) => `          {
+            let wv = f32(wsh[${c} * (sl * 9) + wb]);
+            a${c}0 += t00 * wv; a${c}1 += t01 * wv; a${c}2 += t10 * wv; a${c}3 += t11 * wv;
+          }`).join('\n')}
         }
       }
     }
   }
-  for (var c = 0; c < ${COC}; c++) {
-    let co = cb + c;
+${Array.from({ length: COC }, (_, c) => `  {
+    let co = cb + ${c};
     let al = alpha[co];
-    for (var p = 0; p < 4; p++) {
-      let x = x0 + (p & 1);
-      let y = y0 + (p >> 1);
-      if (x >= ${OW} || y >= ${OH}) { continue; }
-      let a = acc[c * 4 + p];
-      let v = select(al * a, a, a >= 0.0);
-      let o = co * ${OH * OW} + y * ${OW} + x;
-      dst[o] = f16(${residual ? `v + f32(res[o])` : `v`});
-    }
-  }
+${[0, 1, 2, 3].map(p => `    {
+      let x = x0 + ${p & 1};
+      let y = y0 + ${p >> 1};
+      if (x < ${OW} && y < ${OH}) {
+        let a = a${c}${p};
+        let v = select(al * a, a, a >= 0.0);
+        let o = co * ${OH * OW} + y * ${OW} + x;
+        dst[o] = f16(${residual ? `v + f32(res[o])` : `v`});
+      }
+    }`).join('\n')}
+  }`).join('\n')}
+}`;
+}
+
+// texture-input prep variants: the video frame lives in a GPU texture (uploaded via
+// copyExternalImageToTexture) and never touches the CPU; the sampler also does the
+// display->model resize for free. Sampling at texel centers == exact texel values.
+function wgslPrepFullTex(W, H) {
+  return /* wgsl */`
+@group(0) @binding(0) var tex0: texture_2d<f32>;
+@group(0) @binding(1) var tex1: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read_write> imgs: array<f32>;  // [6,${H},${W}] BGR
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${W} || y >= ${H}) { return; }
+  let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  let c0 = textureSampleLevel(tex0, samp, uv, 0.0).rgb;
+  let c1 = textureSampleLevel(tex1, samp, uv, 0.0).rgb;
+  let o = y * ${W} + x;
+  let P = ${H * W};
+  imgs[o] = c0.b; imgs[P + o] = c0.g; imgs[2 * P + o] = c0.r;
+  imgs[3 * P + o] = c1.b; imgs[4 * P + o] = c1.g; imgs[5 * P + o] = c1.r;
+}`;
+}
+
+function wgslPrepQuarterTex(W, H, f16) {
+  const QW = W / 4, QH = H / 4;
+  const T = f16 ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var tex0: texture_2d<f32>;
+@group(0) @binding(1) var tex1: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read_write> xq: array<${T}>;   // [7,${QH},${QW}]
+@group(0) @binding(4) var<storage, read> tstep: array<f32>;
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${QW} || y >= ${QH}) { return; }
+  // quarter of the MODEL grid; the sampler maps through whatever the texture size is
+  let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${QW}.0, ${QH}.0);
+  let c0 = textureSampleLevel(tex0, samp, uv, 0.0).rgb;
+  let c1 = textureSampleLevel(tex1, samp, uv, 0.0).rgb;
+  let o = y * ${QW} + x;
+  let P = ${QH * QW};
+  xq[o] = ${T}(c0.b); xq[P + o] = ${T}(c0.g); xq[2 * P + o] = ${T}(c0.r);
+  xq[3 * P + o] = ${T}(c1.b); xq[4 * P + o] = ${T}(c1.g); xq[5 * P + o] = ${T}(c1.r);
+  xq[6 * P + o] = ${T}(tstep[0]);
 }`;
 }
 
@@ -386,7 +433,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
+export async function createRT(device, { w, h, weightsBin, weightsManifest, textureInput = false }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
   const useF16 = device.features.has('shader-f16');
@@ -429,7 +476,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
 
   // activations (f16 when supported), fixed f32 elsewhere
   const tbuf = buf(1);
-  const rgba0 = buf(w * h), rgba1 = buf(w * h);
+  const rgba0 = textureInput ? null : buf(w * h);
+  const rgba1 = textureInput ? null : buf(w * h);
   const imgs = buf(6 * w * h);
   const xq = abuf(7 * QH * QW);
   const f8 = abuf(120 * H8 * W8);
@@ -446,8 +494,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
     stagings.push(device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
   }
 
-  const pPrepFull = pipe(wgslPrepFull(w, h));
-  const pPrepQ = pipe(wgslPrepQuarter(w, h, useF16));
+  const sampler = textureInput
+    ? device.createSampler({ magFilter: 'linear', minFilter: 'linear',
+                             addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
+    : null;
+  const pPrepFull = pipe(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h));
+  const pPrepQ = pipe(textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16));
   const pConv0a = pipe(wgslConv(7, 120, QW, QH, W8, H8, 2, false, useF16));
   const pConv0b = pipe(wgslConv(120, 240, W8, H8, W16, H16, 2, false, useF16));
   const pConvB = useF16
@@ -459,9 +511,29 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
   const pDeconv = pipe(wgslDeconv(240, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(wgslFlowOut(w, h));
 
-  const bgPrepFull = bg(pPrepFull, [rgba0, rgba1, imgs]);
-  const bgPrepQ = bg(pPrepQ, [rgba0, rgba1, xq, tbuf]);
-  const bgPrepQt = tbufs.map(tb => bg(pPrepQ, [rgba0, rgba1, xq, tb]));
+  // buffer-input prep bind groups (unused in texture mode)
+  const bgPrepFull = textureInput ? null : bg(pPrepFull, [rgba0, rgba1, imgs]);
+  const bgPrepQ = textureInput ? null : bg(pPrepQ, [rgba0, rgba1, xq, tbuf]);
+  const bgPrepQt = textureInput ? null : tbufs.map(tb => bg(pPrepQ, [rgba0, rgba1, xq, tb]));
+  // texture-mode prep bind groups are built per texture pair and cached (ping-pong -> few combos)
+  const texBgCache = new Map();
+  function texPrepBgs(texA, texB) {
+    const key = texA.label + '|' + texB.label;
+    if (!texBgCache.has(key)) {
+      const va = texA.createView(), vb = texB.createView();
+      texBgCache.set(key, {
+        full: device.createBindGroup({ layout: pPrepFull.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: va }, { binding: 1, resource: vb },
+          { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: imgs } }] }),
+        q: tbufs.map(tb => device.createBindGroup({ layout: pPrepQ.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: va }, { binding: 1, resource: vb },
+          { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: xq } },
+          { binding: 4, resource: { buffer: tb } }] })),
+      });
+      if (texBgCache.size > 12) texBgCache.clear(); // texture set changed wholesale
+    }
+    return texBgCache.get(key);
+  }
   const bgConv0a = bg(pConv0a, [xq, convW('block0.conv0.0.0.weight'), wbuf['block0.conv0.0.0.bias'], wbuf['block0.conv0.0.1.weight'], f8]);
   const bgConv0b = bg(pConv0b, [f8, convW('block0.conv0.1.0.weight'), wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16a]);
   // convblock ping-pong: a->b, b->a, ... 8th conv adds the residual (f16r = copy of f16a)
@@ -550,23 +622,29 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
     return out;
   }
 
-  // batched: upload the pair once, produce mids for every t in ONE submit
-  async function runMulti(rgbaA, rgbaB, ts) {
+  // batched: upload/bind the pair once, produce mids for every t in ONE submit.
+  // Buffer mode: a/b are RGBA arrays. Texture mode: a/b are GPUTextures (zero CPU pixels).
+  async function runMulti(a, b, ts) {
     if (ts.length > MAXT) throw new Error('too many timesteps');
     for (let i = 0; i < ts.length; i++) {
       device.queue.writeBuffer(tbufs[i], 0, new Float32Array([ts[i]]));
     }
-    device.queue.writeBuffer(rgba0, 0, rgbaA.buffer, rgbaA.byteOffset, w * h * 4);
-    device.queue.writeBuffer(rgba1, 0, rgbaB.buffer, rgbaB.byteOffset, w * h * 4);
+    let tbg = null;
+    if (textureInput) {
+      tbg = texPrepBgs(a, b);
+    } else {
+      device.queue.writeBuffer(rgba0, 0, a.buffer, a.byteOffset, w * h * 4);
+      device.queue.writeBuffer(rgba1, 0, b.buffer, b.byteOffset, w * h * 4);
+    }
     const enc = device.createCommandEncoder();
     {
       const pass = enc.beginComputePass();
-      pass.setPipeline(pPrepFull); pass.setBindGroup(0, bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.setPipeline(pPrepFull); pass.setBindGroup(0, tbg ? tbg.full : bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
       pass.end();
     }
     for (let i = 0; i < ts.length; i++) {
       const pass = enc.beginComputePass();
-      pass.setPipeline(pPrepQ); pass.setBindGroup(0, bgPrepQt[i]); pass.dispatchWorkgroups(gx(QW), gx(QH));
+      pass.setPipeline(pPrepQ); pass.setBindGroup(0, tbg ? tbg.q[i] : bgPrepQt[i]); pass.dispatchWorkgroups(gx(QW), gx(QH));
       pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 30);
       pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 60);
       pass.end();
