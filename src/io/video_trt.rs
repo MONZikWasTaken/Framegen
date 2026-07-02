@@ -1,12 +1,13 @@
 //! Native TensorRT video pipeline: mp4 -> 2x -> mp4, fully in-process (no Python).
 //! ffmpeg decodes to raw RGB24, `RifeTrt` interpolates in-process, ffmpeg encodes.
-use anyhow::{anyhow, Context, Result};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use anyhow::{anyhow, Result};
+use std::io::Write;
 use std::time::Instant;
 
+use crate::io::ffmpeg::{read_exact_or_eof, spawn_decoder, spawn_encoder};
 use crate::io::video::probe;
 use crate::trt::RifeTrt;
+use rife_core::prepost::{from_output_into, to_input_into};
 
 pub struct Stats {
     pub in_frames: u64,
@@ -38,22 +39,11 @@ pub fn interpolate_video_trt(
         times, rife.ew, rife.eh
     );
 
-    let mut dec = Command::new("ffmpeg")
-        .args(["-v", "error", "-i", input.to_str().unwrap(), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-        .stdout(Stdio::piped()).stderr(Stdio::inherit())
-        .spawn().context("ffmpeg decode")?;
+    let mut dec = spawn_decoder(input)?;
     let mut dec_out = dec.stdout.take().unwrap();
 
     let out_fps = meta.fps * times as f64;
-    let mut enc = Command::new("ffmpeg")
-        .args([
-            "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
-            "-s", &format!("{w}x{h}"), "-r", &format!("{out_fps:.6}"), "-i", "-",
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "fast", "-crf", "18",
-            output.to_str().unwrap(),
-        ])
-        .stdin(Stdio::piped()).stderr(Stdio::inherit())
-        .spawn().context("ffmpeg encode")?;
+    let mut enc = spawn_encoder(output, w, h, out_fps)?;
     let mut enc_in = enc.stdin.take().unwrap();
 
     // Reusable buffers (no per-frame allocation).
@@ -79,13 +69,13 @@ pub fn interpolate_video_trt(
         enc_in.write_all(&buf_prev)?; // original frame
         out_frames += 1;
 
-        rife.fill_input(&buf_prev, w, h, &mut in0);
-        rife.fill_input(&buf_cur, w, h, &mut in1);
+        to_input_into(&buf_prev, w as u32, h as u32, rife.ew as u32, rife.eh as u32, &mut in0);
+        to_input_into(&buf_cur, w as u32, h as u32, rife.ew as u32, rife.eh as u32, &mut in1);
         let t = Instant::now();
         rife.infer(&in0, &in1, &mut out)?;
         infer_time += t.elapsed();
         infers += 1;
-        rife.read_output(&out, w, h, &mut mid);
+        from_output_into(&out, w as u32, h as u32, rife.ew as u32, rife.eh as u32, &mut mid);
 
         enc_in.write_all(&mid)?; // interpolated frame
         out_frames += 1;
@@ -111,17 +101,4 @@ pub fn interpolate_video_trt(
         elapsed, out_frames as f64 / elapsed.as_secs_f64(), ms_per_infer
     );
     Ok(Stats { in_frames, out_frames, elapsed, ms_per_infer })
-}
-
-fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<Option<()>> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        let n = r.read(&mut buf[filled..]).context("read frame")?;
-        if n == 0 {
-            if filled == 0 { return Ok(None); }
-            return Err(anyhow!("short read: {}/{}", filled, buf.len()));
-        }
-        filled += n;
-    }
-    Ok(Some(()))
 }

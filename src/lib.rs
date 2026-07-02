@@ -5,6 +5,7 @@ pub mod warp;
 pub mod trt;
 
 pub use model::IfNetM;
+pub use rife_core::{Frame, FrameInterpolator};
 
 #[cfg(feature = "bin")]
 pub mod imgutil;
@@ -17,27 +18,24 @@ use candle_nn::VarBuilder;
 
 pub const DEFAULT_SCALE: [f64; 3] = [4.0, 2.0, 1.0];
 
-pub struct RifeLite {
+pub struct RifeCandle {
     net: IfNetM,
+    device: Device,
 }
 
-impl RifeLite {
+impl RifeCandle {
     /// Load RIFE-Lite (RIFEm) weights from a safetensors file produced by
     /// `tools/convert_weights.py`. Pass DType::F16 for half-precision (faster on GPU).
     pub fn load<P: AsRef<std::path::Path>>(path: P, dtype: DType, device: &Device) -> Result<Self> {
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[path], dtype, device)? };
         let net = IfNetM::new(vb)?;
-        Ok(Self { net })
+        Ok(Self { net, device: device.clone() })
     }
 
-    /// Interpolate between two images. img0/img1: [B,3,H,W] float in [0,1].
+    /// Interpolate two candle tensors. img0/img1: [B,3,H,W] float in [0,1], BGR.
     /// timestep in [0,1] (0.5 = halfway). Returns [B,3,H,W] in [0,1].
     /// `scale` < 1.0 processes at lower resolution (faster, lower quality).
-    pub fn interpolate(&self, img0: &Tensor, img1: &Tensor, timestep: f64) -> Result<Tensor> {
-        self.interpolate_scaled(img0, img1, timestep, 1.0)
-    }
-
-    /// Interpolate with explicit scale factor. scale=0.5 → process at half res.
+    /// The Frame-based API is `FrameInterpolator::interpolate`.
     pub fn interpolate_scaled(
         &self,
         img0: &Tensor,
@@ -104,5 +102,52 @@ impl RifeLite {
         };
 
         out.to_dtype(DType::F32)
+    }
+}
+
+impl FrameInterpolator for RifeCandle {
+    fn interpolate(&self, f0: &Frame, f1: &Frame, timestep: f32) -> anyhow::Result<Frame> {
+        use rife_core::{pad32, prepost};
+        if f0.w != f1.w || f0.h != f1.h {
+            anyhow::bail!("frame size mismatch: {}x{} vs {}x{}", f0.w, f0.h, f1.w, f1.h);
+        }
+        let (w, h) = (f0.w, f0.h);
+        let (pw, ph) = (pad32(w), pad32(h));
+        let dev = &self.device;
+        let dt = self.net.dtype();
+        let mk = |rgb: &[u8]| -> anyhow::Result<Tensor> {
+            let planar = prepost::to_input(rgb, w, h, pw, ph);
+            Ok(Tensor::from_vec(planar, (1, 3, ph as usize, pw as usize), dev)?.to_dtype(dt)?)
+        };
+        let t0 = mk(&f0.rgb)?;
+        let t1 = mk(&f1.rgb)?;
+        let imgs = Tensor::cat(&[&t0, &t1], 1)?;
+        let scale_list = [4.0, 2.0, 1.0];
+        let out = self.net.forward(&imgs, &scale_list, timestep as f64)?;
+        let out = out
+            .narrow(2, 0, h as usize)?
+            .narrow(3, 0, w as usize)?
+            .to_dtype(DType::F32)?
+            .contiguous()?;
+        let chw: Vec<f32> = out.squeeze(0)?.flatten_all()?.to_vec1::<f32>()?;
+        let rgb = prepost::from_output(&chw, w, h, w, h);
+        Ok(Frame { w, h, rgb })
+    }
+}
+
+#[cfg(test)]
+mod trait_tests {
+    use super::*;
+
+    #[test]
+    #[ignore] // needs models/rife_lite.safetensors
+    fn candle_interpolate_returns_same_size_frame() {
+        let dev = Device::Cpu;
+        let rife = RifeCandle::load("models/rife_lite.safetensors", DType::F32, &dev).unwrap();
+        let f0 = Frame { w: 64, h: 64, rgb: vec![128u8; 64 * 64 * 3] };
+        let f1 = Frame { w: 64, h: 64, rgb: vec![130u8; 64 * 64 * 3] };
+        let out = rife.interpolate(&f0, &f1, 0.5).unwrap();
+        assert_eq!((out.w, out.h), (64, 64));
+        assert_eq!(out.rgb.len(), 64 * 64 * 3);
     }
 }

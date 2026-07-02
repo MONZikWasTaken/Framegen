@@ -27,14 +27,14 @@ fn main() -> Result<()> {
     };
     println!("dtype: {:?}", dtype);
 
-    let rife = framecast::RifeLite::load(&args.weights, dtype, &dev)?;
+    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
 
     let img0 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
     let img1 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
 
     // warmup
-    let _ = rife.interpolate(&img0, &img1, 0.5)?;
-    let _ = rife.interpolate(&img0, &img1, 0.5)?;
+    let _ = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
+    let _ = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
 
     // measure full interpolate (includes padding + forward)
     let mut times = Vec::new();
@@ -66,7 +66,7 @@ fn main() -> Result<()> {
     println!("cpu->gpu upload:   p50={up_p50:.1}ms");
 
     // measure GPU->CPU download (tensor -> bytes for ffmpeg encode)
-    let out = rife.interpolate(&img0, &img1, 0.5)?;
+    let out = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
     let mut dl_times = Vec::new();
     for _ in 0..args.iters {
         let t = Instant::now();

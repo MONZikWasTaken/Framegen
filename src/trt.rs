@@ -1,6 +1,8 @@
 //! In-process TensorRT inference via the C++ shim in `csrc/trt_shim.cpp`.
 //! No Python: loads a serialized engine, owns the CUDA context/buffers, runs `enqueueV3`.
 use anyhow::{anyhow, Result};
+use rife_core::prepost::{from_output, to_input_into};
+use rife_core::{Frame, FrameInterpolator};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
@@ -40,64 +42,6 @@ impl RifeTrt {
         self.c * self.eh * self.ew
     }
 
-    /// Native RGB24 (nw*nh*3) -> engine-sized CHW f32 (`dst` len == elems()):
-    /// RGB->BGR, /255, zero-padded bottom/right (matches tools/compare_pytorch.py).
-    pub fn fill_input(&self, rgb: &[u8], nw: usize, nh: usize, dst: &mut [f32]) {
-        debug_assert_eq!(rgb.len(), nw * nh * 3);
-        debug_assert_eq!(dst.len(), self.elems());
-        let (ew, eh) = (self.ew, self.eh);
-        let plane = eh * ew;
-        dst.fill(0.0);
-        for y in 0..nh {
-            let row = y * ew;
-            let srow = y * nw * 3;
-            for x in 0..nw {
-                let s = srow + x * 3;
-                let o = row + x;
-                dst[o] = rgb[s + 2] as f32 / 255.0;             // B
-                dst[plane + o] = rgb[s + 1] as f32 / 255.0;     // G
-                dst[2 * plane + o] = rgb[s] as f32 / 255.0;     // R
-            }
-        }
-    }
-
-    /// Engine-sized CHW f32 output -> native RGB24 (crop top-left, BGR->RGB, *255).
-    pub fn read_output(&self, out: &[f32], nw: usize, nh: usize, rgb: &mut [u8]) {
-        debug_assert_eq!(out.len(), self.elems());
-        debug_assert_eq!(rgb.len(), nw * nh * 3);
-        let (ew, eh) = (self.ew, self.eh);
-        let plane = eh * ew;
-        let px = |v: f32| (v * 255.0).clamp(0.0, 255.0) as u8;
-        for y in 0..nh {
-            let row = y * ew;
-            let drow = y * nw * 3;
-            for x in 0..nw {
-                let o = row + x;
-                let d = drow + x * 3;
-                rgb[d] = px(out[2 * plane + o]);     // R
-                rgb[d + 1] = px(out[plane + o]);     // G
-                rgb[d + 2] = px(out[o]);             // B
-            }
-        }
-    }
-
-    /// Convenience: native RGB24 pair -> interpolated native RGB24 (allocates).
-    pub fn interpolate_rgb(&self, rgb0: &[u8], rgb1: &[u8], nw: usize, nh: usize) -> Result<Vec<u8>> {
-        if nh > self.eh || nw > self.ew {
-            return Err(anyhow!("native {nw}x{nh} exceeds engine {}x{}", self.ew, self.eh));
-        }
-        let n = self.elems();
-        let mut in0 = vec![0f32; n];
-        let mut in1 = vec![0f32; n];
-        let mut out = vec![0f32; n];
-        self.fill_input(rgb0, nw, nh, &mut in0);
-        self.fill_input(rgb1, nw, nh, &mut in1);
-        self.infer(&in0, &in1, &mut out)?;
-        let mut rgb = vec![0u8; nw * nh * 3];
-        self.read_output(&out, nw, nh, &mut rgb);
-        Ok(rgb)
-    }
-
     /// Run inference. `in0`/`in1`/`out` must each be `elems()` long (CHW, BGR, /255, zero-padded).
     pub fn infer(&self, in0: &[f32], in1: &[f32], out: &mut [f32]) -> Result<()> {
         let n = self.elems();
@@ -109,6 +53,32 @@ impl RifeTrt {
             return Err(anyhow!("trt_infer failed ({r})"));
         }
         Ok(())
+    }
+}
+
+impl FrameInterpolator for RifeTrt {
+    /// The engine is fixed at timestep=0.5, so `_timestep` is ignored.
+    fn interpolate(&self, f0: &Frame, f1: &Frame, _timestep: f32) -> Result<Frame> {
+        if f0.w != f1.w || f0.h != f1.h {
+            return Err(anyhow!(
+                "frame size mismatch: {}x{} vs {}x{}",
+                f0.w, f0.h, f1.w, f1.h
+            ));
+        }
+        let (w, h) = (f0.w, f0.h);
+        if h as usize > self.eh || w as usize > self.ew {
+            return Err(anyhow!("frame {w}x{h} exceeds engine {}x{}", self.ew, self.eh));
+        }
+        let (ew, eh) = (self.ew as u32, self.eh as u32);
+        let n = self.elems();
+        let mut in0 = vec![0f32; n];
+        let mut in1 = vec![0f32; n];
+        let mut out = vec![0f32; n];
+        to_input_into(&f0.rgb, w, h, ew, eh, &mut in0);
+        to_input_into(&f1.rgb, w, h, ew, eh, &mut in1);
+        self.infer(&in0, &in1, &mut out)?;
+        let rgb = from_output(&out, w, h, ew, eh);
+        Ok(Frame { w, h, rgb })
     }
 }
 

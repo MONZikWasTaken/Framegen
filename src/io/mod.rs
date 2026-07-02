@@ -1,3 +1,4 @@
+pub mod ffmpeg;
 pub mod video;
 
 #[cfg(feature = "trt")]

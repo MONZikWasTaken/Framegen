@@ -1,8 +1,11 @@
 # AGENTS.md — Framecast
 
-Real-time RIFE-Lite (RIFEm) frame interpolation. Two backends behind one project:
-- **candle** (`RifeLite`) — pixel-accurate Rust/candle port, used as the correctness reference.
+Real-time RIFE-Lite (RIFEm) frame interpolation. Two backends behind one `FrameInterpolator` trait:
+- **candle** (`RifeCandle`) — pixel-accurate Rust/candle port, used as the correctness reference/oracle.
 - **TensorRT** (`RifeTrt`, feature `trt`) — native in-process FFI, the real-time path (no Python).
+
+The neutral `rife-core` crate owns `Frame`, the `FrameInterpolator` trait, and the single-source
+pre/post (`to_input`/`from_output`: BGR, /255, pad-to-32, crop). Both backends route through it.
 
 See `ROADMAP.md` for direction and `docs/result.md` for the full engineering journal.
 
@@ -19,14 +22,17 @@ cargo build --release --features trt --bin rife-trt   # native TensorRT (needs M
 ## Layout
 
 ```
-src/lib.rs          candle RifeLite API (interpolate / interpolate_scaled)
+crates/rife-core/   Frame, FrameInterpolator trait, prepost (to_input/from_output) — no candle/cuda deps
+src/lib.rs          RifeCandle (interpolate_scaled tensor API) + impl FrameInterpolator
 src/model.rs        IFNet_m reimplementation on candle
 src/warp.rs         backward warp (fused CUDA CustomOp2 + CPU fallback)
-src/trt.rs          RifeTrt — native TensorRT FFI (feature `trt`)
-src/imgutil.rs      image/tensor conversion (feature `bin`)
+src/trt.rs          RifeTrt — native TensorRT FFI + impl FrameInterpolator (feature `trt`)
+src/imgutil.rs      candle<->prepost glue: image/tensor conversion (feature `bin`)
+src/io/ffmpeg.rs    shared ffmpeg reader + decoder/encoder spawn
 src/io/video.rs     candle ffmpeg pipeline
 src/io/video_trt.rs native TensorRT ffmpeg pipeline (feature `trt`)
 src/bin/*           CLIs: rife-interpolate, rife-smoke, rife-profile, rife-trt, rife-trt-bench
+tests/parity.rs     gated candle-vs-trt agreement test (--features trt -- --ignored)
 csrc/trt_shim.cpp   extern "C" shim over nvinfer 10
 build.rs            compiles the shim when feature `trt` is on
 third_party/tensorrt/  public TRT headers + generated nvinfer_10.lib (SDK bootstrap)

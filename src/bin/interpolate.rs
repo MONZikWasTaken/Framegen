@@ -73,7 +73,7 @@ fn main() -> Result<()> {
         candle_core::Device::Cuda(_) => candle_core::DType::F16,
         _ => candle_core::DType::F32,
     };
-    let rife = framecast::RifeLite::load(&args.weights, dtype, &dev)?;
+    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
 
     match args.cmd {
         Cmd::Img { img0, img1, out, timestep, scale } => {

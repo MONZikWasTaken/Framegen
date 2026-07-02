@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/rife-core"]
+
 [package]
 name = "framecast"
 version = "0.1.0"
@@ -49,6 +52,7 @@ trt = []
 cc = "1"
 
 [dependencies]
+rife-core = { path = "crates/rife-core" }
 candle-core = "0.11"
 candle-nn = "0.11"
 anyhow = "1"

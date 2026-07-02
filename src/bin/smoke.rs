@@ -34,25 +34,25 @@ fn main() -> Result<()> {
     println!("dtype: {:?}", dtype);
 
     let t0 = Instant::now();
-    let rife = framecast::RifeLite::load(&args.weights, dtype, &dev)?;
+    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
     println!("loaded weights in {:.2?}", t0.elapsed());
 
     let img0 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
     let img1 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
 
     let t1 = Instant::now();
-    let out = rife.interpolate(&img0, &img1, 0.5)?;
+    let out = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
     let dt = t1.elapsed();
     println!("img0 {:?} img1 {:?}", img0.shape(), img1.shape());
     println!("out  {:?} ({:?})", out.shape(), dt);
 
     // second pass — is it faster after CUDA warmup?
     let t2 = Instant::now();
-    let _out2 = rife.interpolate(&img0, &img1, 0.5)?;
+    let _out2 = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
     println!("2nd pass: {:?}", t2.elapsed());
 
     let t3 = Instant::now();
-    let _out3 = rife.interpolate(&img0, &img1, 0.5)?;
+    let _out3 = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
     println!("3rd pass: {:?}", t3.elapsed());
 
     let _ = out.flatten_all()?.to_vec1::<f32>()?;

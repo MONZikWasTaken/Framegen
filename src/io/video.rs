@@ -1,12 +1,13 @@
 use anyhow::{anyhow, Context, Result};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::io::Write;
+use std::process::Command;
 use std::time::Instant;
 
 use candle_core::Device;
 
 use crate::imgutil;
-use crate::RifeLite;
+use crate::io::ffmpeg::{read_exact_or_eof, spawn_decoder, spawn_encoder};
+use crate::RifeCandle;
 
 pub struct VideoMeta {
     pub width: u32,
@@ -82,7 +83,7 @@ fn parse_fraction(s: &str) -> f64 {
 /// Interpolate `input` mp4 by `times` (2 = double fps), writing `output` mp4.
 /// Streams raw RGB24 through pipes — no temp files on disk.
 pub fn interpolate_video(
-    rife: &RifeLite,
+    rife: &RifeCandle,
     input: &std::path::Path,
     output: &std::path::Path,
     times: u32,
@@ -102,42 +103,11 @@ pub fn interpolate_video(
         times, meta.fps * times as f64, scale
     );
 
-    // decode: mp4 -> raw RGB24 on stdout
-    let mut dec = Command::new("ffmpeg")
-        .args([
-            "-v", "error",
-            "-i", input.to_str().unwrap(),
-            "-f", "rawvideo",
-            "-pix_fmt", "rgb24",
-            "-",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("ffmpeg decode не запустился")?;
+    let mut dec = spawn_decoder(input)?;
     let mut dec_out = dec.stdout.take().unwrap();
 
-    // encode: raw RGB24 on stdin -> mp4
     let out_fps = meta.fps * times as f64;
-    let mut enc = Command::new("ffmpeg")
-        .args([
-            "-y",
-            "-v", "error",
-            "-f", "rawvideo",
-            "-pix_fmt", "rgb24",
-            "-s", &format!("{w}x{h}"),
-            "-r", &format!("{out_fps:.6}"),
-            "-i", "-",
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-preset", "fast",
-            "-crf", "18",
-            output.to_str().unwrap(),
-        ])
-        .stdin(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .context("ffmpeg encode не запустился")?;
+    let mut enc = spawn_encoder(output, w, h, out_fps)?;
     let mut enc_in = enc.stdin.take().unwrap();
 
     let start = Instant::now();
@@ -203,19 +173,4 @@ pub fn interpolate_video(
         elapsed, ms_per_intermediate
     );
     Ok(Stats { in_frames, out_frames, elapsed, ms_per_intermediate })
-}
-
-// Read exactly `buf.len()` bytes or return None on clean EOF.
-fn read_exact_or_eof<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<Option<()>> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        let n = r.read(&mut buf[filled..])
-            .with_context(|| "чтение кадра из ffmpeg")?;
-        if n == 0 {
-            if filled == 0 { return Ok(None); }
-            return Err(anyhow!("короткое чтение: {}/{} байт (повреждённый поток?)", filled, buf.len()));
-        }
-        filled += n;
-    }
-    Ok(Some(()))
 }
