@@ -1,4 +1,4 @@
-// Framecast custom WebGPU runtime — hand-rolled forward of the 1-block student
+﻿// Framecast custom WebGPU runtime — hand-rolled forward of the 1-block student
 // (block0 of IFNet_m, scale=4, timestep=0.5). The whole frame is ONE command buffer
 // of ~13 dispatches; no per-op JS, no runtime glue. Weights: assets/rt_1blk.{bin,json}
 // (tools/export_rt_weights.py).
@@ -437,6 +437,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
   const useF16 = device.features.has('shader-f16');
+  // channel widths come from the weights themselves (supports slim students)
+  const C1 = weightsManifest['block0.conv0.0.0.weight'].shape[0]; // conv0a out (120 full / 60 slim)
+  const C2 = weightsManifest['block0.conv0.1.0.weight'].shape[0]; // main width (240 full / 120 slim)
+  if (C2 % 4) throw new Error('rt: main width must be /4');
 
   const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
     size: Math.ceil(bytes / 4) * 4,
@@ -480,8 +484,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
   const rgba1 = textureInput ? null : buf(w * h);
   const imgs = buf(6 * w * h);
   const xq = abuf(7 * QH * QW);
-  const f8 = abuf(120 * H8 * W8);
-  const actBytes = 240 * H16 * W16 * (useF16 ? 2 : 4);
+  const f8 = abuf(C1 * H8 * W8);
+  const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
   const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
   const tmp8 = buf(5 * H8 * W8);
   const outp = buf(w * h);
@@ -500,15 +504,15 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     : null;
   const pPrepFull = pipe(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h));
   const pPrepQ = pipe(textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16));
-  const pConv0a = pipe(wgslConv(7, 120, QW, QH, W8, H8, 2, false, useF16));
-  const pConv0b = pipe(wgslConv(120, 240, W8, H8, W16, H16, 2, false, useF16));
+  const pConv0a = pipe(wgslConv(7, C1, QW, QH, W8, H8, 2, false, useF16));
+  const pConv0b = pipe(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16));
   const pConvB = useF16
-    ? pipe(wgslConvRB(240, 240, W16, H16, W16, H16, false))
-    : pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, false, false));
+    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, false))
+    : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, false, false));
   const pConvBR = useF16
-    ? pipe(wgslConvRB(240, 240, W16, H16, W16, H16, true))
-    : pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, true, false));
-  const pDeconv = pipe(wgslDeconv(240, 5, W16, H16, W8, H8, useF16));
+    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true))
+    : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
+  const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(wgslFlowOut(w, h));
 
   // buffer-input prep bind groups (unused in texture mode)
@@ -563,9 +567,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     const stages = [
       ['prepFull', pPrepFull, bgPrepFull, [gx(w), gx(h), 1]],
       ['prepQ', pPrepQ, bgPrepQ, [gx(QW), gx(QH), 1]],
-      ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), 30]],
-      ['conv0b', pConv0b, bgConv0b, [gx(W16), gx(H16), 60]],
-      ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, 60]]),
+      ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), C1 / 4]],
+      ['conv0b', pConv0b, bgConv0b, [gx(W16), gx(H16), C2 / 4]],
+      ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, C2 / 4]]),
       ['deconv', pDeconv, bgDeconv, [gx(W8), gx(H8), 5]],
       ['flow', pFlow, bgFlow, [gx(w), gx(h), 1]],
     ];
@@ -602,14 +606,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     const pass = enc.beginComputePass();
     pass.setPipeline(pPrepFull); pass.setBindGroup(0, bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
     pass.setPipeline(pPrepQ); pass.setBindGroup(0, bgPrepQ); pass.dispatchWorkgroups(gx(QW), gx(QH));
-    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 30);
-    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 60);
+    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), C1 / 4);
+    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
     pass.end();
     // residual copy AFTER conv0b (f16r = f16a snapshot)
     enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
     const pass2 = enc.beginComputePass();
     for (const { p, g } of bgB) {
-      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, 60);
+      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
     }
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
     pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));
@@ -645,13 +649,13 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     for (let i = 0; i < ts.length; i++) {
       const pass = enc.beginComputePass();
       pass.setPipeline(pPrepQ); pass.setBindGroup(0, tbg ? tbg.q[i] : bgPrepQt[i]); pass.dispatchWorkgroups(gx(QW), gx(QH));
-      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 30);
-      pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 60);
+      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), C1 / 4);
+      pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
       pass.end();
       enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
       const pass2 = enc.beginComputePass();
       for (const { p, g } of bgB) {
-        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, 60);
+        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
       }
       pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
       pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));

@@ -1,0 +1,767 @@
+{
+  "block0.conv0.0.0.weight": [
+    60,
+    7,
+    3,
+    3
+  ],
+  "block0.conv0.0.0.bias": [
+    60
+  ],
+  "block0.conv0.0.1.weight": [
+    60
+  ],
+  "block0.conv0.1.0.weight": [
+    120,
+    60,
+    3,
+    3
+  ],
+  "block0.conv0.1.0.bias": [
+    120
+  ],
+  "block0.conv0.1.1.weight": [
+    120
+  ],
+  "block0.convblock.0.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.0.0.bias": [
+    120
+  ],
+  "block0.convblock.0.1.weight": [
+    120
+  ],
+  "block0.convblock.1.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.1.0.bias": [
+    120
+  ],
+  "block0.convblock.1.1.weight": [
+    120
+  ],
+  "block0.convblock.2.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.2.0.bias": [
+    120
+  ],
+  "block0.convblock.2.1.weight": [
+    120
+  ],
+  "block0.convblock.3.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.3.0.bias": [
+    120
+  ],
+  "block0.convblock.3.1.weight": [
+    120
+  ],
+  "block0.convblock.4.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.4.0.bias": [
+    120
+  ],
+  "block0.convblock.4.1.weight": [
+    120
+  ],
+  "block0.convblock.5.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.5.0.bias": [
+    120
+  ],
+  "block0.convblock.5.1.weight": [
+    120
+  ],
+  "block0.convblock.6.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.6.0.bias": [
+    120
+  ],
+  "block0.convblock.6.1.weight": [
+    120
+  ],
+  "block0.convblock.7.0.weight": [
+    120,
+    120,
+    3,
+    3
+  ],
+  "block0.convblock.7.0.bias": [
+    120
+  ],
+  "block0.convblock.7.1.weight": [
+    120
+  ],
+  "block0.lastconv.weight": [
+    120,
+    5,
+    4,
+    4
+  ],
+  "block0.lastconv.bias": [
+    5
+  ],
+  "block1.conv0.0.0.weight": [
+    75,
+    18,
+    3,
+    3
+  ],
+  "block1.conv0.0.0.bias": [
+    75
+  ],
+  "block1.conv0.0.1.weight": [
+    75
+  ],
+  "block1.conv0.1.0.weight": [
+    150,
+    75,
+    3,
+    3
+  ],
+  "block1.conv0.1.0.bias": [
+    150
+  ],
+  "block1.conv0.1.1.weight": [
+    150
+  ],
+  "block1.convblock.0.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.0.0.bias": [
+    150
+  ],
+  "block1.convblock.0.1.weight": [
+    150
+  ],
+  "block1.convblock.1.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.1.0.bias": [
+    150
+  ],
+  "block1.convblock.1.1.weight": [
+    150
+  ],
+  "block1.convblock.2.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.2.0.bias": [
+    150
+  ],
+  "block1.convblock.2.1.weight": [
+    150
+  ],
+  "block1.convblock.3.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.3.0.bias": [
+    150
+  ],
+  "block1.convblock.3.1.weight": [
+    150
+  ],
+  "block1.convblock.4.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.4.0.bias": [
+    150
+  ],
+  "block1.convblock.4.1.weight": [
+    150
+  ],
+  "block1.convblock.5.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.5.0.bias": [
+    150
+  ],
+  "block1.convblock.5.1.weight": [
+    150
+  ],
+  "block1.convblock.6.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.6.0.bias": [
+    150
+  ],
+  "block1.convblock.6.1.weight": [
+    150
+  ],
+  "block1.convblock.7.0.weight": [
+    150,
+    150,
+    3,
+    3
+  ],
+  "block1.convblock.7.0.bias": [
+    150
+  ],
+  "block1.convblock.7.1.weight": [
+    150
+  ],
+  "block1.lastconv.weight": [
+    150,
+    5,
+    4,
+    4
+  ],
+  "block1.lastconv.bias": [
+    5
+  ],
+  "block2.conv0.0.0.weight": [
+    45,
+    18,
+    3,
+    3
+  ],
+  "block2.conv0.0.0.bias": [
+    45
+  ],
+  "block2.conv0.0.1.weight": [
+    45
+  ],
+  "block2.conv0.1.0.weight": [
+    90,
+    45,
+    3,
+    3
+  ],
+  "block2.conv0.1.0.bias": [
+    90
+  ],
+  "block2.conv0.1.1.weight": [
+    90
+  ],
+  "block2.convblock.0.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.0.0.bias": [
+    90
+  ],
+  "block2.convblock.0.1.weight": [
+    90
+  ],
+  "block2.convblock.1.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.1.0.bias": [
+    90
+  ],
+  "block2.convblock.1.1.weight": [
+    90
+  ],
+  "block2.convblock.2.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.2.0.bias": [
+    90
+  ],
+  "block2.convblock.2.1.weight": [
+    90
+  ],
+  "block2.convblock.3.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.3.0.bias": [
+    90
+  ],
+  "block2.convblock.3.1.weight": [
+    90
+  ],
+  "block2.convblock.4.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.4.0.bias": [
+    90
+  ],
+  "block2.convblock.4.1.weight": [
+    90
+  ],
+  "block2.convblock.5.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.5.0.bias": [
+    90
+  ],
+  "block2.convblock.5.1.weight": [
+    90
+  ],
+  "block2.convblock.6.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.6.0.bias": [
+    90
+  ],
+  "block2.convblock.6.1.weight": [
+    90
+  ],
+  "block2.convblock.7.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block2.convblock.7.0.bias": [
+    90
+  ],
+  "block2.convblock.7.1.weight": [
+    90
+  ],
+  "block2.lastconv.weight": [
+    90,
+    5,
+    4,
+    4
+  ],
+  "block2.lastconv.bias": [
+    5
+  ],
+  "block_tea.conv0.0.0.weight": [
+    45,
+    21,
+    3,
+    3
+  ],
+  "block_tea.conv0.0.0.bias": [
+    45
+  ],
+  "block_tea.conv0.0.1.weight": [
+    45
+  ],
+  "block_tea.conv0.1.0.weight": [
+    90,
+    45,
+    3,
+    3
+  ],
+  "block_tea.conv0.1.0.bias": [
+    90
+  ],
+  "block_tea.conv0.1.1.weight": [
+    90
+  ],
+  "block_tea.convblock.0.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.0.0.bias": [
+    90
+  ],
+  "block_tea.convblock.0.1.weight": [
+    90
+  ],
+  "block_tea.convblock.1.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.1.0.bias": [
+    90
+  ],
+  "block_tea.convblock.1.1.weight": [
+    90
+  ],
+  "block_tea.convblock.2.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.2.0.bias": [
+    90
+  ],
+  "block_tea.convblock.2.1.weight": [
+    90
+  ],
+  "block_tea.convblock.3.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.3.0.bias": [
+    90
+  ],
+  "block_tea.convblock.3.1.weight": [
+    90
+  ],
+  "block_tea.convblock.4.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.4.0.bias": [
+    90
+  ],
+  "block_tea.convblock.4.1.weight": [
+    90
+  ],
+  "block_tea.convblock.5.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.5.0.bias": [
+    90
+  ],
+  "block_tea.convblock.5.1.weight": [
+    90
+  ],
+  "block_tea.convblock.6.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.6.0.bias": [
+    90
+  ],
+  "block_tea.convblock.6.1.weight": [
+    90
+  ],
+  "block_tea.convblock.7.0.weight": [
+    90,
+    90,
+    3,
+    3
+  ],
+  "block_tea.convblock.7.0.bias": [
+    90
+  ],
+  "block_tea.convblock.7.1.weight": [
+    90
+  ],
+  "block_tea.lastconv.weight": [
+    90,
+    5,
+    4,
+    4
+  ],
+  "block_tea.lastconv.bias": [
+    5
+  ],
+  "contextnet.conv1.conv1.0.weight": [
+    16,
+    3,
+    3,
+    3
+  ],
+  "contextnet.conv1.conv1.0.bias": [
+    16
+  ],
+  "contextnet.conv1.conv1.1.weight": [
+    16
+  ],
+  "contextnet.conv1.conv2.0.weight": [
+    16,
+    16,
+    3,
+    3
+  ],
+  "contextnet.conv1.conv2.0.bias": [
+    16
+  ],
+  "contextnet.conv1.conv2.1.weight": [
+    16
+  ],
+  "contextnet.conv2.conv1.0.weight": [
+    32,
+    16,
+    3,
+    3
+  ],
+  "contextnet.conv2.conv1.0.bias": [
+    32
+  ],
+  "contextnet.conv2.conv1.1.weight": [
+    32
+  ],
+  "contextnet.conv2.conv2.0.weight": [
+    32,
+    32,
+    3,
+    3
+  ],
+  "contextnet.conv2.conv2.0.bias": [
+    32
+  ],
+  "contextnet.conv2.conv2.1.weight": [
+    32
+  ],
+  "contextnet.conv3.conv1.0.weight": [
+    64,
+    32,
+    3,
+    3
+  ],
+  "contextnet.conv3.conv1.0.bias": [
+    64
+  ],
+  "contextnet.conv3.conv1.1.weight": [
+    64
+  ],
+  "contextnet.conv3.conv2.0.weight": [
+    64,
+    64,
+    3,
+    3
+  ],
+  "contextnet.conv3.conv2.0.bias": [
+    64
+  ],
+  "contextnet.conv3.conv2.1.weight": [
+    64
+  ],
+  "contextnet.conv4.conv1.0.weight": [
+    128,
+    64,
+    3,
+    3
+  ],
+  "contextnet.conv4.conv1.0.bias": [
+    128
+  ],
+  "contextnet.conv4.conv1.1.weight": [
+    128
+  ],
+  "contextnet.conv4.conv2.0.weight": [
+    128,
+    128,
+    3,
+    3
+  ],
+  "contextnet.conv4.conv2.0.bias": [
+    128
+  ],
+  "contextnet.conv4.conv2.1.weight": [
+    128
+  ],
+  "unet.down0.conv1.0.weight": [
+    32,
+    17,
+    3,
+    3
+  ],
+  "unet.down0.conv1.0.bias": [
+    32
+  ],
+  "unet.down0.conv1.1.weight": [
+    32
+  ],
+  "unet.down0.conv2.0.weight": [
+    32,
+    32,
+    3,
+    3
+  ],
+  "unet.down0.conv2.0.bias": [
+    32
+  ],
+  "unet.down0.conv2.1.weight": [
+    32
+  ],
+  "unet.down1.conv1.0.weight": [
+    64,
+    64,
+    3,
+    3
+  ],
+  "unet.down1.conv1.0.bias": [
+    64
+  ],
+  "unet.down1.conv1.1.weight": [
+    64
+  ],
+  "unet.down1.conv2.0.weight": [
+    64,
+    64,
+    3,
+    3
+  ],
+  "unet.down1.conv2.0.bias": [
+    64
+  ],
+  "unet.down1.conv2.1.weight": [
+    64
+  ],
+  "unet.down2.conv1.0.weight": [
+    128,
+    128,
+    3,
+    3
+  ],
+  "unet.down2.conv1.0.bias": [
+    128
+  ],
+  "unet.down2.conv1.1.weight": [
+    128
+  ],
+  "unet.down2.conv2.0.weight": [
+    128,
+    128,
+    3,
+    3
+  ],
+  "unet.down2.conv2.0.bias": [
+    128
+  ],
+  "unet.down2.conv2.1.weight": [
+    128
+  ],
+  "unet.down3.conv1.0.weight": [
+    256,
+    256,
+    3,
+    3
+  ],
+  "unet.down3.conv1.0.bias": [
+    256
+  ],
+  "unet.down3.conv1.1.weight": [
+    256
+  ],
+  "unet.down3.conv2.0.weight": [
+    256,
+    256,
+    3,
+    3
+  ],
+  "unet.down3.conv2.0.bias": [
+    256
+  ],
+  "unet.down3.conv2.1.weight": [
+    256
+  ],
+  "unet.up0.0.weight": [
+    512,
+    128,
+    4,
+    4
+  ],
+  "unet.up0.0.bias": [
+    128
+  ],
+  "unet.up0.1.weight": [
+    128
+  ],
+  "unet.up1.0.weight": [
+    256,
+    64,
+    4,
+    4
+  ],
+  "unet.up1.0.bias": [
+    64
+  ],
+  "unet.up1.1.weight": [
+    64
+  ],
+  "unet.up2.0.weight": [
+    128,
+    32,
+    4,
+    4
+  ],
+  "unet.up2.0.bias": [
+    32
+  ],
+  "unet.up2.1.weight": [
+    32
+  ],
+  "unet.up3.0.weight": [
+    64,
+    16,
+    4,
+    4
+  ],
+  "unet.up3.0.bias": [
+    16
+  ],
+  "unet.up3.1.weight": [
+    16
+  ],
+  "unet.conv.weight": [
+    3,
+    16,
+    3,
+    3
+  ],
+  "unet.conv.bias": [
+    3
+  ]
+}

@@ -216,6 +216,8 @@ def main():
                     help="IFBlock scales, e.g. '4,2' (2 blocks), '8,4', '4' (1 block)")
     ap.add_argument("--arbitrary-t", action="store_true",
                     help="mix stride-4 samples with t=0.25/0.5/0.75 (keeps timestep alive)")
+    ap.add_argument("--slim", type=int, default=0,
+                    help="shrink block0 width to C (e.g. 120), init by slicing the loaded weights")
     args = ap.parse_args()
     scales = tuple(int(s) for s in args.scales.split(","))
     prefixes = tuple(f"block{i}." for i in range(len(scales)))
@@ -239,6 +241,27 @@ def main():
     teacher_sd = {k: v.cpu() for k, v in teacher.state_dict().items()}
 
     student = load_ifnet(args.resume if args.resume else args.weights, device)
+    if args.slim:
+        # thin-channel block0: slice the first C channels of the loaded weights as init —
+        # crude, but distillation recovers; the slim block is what gets trained/exported
+        from model.IFNet_m import IFBlock
+        C = args.slim
+        src = student.block0
+        blk = IFBlock(7, c=C).to(device)
+        with torch.no_grad():
+            blk.conv0[0][0].weight.copy_(src.conv0[0][0].weight[: C // 2])
+            blk.conv0[0][0].bias.copy_(src.conv0[0][0].bias[: C // 2])
+            blk.conv0[0][1].weight.copy_(src.conv0[0][1].weight[: C // 2])
+            blk.conv0[1][0].weight.copy_(src.conv0[1][0].weight[:C, : C // 2])
+            blk.conv0[1][0].bias.copy_(src.conv0[1][0].bias[:C])
+            blk.conv0[1][1].weight.copy_(src.conv0[1][1].weight[:C])
+            for i in range(8):
+                blk.convblock[i][0].weight.copy_(src.convblock[i][0].weight[:C, :C])
+                blk.convblock[i][0].bias.copy_(src.convblock[i][0].bias[:C])
+                blk.convblock[i][1].weight.copy_(src.convblock[i][1].weight[:C])
+            blk.lastconv.weight.copy_(src.lastconv.weight[:C])
+            blk.lastconv.bias.copy_(src.lastconv.bias)
+        student.block0 = blk
     # only the blocks the student actually runs are trained; freeze the rest
     for name, p in student.named_parameters():
         p.requires_grad_(name.startswith(prefixes))

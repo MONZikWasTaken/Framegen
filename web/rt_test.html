@@ -30,14 +30,18 @@ async function imgRGBA(url, w, h) {
     const device = await adapter.requestDevice({ requiredFeatures: feats });
     log('adapter OK, features: ' + feats.join(','));
 
+    const q = new URLSearchParams(location.search);
+    const stem = q.get('bin') || 'rt_1blk';         // ?bin=rt_slim for the thin student
+    const expFile = q.get('exp') || 'rt_expected_256.rgb';
+    log('weights: ' + stem + ', reference: ' + expFile);
     const [bin, man] = await Promise.all([
-      fetch('/assets/rt_1blk.bin').then(r => r.arrayBuffer()),
-      fetch('/assets/rt_1blk.json').then(r => r.json())]);
+      fetch('/assets/' + stem + '.bin').then(r => r.arrayBuffer()),
+      fetch('/assets/' + stem + '.json').then(r => r.json())]);
     const rt = await createRT(device, { w: W, h: H, weightsBin: bin, weightsManifest: man });
     log('runtime created (weights ' + (bin.byteLength >> 20) + ' MB)');
 
     const [a, b] = await Promise.all([imgRGBA('/demo/I0_0.png', W, H), imgRGBA('/demo/I0_1.png', W, H)]);
-    const exp = new Uint8Array(await fetch('/demo/rt_expected_256.rgb').then(r => r.arrayBuffer()));
+    const exp = new Uint8Array(await fetch('/demo/' + expFile).then(r => r.arrayBuffer()));
 
     const out = await rt.run(a, b); // rgba
     // compare rgb vs expected

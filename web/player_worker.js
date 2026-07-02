@@ -17,12 +17,12 @@ const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [192
 // mids ladder, best quality first; est = initial ms guess (learned at runtime).
 // rt = our own WebGPU runtime (1blk model): bit-exact, no flags, ~3-6x faster than ort.
 const LADDER = [
-  { key: 'rt@1080',     kind: 'rt',  q: 'turbo',   res: 1080, est: 58 },
+  { key: 'rt@1080',     kind: 'rt',  q: 'turbo',   res: 1080, est: 24 },
   { key: 'fastest@720', kind: 'f32', q: 'fastest', res: 720, est: 150 },
-  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 27 },
+  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 11 },
   { key: 'fastest@480', kind: 'f32', q: 'fastest', res: 480, est: 60 },
-  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 13 },
-  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 7 },
+  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 5 },
+  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 3 },
 ];
 const F32 = {
   turbo:   { 360: { url: '/assets/rife_lite_360p_1blk_s4_student1b.onnx', ew: 640, eh: 384 },
@@ -76,10 +76,19 @@ async function ensureRtDevice() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const f16 = adapter.features.has('shader-f16');
   rtDevice = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
-  const [bin, man] = await Promise.all([
-    fetch('/assets/rt_1blk.bin').then(r => r.arrayBuffer()),
-    fetch('/assets/rt_1blk.json').then(r => r.json())]);
-  rtWeights = { bin, man };
+  // slim (120-wide) student: ~3x faster mids at -0.35dB, 4MB of weights;
+  // falls back to the full-width blob if the slim one is not deployed
+  for (const stem of ['rt_slim', 'rt_1blk']) {
+    try {
+      const [bin, man] = await Promise.all([
+        fetch(`/assets/${stem}.bin`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
+        fetch(`/assets/${stem}.json`).then(r => { if (!r.ok) throw 0; return r.json(); })]);
+      rtWeights = { bin, man };
+      postMessage({ type: 'log', msg: 'rt-веса: ' + stem + ' (' + (bin.byteLength >> 20) + 'МБ)' });
+      return;
+    } catch { /* next */ }
+  }
+  throw new Error('rt weights not found');
 }
 
 // ---- GPU frame path: bitmaps upload straight into textures, dedup runs on the GPU ----
