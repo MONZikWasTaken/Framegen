@@ -25,9 +25,10 @@ async function imgRGBA(url, w, h) {
   try {
     const W = 448, H = 256;
     if (!navigator.gpu) { log('НЕТ WebGPU'); return; }
-    const adapter = await navigator.gpu.requestAdapter();
-    const device = await adapter.requestDevice();
-    log('adapter OK');
+    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+    const feats = ['shader-f16', 'timestamp-query'].filter(f => adapter.features.has(f));
+    const device = await adapter.requestDevice({ requiredFeatures: feats });
+    log('adapter OK, features: ' + feats.join(','));
 
     const [bin, man] = await Promise.all([
       fetch('/assets/rt_1blk.bin').then(r => r.arrayBuffer()),
@@ -75,6 +76,7 @@ async function imgRGBA(url, w, h) {
     for (let i = 0; i < 15; i++) { const t = performance.now(); await rt720.run(za, zb); t7.push(performance.now() - t); }
     t7.sort((x, y) => x - y);
     log(`<b>bench 1280x720: p50=${t7[7].toFixed(1)}ms p10=${t7[1].toFixed(1)}ms fps=${(1000 / t7[7]).toFixed(1)}</b>`);
+    log('profile 720p: ' + await rt720.profile(za, zb));
     log('DONE');
   } catch (e) { log('<span style="color:#f66">FATAL: ' + (e.stack || e.message || e) + '</span>'); }
 })();

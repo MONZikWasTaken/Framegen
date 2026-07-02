@@ -37,12 +37,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-function wgslPrepQuarter(W, H) {
+function wgslPrepQuarter(W, H, f16) {
   const QW = W / 4, QH = H / 4;
+  const T = f16 ? 'f16' : 'f32';
   return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
 @group(0) @binding(0) var<storage, read> rgba0: array<u32>;
 @group(0) @binding(1) var<storage, read> rgba1: array<u32>;
-@group(0) @binding(2) var<storage, read_write> xq: array<f32>;    // [7,${QH},${QW}]
+@group(0) @binding(2) var<storage, read_write> xq: array<${T}>;    // [7,${QH},${QW}]
 @group(0) @binding(3) var<storage, read> tstep: array<f32>;       // [1] timestep
 
 fn px(buf: i32, x: i32, y: i32) -> vec3<f32> {
@@ -71,51 +73,234 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let c1 = sampleQ(1, sx, sy);
   let o = y * ${QW} + x;
   let P = ${QH * QW};
-  xq[o] = c0.z; xq[P + o] = c0.y; xq[2 * P + o] = c0.x;
-  xq[3 * P + o] = c1.z; xq[4 * P + o] = c1.y; xq[5 * P + o] = c1.x;
-  xq[6 * P + o] = tstep[0]; // timestep
+  xq[o] = ${T}(c0.z); xq[P + o] = ${T}(c0.y); xq[2 * P + o] = ${T}(c0.x);
+  xq[3 * P + o] = ${T}(c1.z); xq[4 * P + o] = ${T}(c1.y); xq[5 * P + o] = ${T}(c1.x);
+  xq[6 * P + o] = ${T}(tstep[0]); // timestep
 }`;
 }
 
-// generic conv3x3 (stride 1 or 2) + bias + PReLU, optional residual add (post-activation)
-function wgslConv(CI, CO, IW, IH, OW, OH, stride, residual) {
+// conv3x3 (stride 1/2) + bias + PReLU, optional residual add (post-activation).
+// v3: COC output channels per thread (src reads amortized), weight slab staged through
+// workgroup memory, and optional f16 storage for activations+weights (accumulation
+// stays f32) — halves the traffic on the bandwidth-bound conv stack.
+function wgslConv(CI, CO, IW, IH, OW, OH, stride, residual, f16) {
+  const COC = CO % 4 === 0 ? 4 : 1;       // channels per thread
+  const SLAB = Math.min(CI, 30);          // ci per staging round (fits 16KB wg memory)
+  const slabFloats = COC * SLAB * 9;
+  const T = f16 ? 'f16' : 'f32';
   return /* wgsl */`
-@group(0) @binding(0) var<storage, read> src: array<f32>;      // [${CI},${IH},${IW}]
-@group(0) @binding(1) var<storage, read> wgt: array<f32>;      // [${CO},${CI},3,3]
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var<storage, read> src: array<${T}>;      // [${CI},${IH},${IW}]
+@group(0) @binding(1) var<storage, read> wgt: array<${T}>;      // [${CO},${CI},3,3]
 @group(0) @binding(2) var<storage, read> bias: array<f32>;     // [${CO}]
 @group(0) @binding(3) var<storage, read> alpha: array<f32>;    // [${CO}] prelu
-@group(0) @binding(4) var<storage, read_write> dst: array<f32>; // [${CO},${OH},${OW}]
-${residual ? `@group(0) @binding(5) var<storage, read> res: array<f32>;` : ``}
+@group(0) @binding(4) var<storage, read_write> dst: array<${T}>; // [${CO},${OH},${OW}]
+${residual ? `@group(0) @binding(5) var<storage, read> res: array<${T}>;` : ``}
+
+var<workgroup> wsh: array<${T}, ${slabFloats}>; // [COC, SLAB, 9] slab of weights
+${stride === 1 ? `var<workgroup> tile: array<${T}, ${SLAB * 100}>; // [SLAB, 10, 10] input tiles (8x8 out + halo)` : ''}
 
 @compute @workgroup_size(${WG}, ${WG}, 1)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let x = i32(gid.x); let y = i32(gid.y); let co = i32(gid.z);
-  if (x >= ${OW} || y >= ${OH}) { return; }
-  var acc = bias[co];
-  let wbase = co * ${CI * 9};
-  for (var ci = 0; ci < ${CI}; ci++) {
-    let sbase = ci * ${IH * IW};
-    let wb = wbase + ci * 9;
-    for (var ky = 0; ky < 3; ky++) {
-      let iy = y * ${stride} + ky - 1;
-      if (iy < 0 || iy >= ${IH}) { continue; }
-      for (var kx = 0; kx < 3; kx++) {
-        let ix = x * ${stride} + kx - 1;
-        if (ix < 0 || ix >= ${IW}) { continue; }
-        acc += src[sbase + iy * ${IW} + ix] * wgt[wb + ky * 3 + kx];
+fn main(@builtin(global_invocation_id) gid: vec3<u32>,
+        @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wid: vec3<u32>,
+        @builtin(local_invocation_index) li: u32) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  let lx = i32(lid.x); let ly = i32(lid.y);
+  let wx0 = i32(wid.x) * ${WG}; let wy0 = i32(wid.y) * ${WG};
+  let cb = i32(gid.z) * ${COC}; // first output channel of this thread's block
+  let inb = x < ${OW} && y < ${OH};
+  var acc: array<f32, ${COC}>;
+  for (var c = 0; c < ${COC}; c++) { acc[c] = bias[cb + c]; }
+
+  for (var s = 0; s < ${CI}; s += ${SLAB}) {
+    let sl = min(${SLAB}, ${CI} - s);
+    let n = ${COC} * sl * 9;
+    workgroupBarrier();
+    // cooperative load: weights for [cb..cb+COC) x [s..s+sl) x 9
+    var idx = i32(li);
+    while (idx < n) {
+      let c = idx / (sl * 9);
+      let r = idx % (sl * 9);
+      wsh[idx] = wgt[(cb + c) * ${CI * 9} + (s + r / 9) * 9 + r % 9];
+      idx += ${WG * WG};
+    }
+    workgroupBarrier();
+${stride === 1 ? `
+    // stride-1 path: stage 10x10 input tiles for the WHOLE ci-slab at once — barriers
+    // per slab (16/conv) instead of per channel (480/conv), values reused 9x from shared
+    var ti = i32(li);
+    let tn = sl * 100;
+    while (ti < tn) {
+      let ci = ti / 100;
+      let r = ti % 100;
+      let ty = wy0 + r / 10 - 1;
+      let tx = wx0 + r % 10 - 1;
+      var v = ${T}(0.0);
+      if (ty >= 0 && ty < ${IH} && tx >= 0 && tx < ${IW}) {
+        v = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
+      }
+      tile[ti] = v;
+      ti += ${WG * WG};
+    }
+    workgroupBarrier();
+    if (inb) {
+      for (var ci = 0; ci < sl; ci++) {
+        let tb = ci * 100;
+        for (var ky = 0; ky < 3; ky++) {
+          for (var kx = 0; kx < 3; kx++) {
+            let sv = f32(tile[tb + (ly + ky) * 10 + lx + kx]);
+            let wb = ci * 9 + ky * 3 + kx;
+            for (var c = 0; c < ${COC}; c++) {
+              acc[c] += sv * f32(wsh[c * (sl * 9) + wb]);
+            }
+          }
+        }
+      }
+    }
+  }` : `
+    if (inb) {
+      for (var ci = 0; ci < sl; ci++) {
+        let sbase = (s + ci) * ${IH * IW};
+        for (var ky = 0; ky < 3; ky++) {
+          let iy = y * ${stride} + ky - 1;
+          if (iy < 0 || iy >= ${IH}) { continue; }
+          for (var kx = 0; kx < 3; kx++) {
+            let ix = x * ${stride} + kx - 1;
+            if (ix < 0 || ix >= ${IW}) { continue; }
+            let sv = f32(src[sbase + iy * ${IW} + ix]);
+            let wb = ci * 9 + ky * 3 + kx;
+            for (var c = 0; c < ${COC}; c++) {
+              acc[c] += sv * f32(wsh[c * (sl * 9) + wb]);
+            }
+          }
+        }
+      }
+    }
+  }`}
+  if (!inb) { return; }
+  for (var c = 0; c < ${COC}; c++) {
+    let co = cb + c;
+    let v = select(alpha[co] * acc[c], acc[c], acc[c] >= 0.0);
+    let o = co * ${OH * OW} + y * ${OW} + x;
+    dst[o] = ${T}(${residual ? `v + f32(res[o])` : `v`});
+  }
+}`;
+}
+
+// register-blocked conv3x3 s1 (f16 storage): each thread computes a 2x2 pixel patch x
+// 4 output channels (16 accumulators) — every shared read now feeds 4 FMAs instead of ~1.
+// Workgroup = 8x8 threads = 16x16 output tile; input tiles 18x18 per ci staged per slab.
+function wgslConvRB(CI, CO, IW, IH, OW, OH, residual) {
+  const COC = 4, SLAB = 20;
+  const slabW = COC * SLAB * 9;      // f16 weights in shared
+  const slabT = SLAB * 324;          // 18x18 tiles
+  return /* wgsl */`
+enable f16;
+@group(0) @binding(0) var<storage, read> src: array<f16>;
+@group(0) @binding(1) var<storage, read> wgt: array<f16>;
+@group(0) @binding(2) var<storage, read> bias: array<f32>;
+@group(0) @binding(3) var<storage, read> alpha: array<f32>;
+@group(0) @binding(4) var<storage, read_write> dst: array<f16>;
+${residual ? `@group(0) @binding(5) var<storage, read> res: array<f16>;` : ``}
+
+var<workgroup> wsh: array<f16, ${slabW}>;
+var<workgroup> tile: array<f16, ${slabT}>;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wid: vec3<u32>,
+        @builtin(local_invocation_index) li: u32) {
+  let lx = i32(lid.x); let ly = i32(lid.y);
+  let ox0 = i32(wid.x) * 16; let oy0 = i32(wid.y) * 16;   // wg output origin
+  let x0 = ox0 + lx * 2; let y0 = oy0 + ly * 2;           // this thread's 2x2 patch
+  let cb = i32(wid.z) * ${COC};
+  var acc: array<f32, ${COC * 4}>; // [co][py*2+px]
+  for (var c = 0; c < ${COC}; c++) {
+    let b = bias[cb + c];
+    acc[c * 4] = b; acc[c * 4 + 1] = b; acc[c * 4 + 2] = b; acc[c * 4 + 3] = b;
+  }
+
+  for (var s = 0; s < ${CI}; s += ${SLAB}) {
+    let sl = min(${SLAB}, ${CI} - s);
+    workgroupBarrier();
+    var idx = i32(li);
+    let wn = ${COC} * sl * 9;
+    while (idx < wn) {
+      let c = idx / (sl * 9);
+      let r = idx % (sl * 9);
+      wsh[idx] = wgt[(cb + c) * ${CI * 9} + (s + r / 9) * 9 + r % 9];
+      idx += 64;
+    }
+    var ti = i32(li);
+    let tn = sl * 324;
+    while (ti < tn) {
+      let ci = ti / 324;
+      let r = ti % 324;
+      let ty = oy0 + r / 18 - 1;
+      let tx = ox0 + r % 18 - 1;
+      var v = f16(0.0);
+      if (ty >= 0 && ty < ${IH} && tx >= 0 && tx < ${IW}) {
+        v = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
+      }
+      tile[ti] = v;
+      ti += 64;
+    }
+    workgroupBarrier();
+    for (var ci = 0; ci < sl; ci++) {
+      let tb = ci * 324 + (ly * 2) * 18 + lx * 2; // top-left of this thread's 4x4 window
+      for (var ky = 0; ky < 3; ky++) {
+        let rb = tb + ky * 18;
+        for (var kx = 0; kx < 3; kx++) {
+          let t00 = f32(tile[rb + kx]);
+          let t01 = f32(tile[rb + kx + 1]);
+          let t10 = f32(tile[rb + kx + 18]);
+          let t11 = f32(tile[rb + kx + 19]);
+          let wb = ci * 9 + ky * 3 + kx;
+          for (var c = 0; c < ${COC}; c++) {
+            let wv = f32(wsh[c * (sl * 9) + wb]);
+            acc[c * 4] += t00 * wv;
+            acc[c * 4 + 1] += t01 * wv;
+            acc[c * 4 + 2] += t10 * wv;
+            acc[c * 4 + 3] += t11 * wv;
+          }
+        }
       }
     }
   }
-  let v = select(alpha[co] * acc, acc, acc >= 0.0);
-  let o = co * ${OH * OW} + y * ${OW} + x;
-  dst[o] = ${residual ? `v + res[o]` : `v`};
+  for (var c = 0; c < ${COC}; c++) {
+    let co = cb + c;
+    let al = alpha[co];
+    for (var p = 0; p < 4; p++) {
+      let x = x0 + (p & 1);
+      let y = y0 + (p >> 1);
+      if (x >= ${OW} || y >= ${OH}) { continue; }
+      let a = acc[c * 4 + p];
+      let v = select(al * a, a, a >= 0.0);
+      let o = co * ${OH * OW} + y * ${OW} + x;
+      dst[o] = f16(${residual ? `v + f32(res[o])` : `v`});
+    }
+  }
 }`;
 }
 
-// ConvTranspose2d 4x4 stride2 pad1, no activation. Weight layout [CI, CO, 4, 4].
-function wgslDeconv(CI, CO, IW, IH, OW, OH) {
-  return /* wgsl */`
+// one-shot f32 -> f16 conversion (weights at init)
+const WGSL_TO_F16 = /* wgsl */`
+enable f16;
 @group(0) @binding(0) var<storage, read> src: array<f32>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f16>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i < arrayLength(&src)) { dst[i] = f16(src[i]); }
+}`;
+
+// ConvTranspose2d 4x4 stride2 pad1, no activation. Weight layout [CI, CO, 4, 4].
+function wgslDeconv(CI, CO, IW, IH, OW, OH, f16src) {
+  const T = f16src ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16src ? 'enable f16;' : ''}
+@group(0) @binding(0) var<storage, read> src: array<${T}>;
 @group(0) @binding(1) var<storage, read> wgt: array<f32>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
@@ -136,7 +321,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let ix = tx / 2;
       if (ix >= ${IW}) { continue; }
       for (var ci = 0; ci < ${CI}; ci++) {
-        acc += src[ci * ${IH * IW} + iy * ${IW} + ix]
+        acc += f32(src[ci * ${IH * IW} + iy * ${IW} + ix])
              * wgt[ci * ${CO * 16} + co * 16 + ky * 4 + kx];
       }
     }
@@ -204,11 +389,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
+  const useF16 = device.features.has('shader-f16');
 
-  const buf = (n, usage = GPUBufferUsage.STORAGE) =>
-    device.createBuffer({ size: n * 4, usage: usage | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
+    size: Math.ceil(bytes / 4) * 4,
+    usage: usage | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  const buf = (n) => bufBytes(n * 4);
+  const abuf = (n) => bufBytes(n * (useF16 ? 2 : 4)); // activation dtype
 
-  // weights
+  const mod = (code) => device.createShaderModule({ code });
+  const pipe = (code, entry = 'main') => device.createComputePipeline({
+    layout: 'auto', compute: { module: mod(code), entryPoint: entry } });
+  const bg = (p, entries) => device.createBindGroup({
+    layout: p.getBindGroupLayout(0),
+    entries: entries.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+
+  // weights (f32 upload; conv weights get f16 copies when supported)
   const man = weightsManifest;
   const wbuf = {};
   for (const [name, m] of Object.entries(man)) {
@@ -216,48 +412,67 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
     wbuf[name] = buf(n);
     device.queue.writeBuffer(wbuf[name], 0, weightsBin, m.offset * 4, n * 4);
   }
+  const convW = (name) => {
+    if (!useF16) return wbuf[name];
+    const n = man[name].shape.reduce((a, b) => a * b, 1);
+    const half = bufBytes(n * 2);
+    const p = pipe(WGSL_TO_F16);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(p);
+    pass.setBindGroup(0, bg(p, [wbuf[name], half]));
+    pass.dispatchWorkgroups(Math.ceil(n / 256));
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    return half;
+  };
 
-  // activations
+  // activations (f16 when supported), fixed f32 elsewhere
   const tbuf = buf(1);
   const rgba0 = buf(w * h), rgba1 = buf(w * h);
   const imgs = buf(6 * w * h);
-  const xq = buf(7 * QH * QW);
-  const f8 = buf(120 * H8 * W8);
-  const f16a = buf(240 * H16 * W16), f16b = buf(240 * H16 * W16), f16r = buf(240 * H16 * W16);
+  const xq = abuf(7 * QH * QW);
+  const f8 = abuf(120 * H8 * W8);
+  const actBytes = 240 * H16 * W16 * (useF16 ? 2 : 4);
+  const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
   const tmp8 = buf(5 * H8 * W8);
   const outp = buf(w * h);
   const staging = device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-
-  const mod = (code) => device.createShaderModule({ code });
-  const pipe = (code, entry = 'main') => device.createComputePipeline({
-    layout: 'auto', compute: { module: mod(code), entryPoint: entry } });
+  // slots for batched multi-t runs (factor N: upload once, N-1 mids in ONE submit)
+  const MAXT = 5;
+  const tbufs = [], stagings = [];
+  for (let i = 0; i < MAXT; i++) {
+    tbufs.push(buf(1));
+    stagings.push(device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+  }
 
   const pPrepFull = pipe(wgslPrepFull(w, h));
-  const pPrepQ = pipe(wgslPrepQuarter(w, h));
-  const pConv0a = pipe(wgslConv(7, 120, QW, QH, W8, H8, 2, false));
-  const pConv0b = pipe(wgslConv(120, 240, W8, H8, W16, H16, 2, false));
-  const pConvB = pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, false));
-  const pConvBR = pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, true));
-  const pDeconv = pipe(wgslDeconv(240, 5, W16, H16, W8, H8));
+  const pPrepQ = pipe(wgslPrepQuarter(w, h, useF16));
+  const pConv0a = pipe(wgslConv(7, 120, QW, QH, W8, H8, 2, false, useF16));
+  const pConv0b = pipe(wgslConv(120, 240, W8, H8, W16, H16, 2, false, useF16));
+  const pConvB = useF16
+    ? pipe(wgslConvRB(240, 240, W16, H16, W16, H16, false))
+    : pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, false, false));
+  const pConvBR = useF16
+    ? pipe(wgslConvRB(240, 240, W16, H16, W16, H16, true))
+    : pipe(wgslConv(240, 240, W16, H16, W16, H16, 1, true, false));
+  const pDeconv = pipe(wgslDeconv(240, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(wgslFlowOut(w, h));
-
-  const bg = (p, entries) => device.createBindGroup({
-    layout: p.getBindGroupLayout(0),
-    entries: entries.map((b, i) => ({ binding: i, resource: { buffer: b } })) });
 
   const bgPrepFull = bg(pPrepFull, [rgba0, rgba1, imgs]);
   const bgPrepQ = bg(pPrepQ, [rgba0, rgba1, xq, tbuf]);
-  const bgConv0a = bg(pConv0a, [xq, wbuf['block0.conv0.0.0.weight'], wbuf['block0.conv0.0.0.bias'], wbuf['block0.conv0.0.1.weight'], f8]);
-  const bgConv0b = bg(pConv0b, [f8, wbuf['block0.conv0.1.0.weight'], wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16a]);
+  const bgPrepQt = tbufs.map(tb => bg(pPrepQ, [rgba0, rgba1, xq, tb]));
+  const bgConv0a = bg(pConv0a, [xq, convW('block0.conv0.0.0.weight'), wbuf['block0.conv0.0.0.bias'], wbuf['block0.conv0.0.1.weight'], f8]);
+  const bgConv0b = bg(pConv0b, [f8, convW('block0.conv0.1.0.weight'), wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16a]);
   // convblock ping-pong: a->b, b->a, ... 8th conv adds the residual (f16r = copy of f16a)
   const bgB = [];
   let src = f16a, dst = f16b;
   for (let i = 0; i < 8; i++) {
     const wn = `block0.convblock.${i}.0.weight`, bn = `block0.convblock.${i}.0.bias`, an = `block0.convblock.${i}.1.weight`;
     if (i < 7) {
-      bgB.push({ p: pConvB, g: bg(pConvB, [src, wbuf[wn], wbuf[bn], wbuf[an], dst]) });
+      bgB.push({ p: pConvB, g: bg(pConvB, [src, convW(wn), wbuf[bn], wbuf[an], dst]) });
     } else {
-      bgB.push({ p: pConvBR, g: bg(pConvBR, [src, wbuf[wn], wbuf[bn], wbuf[an], dst, f16r]) });
+      bgB.push({ p: pConvBR, g: bg(pConvBR, [src, convW(wn), wbuf[bn], wbuf[an], dst, f16r]) });
     }
     [src, dst] = [dst, src];
   }
@@ -266,6 +481,46 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
   const bgFlow = bg(pFlow, [tmp8, imgs, outp]);
 
   const gx = (n) => Math.ceil(n / WG);
+  // register-blocked convblock kernel covers 16x16 output per workgroup
+  const cbX = useF16 ? Math.ceil(W16 / 16) : gx(W16);
+  const cbY = useF16 ? Math.ceil(H16 / 16) : gx(H16);
+
+  // per-stage GPU times via timestamp queries (needs 'timestamp-query' on the device)
+  async function profile(rgbaA, rgbaB) {
+    if (!device.features.has('timestamp-query')) return 'no timestamp-query feature';
+    const stages = [
+      ['prepFull', pPrepFull, bgPrepFull, [gx(w), gx(h), 1]],
+      ['prepQ', pPrepQ, bgPrepQ, [gx(QW), gx(QH), 1]],
+      ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), 30]],
+      ['conv0b', pConv0b, bgConv0b, [gx(W16), gx(H16), 60]],
+      ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, 60]]),
+      ['deconv', pDeconv, bgDeconv, [gx(W8), gx(H8), 5]],
+      ['flow', pFlow, bgFlow, [gx(w), gx(h), 1]],
+    ];
+    const qs = device.createQuerySet({ type: 'timestamp', count: stages.length * 2 });
+    const qbuf = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+    const qread = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    device.queue.writeBuffer(tbuf, 0, new Float32Array([0.5]));
+    device.queue.writeBuffer(rgba0, 0, rgbaA.buffer, rgbaA.byteOffset, w * h * 4);
+    device.queue.writeBuffer(rgba1, 0, rgbaB.buffer, rgbaB.byteOffset, w * h * 4);
+    const enc = device.createCommandEncoder();
+    stages.forEach(([name, p, g, d], i) => {
+      if (name === 'convB0') enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
+      const pass = enc.beginComputePass({ timestampWrites: {
+        querySet: qs, beginningOfPassWriteIndex: i * 2, endOfPassWriteIndex: i * 2 + 1 } });
+      pass.setPipeline(p); pass.setBindGroup(0, g);
+      pass.dispatchWorkgroups(d[0], d[1], d[2]);
+      pass.end();
+    });
+    enc.resolveQuerySet(qs, 0, stages.length * 2, qbuf, 0);
+    enc.copyBufferToBuffer(qbuf, 0, qread, 0, stages.length * 16);
+    device.queue.submit([enc.finish()]);
+    await qread.mapAsync(GPUMapMode.READ);
+    const ts = new BigUint64Array(qread.getMappedRange().slice(0));
+    qread.unmap();
+    return stages.map(([name], i) =>
+      `${name}: ${(Number(ts[i * 2 + 1] - ts[i * 2]) / 1e6).toFixed(2)}ms`).join(' · ');
+  }
 
   async function run(rgbaA, rgbaB, t = 0.5) {
     device.queue.writeBuffer(tbuf, 0, new Float32Array([t]));
@@ -275,14 +530,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
     const pass = enc.beginComputePass();
     pass.setPipeline(pPrepFull); pass.setBindGroup(0, bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
     pass.setPipeline(pPrepQ); pass.setBindGroup(0, bgPrepQ); pass.dispatchWorkgroups(gx(QW), gx(QH));
-    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 120);
-    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 240);
+    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 30);
+    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 60);
     pass.end();
     // residual copy AFTER conv0b (f16r = f16a snapshot)
-    enc.copyBufferToBuffer(f16a, 0, f16r, 0, 240 * H16 * W16 * 4);
+    enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
     const pass2 = enc.beginComputePass();
     for (const { p, g } of bgB) {
-      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(gx(W16), gx(H16), 240);
+      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, 60);
     }
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
     pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));
@@ -295,5 +550,45 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest }) {
     return out;
   }
 
-  return { run, w, h };
+  // batched: upload the pair once, produce mids for every t in ONE submit
+  async function runMulti(rgbaA, rgbaB, ts) {
+    if (ts.length > MAXT) throw new Error('too many timesteps');
+    for (let i = 0; i < ts.length; i++) {
+      device.queue.writeBuffer(tbufs[i], 0, new Float32Array([ts[i]]));
+    }
+    device.queue.writeBuffer(rgba0, 0, rgbaA.buffer, rgbaA.byteOffset, w * h * 4);
+    device.queue.writeBuffer(rgba1, 0, rgbaB.buffer, rgbaB.byteOffset, w * h * 4);
+    const enc = device.createCommandEncoder();
+    {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pPrepFull); pass.setBindGroup(0, bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.end();
+    }
+    for (let i = 0; i < ts.length; i++) {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pPrepQ); pass.setBindGroup(0, bgPrepQt[i]); pass.dispatchWorkgroups(gx(QW), gx(QH));
+      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), 30);
+      pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), 60);
+      pass.end();
+      enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
+      const pass2 = enc.beginComputePass();
+      for (const { p, g } of bgB) {
+        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, 60);
+      }
+      pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
+      pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));
+      pass2.end();
+      enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
+    }
+    device.queue.submit([enc.finish()]);
+    const outs = [];
+    for (let i = 0; i < ts.length; i++) {
+      await stagings[i].mapAsync(GPUMapMode.READ);
+      outs.push(new Uint8Array(stagings[i].getMappedRange().slice(0)));
+      stagings[i].unmap();
+    }
+    return outs;
+  }
+
+  return { run, runMulti, profile, w, h };
 }

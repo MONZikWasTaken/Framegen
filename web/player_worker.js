@@ -71,7 +71,8 @@ async function ensureRtDevice() {
   if (rtDevice) return;
   if (!navigator.gpu) throw new Error('no WebGPU in worker');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  rtDevice = await adapter.requestDevice();
+  const f16 = adapter.features.has('shader-f16');
+  rtDevice = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
   const [bin, man] = await Promise.all([
     fetch('/assets/rt_1blk.bin').then(r => r.arrayBuffer()),
     fetch('/assets/rt_1blk.json').then(r => r.json())]);
@@ -158,28 +159,35 @@ async function runPair(job) {
   busy = true;
   const S = sessions.get(job.key);
   try {
-    // rt rungs honor the DLSS-style factor: n-1 mids at t=k/n; ort f32 graphs have a
-    // baked t=0.5, so they always produce the single midpoint whatever the factor.
+    // rt rungs honor the DLSS-style factor: n-1 mids at t=k/n in ONE batched GPU submit
+    // (pair uploaded once); ort f32 graphs have a baked t=0.5 -> single midpoint.
     const n = S.kind === 'rt' ? job.n : 2;
-    for (let k = 1; k < n; k++) {
+    if (S.kind === 'rt') {
+      const ts = [];
+      for (let k = 1; k < n; k++) ts.push(k / n);
       const t0 = performance.now();
-      let outRgba;
-      if (S.kind === 'rt') {
-        const out = await S.rt.run(new Uint8Array(job.a.buffer, job.a.byteOffset, job.a.length),
-                                   new Uint8Array(job.b.buffer, job.b.byteOffset, job.b.length),
-                                   k / n);
-        outRgba = new Uint8ClampedArray(out.buffer, 0, out.length);
-      } else {
-        const feeds = {};
-        feeds[S.sess.inputNames[0]] = new ort.Tensor('float32', toInput(job.a, S), [1, 3, S.eh, S.ew]);
-        feeds[S.sess.inputNames[1]] = new ort.Tensor('float32', toInput(job.b, S), [1, 3, S.eh, S.ew]);
-        const out = await withGpu(() => S.sess.run(feeds));
-        outRgba = fromOutput(out[S.sess.outputNames[0]].data, S);
-      }
+      const outs = await S.rt.runMulti(
+        new Uint8Array(job.a.buffer, job.a.byteOffset, job.a.length),
+        new Uint8Array(job.b.buffer, job.b.byteOffset, job.b.length), ts);
+      const ms = (performance.now() - t0) / ts.length;
+      S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
+      outs.forEach((out, i) => {
+        const rgba = new Uint8ClampedArray(out.buffer, 0, out.length);
+        postMessage({ type: 'mid', rgba: rgba.buffer, w: S.W, h: S.H, ts: job.ts,
+                      frac: ts[i], interpMs: S.ms, halfRate, cfg: job.key + (n > 2 ? ' ×' + n : '') },
+                    [rgba.buffer]);
+      });
+    } else {
+      const t0 = performance.now();
+      const feeds = {};
+      feeds[S.sess.inputNames[0]] = new ort.Tensor('float32', toInput(job.a, S), [1, 3, S.eh, S.ew]);
+      feeds[S.sess.inputNames[1]] = new ort.Tensor('float32', toInput(job.b, S), [1, 3, S.eh, S.ew]);
+      const out = await withGpu(() => S.sess.run(feeds));
+      const outRgba = fromOutput(out[S.sess.outputNames[0]].data, S);
       const ms = performance.now() - t0;
       S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
       postMessage({ type: 'mid', rgba: outRgba.buffer, w: S.W, h: S.H, ts: job.ts,
-                    frac: k / n, interpMs: S.ms, halfRate, cfg: job.key + (n > 2 ? ' ×' + n : '') },
+                    frac: 0.5, interpMs: S.ms, halfRate, cfg: job.key },
                   [outRgba.buffer]);
     }
   } catch (e) {
