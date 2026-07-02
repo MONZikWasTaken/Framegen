@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Framecast — browser demo</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 20px; max-width: 1000px; }
+  button { font-size: 15px; padding: 6px 14px; margin-right: 8px; }
+  .row { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; margin:12px 0; }
+  .card { border:1px solid #ccc; border-radius:8px; padding:8px; }
+  canvas { max-width:320px; height:auto; display:block; background:#eee; }
+  #status { font:13px monospace; color:#333; white-space:pre-wrap; margin-top:8px; }
+  #baWrap { position:relative; max-width:640px; }
+  #baWrap canvas { position:absolute; top:0; left:0; max-width:640px; }
+  #baAfter { clip-path: inset(0 0 0 50%); }
+  #baRange { width:640px; }
+  .bad { color:#c00; }
+</style>
+</head>
+<body>
+<h3>Framecast — RIFE interpolation in the browser (ort-web WebGPU)</h3>
+<p>Drop two frames or use the built-in demo pair. You get the interpolated middle frame.</p>
+
+<div class="row">
+  <div class="card"><b>img0</b><br><canvas id="c0" width="320" height="180"></canvas>
+    <input type="file" id="f0" accept="image/*"></div>
+  <div class="card"><b>img1</b><br><canvas id="c1" width="320" height="180"></canvas>
+    <input type="file" id="f1" accept="image/*"></div>
+</div>
+
+<div>
+  <select id="ep"><option value="webgpu">webgpu</option><option value="wasm">wasm</option></select>
+  <button id="demoBtn">Use demo pair</button>
+  <button id="runBtn">Interpolate</button>
+</div>
+<div id="status"></div>
+
+<h4>Result — middle frame (before/after slider)</h4>
+<div id="baWrap">
+  <canvas id="baBefore"></canvas>
+  <canvas id="baAfter"></canvas>
+</div>
+<input type="range" id="baRange" min="0" max="100" value="50">
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script type="module">
+import { toInput, fromOutput } from './rife_prepost.js';
+
+const EW = 1280, EH = 736;         // engine (padded) size
+const MAXW = 1280, MAXH = 720;     // max native size we feed
+const st = (m, bad) => { const s=document.getElementById('status');
+  s.textContent += m + '\n'; if (bad) s.classList.add('bad'); };
+
+// Loaded native ImageData for each input (RGBA at native w×h ≤ MAXW×MAXH).
+const frame = [null, null];
+
+function drawNative(source, canvasEl) {
+  const iw = source.width, ih = source.height;
+  const s = Math.min(1, MAXW / iw, MAXH / ih);
+  const w = Math.max(1, Math.round(iw * s)), h = Math.max(1, Math.round(ih * s));
+  const off = new OffscreenCanvas(w, h);
+  const octx = off.getContext('2d');
+  octx.drawImage(source, 0, 0, w, h);
+  canvasEl.width = 320; canvasEl.height = Math.round(320 * h / w);
+  canvasEl.getContext('2d').drawImage(off, 0, 0, canvasEl.width, canvasEl.height);
+  return octx.getImageData(0, 0, w, h);
+}
+
+function loadFileToFrame(file, idx, canvasEl) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { frame[idx] = drawNative(img, canvasEl); URL.revokeObjectURL(img.src); res(); };
+    img.onerror = rej;
+    img.src = URL.createObjectURL(file);
+  });
+}
+function loadUrlToFrame(url, idx, canvasEl) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.onload = () => { frame[idx] = drawNative(img, canvasEl); res(); };
+    img.onerror = rej;
+    img.src = url;
+  });
+}
+
+document.getElementById('f0').onchange = e =>
+  loadFileToFrame(e.target.files[0], 0, document.getElementById('c0'));
+document.getElementById('f1').onchange = e =>
+  loadFileToFrame(e.target.files[0], 1, document.getElementById('c1'));
+document.getElementById('demoBtn').onclick = async () => {
+  await Promise.all([
+    loadUrlToFrame('/demo/I0_0.png', 0, document.getElementById('c0')),
+    loadUrlToFrame('/demo/I0_1.png', 1, document.getElementById('c1')),
+  ]);
+  st('demo pair loaded (' + frame[0].width + 'x' + frame[0].height + ')');
+};
+
+let sess = null, sessEp = null;
+async function ensureSession(ep) {
+  if (sess && sessEp === ep) return sess;
+  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+  st('creating session on ' + ep + ' ...');
+  sess = await ort.InferenceSession.create('/assets/rife_lite_inlined.onnx',
+    { executionProviders: [ep], graphOptimizationLevel: 'all' });
+  sessEp = ep;
+  st('session ready: inputs=' + sess.inputNames + ' output=' + sess.outputNames);
+  return sess;
+}
+
+document.getElementById('runBtn').onclick = async () => {
+  try {
+    if (!frame[0] || !frame[1]) { st('load two images first (or click "Use demo pair")', true); return; }
+    if (frame[0].width !== frame[1].width || frame[0].height !== frame[1].height) {
+      st('the two frames must be the same size', true); return;
+    }
+    const ep = document.getElementById('ep').value;
+    const s = await ensureSession(ep);
+    const w = frame[0].width, h = frame[0].height;
+    const a = toInput(frame[0].data, w, h, EW, EH);
+    const b = toInput(frame[1].data, w, h, EW, EH);
+    const feeds = {};
+    feeds[s.inputNames[0]] = new ort.Tensor('float32', a, [1, 3, EH, EW]);
+    feeds[s.inputNames[1]] = new ort.Tensor('float32', b, [1, 3, EH, EW]);
+    const t0 = performance.now();
+    const out = await s.run(feeds);
+    const dt = performance.now() - t0;
+    const chw = out[s.outputNames[0]].data;
+    const rgba = fromOutput(chw, w, h, EW, EH);
+    renderResult(frame[0], new ImageData(rgba, w, h));
+    st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep}`);
+  } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
+};
+
+function renderResult(beforeImageData, afterImageData) {
+  const w = afterImageData.width, h = afterImageData.height;
+  for (const id of ['baBefore', 'baAfter']) {
+    const c = document.getElementById(id); c.width = w; c.height = h;
+    c.style.maxWidth = '640px'; c.style.height = 'auto';
+  }
+  document.getElementById('baBefore').getContext('2d').putImageData(beforeImageData, 0, 0);
+  document.getElementById('baAfter').getContext('2d').putImageData(afterImageData, 0, 0);
+  document.getElementById('baWrap').style.height = (640 * h / w) + 'px';
+  document.getElementById('baRange').oninput = e => {
+    document.getElementById('baAfter').style.clipPath = `inset(0 0 0 ${e.target.value}%)`;
+  };
+}
+</script>
+</body>
+</html>
