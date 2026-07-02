@@ -1,4 +1,33 @@
-# Phase 5, step 1 — training-free ablation frontier
+# Phase 5 — model shrink: ablation frontier (step 1) + distilled student (step 2)
+
+## Step 2 result — distilled 2-block student (2026-07-02)
+
+`tools/train_student.py`: student = teacher's block0+block1 (same graph as `2blk_noref`),
+frozen full teacher, loss = LapLoss(gt) + 0.2·LapLoss(teacher) + 0.01·L1(flow distill).
+20k steps × batch 24 (256² crops), ~76 min on the 4060 Ti, 44,376 triplets from
+Sintel + Tears of Steel + Elephants Dream (`tools/extract_frames.py`; eval clips held out).
+Best checkpoint @17k. Weights of record: `models/rife_lite_student_2blk.safetensors`.
+
+| model | BBB dB | Jellyfish dB | webgpu 480p | TRT fp16 720p |
+|---|---:|---:|---:|---:|
+| full teacher | 41.50 | 37.67 | 1064 ms | 21.6 ms (46 fps) |
+| `2blk_noref` untrained | 38.90 | 36.88 | 237 ms | 11.2 ms (89 fps) |
+| **student (distilled)** | **40.14** | **37.14** | **~250 ms** | **11.3 ms (88 fps, 60fps PASS)** |
+
+Recovered +1.24 dB of the −2.60 on animation (now −1.36 vs teacher), −0.53 on live action,
+at identical inference cost. Visual check on the max-motion BBB triplet:
+`docs/student_vs_full_bbb.jpg` — the four variants are hard to tell apart at full size.
+The `fastest` tier in the web app now points at the student ONNX
+(`assets/rife_lite_{720,480,360}p_2blk_noref_student.onnx`; regenerate with
+`FRAMECAST_WEIGHTS=<dir with flownet.pkl from models/…safetensors + tools/restore_pkl.py>`
+`FRAMECAST_SUFFIX=_student python tools/export_ablation.py <H> <W> 2blk_noref`).
+
+Training gotcha (Windows): the system CUDA dir on PATH poisons torch-cu130's bundled cuDNN
+(`CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`) — train_student.py strips it in-process.
+
+---
+
+# Step 1 — training-free ablation frontier
 
 Before spending weeks on distillation, measure what can be cut from IFNet_m for free.
 Variants exported by `tools/export_ablation.py` (custom inference-only forward over the

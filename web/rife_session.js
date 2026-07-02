@@ -1,24 +1,26 @@
 import { toInput, fromOutput } from './rife_prepost.js';
 
 // Fixed-shape models (engine size = padded to /32). Lower res = proportionally faster.
-// Quality tiers (training-free ablations, see docs/phase5_ablation.md):
+// Quality tiers (see docs/phase5_ablation.md):
 //   full    - the whole net
 //   fast    - refinement (contextnet+unet) cut: ~1.5x on webgpu, -1.3..+0.2 dB
-//   fastest - block2 + refinement cut: ~4x on webgpu, -2.6..-0.8 dB
-// Measured webgpu p50 (4060 Ti): 720p full=1957 / 480p full=1064 / 480p fastest=237ms.
+//   fastest - DISTILLED 2-block student (tools/train_student.py): ~4x on webgpu,
+//             -0.5..-1.4 dB (was -2.6 before distillation; BBB 40.14 / Jelly 37.14
+//             vs full 41.50 / 37.67)
+// Measured webgpu p50 (4060 Ti): 720p full=1957 / 480p full=1064 / 480p fastest=~250ms.
 export const MODELS = {
   '720': { ew: 1280, eh: 736, maxw: 1280, maxh: 720, files: {
     full: '/assets/rife_lite_inlined.onnx',
     fast: '/assets/rife_lite_720p_noref.onnx',
-    fastest: '/assets/rife_lite_720p_2blk_noref.onnx' } },
+    fastest: '/assets/rife_lite_720p_2blk_noref_student.onnx' } },
   '480': { ew: 864, eh: 480, maxw: 854, maxh: 480, files: {
     full: '/assets/rife_lite_480x854.onnx',
     fast: '/assets/rife_lite_480p_noref.onnx',
-    fastest: '/assets/rife_lite_480p_2blk_noref.onnx' } },
+    fastest: '/assets/rife_lite_480p_2blk_noref_student.onnx' } },
   '360': { ew: 640, eh: 384, maxw: 640, maxh: 360, files: {
     full: '/assets/rife_lite_360x640.onnx',
     fast: '/assets/rife_lite_360p_noref.onnx',
-    fastest: '/assets/rife_lite_360p_2blk_noref.onnx' } },
+    fastest: '/assets/rife_lite_360p_2blk_noref_student.onnx' } },
 };
 
 // 'webnn' -> DirectML on Windows (fuses the graph; ~3.5x over the WebGPU EP, but needs the
