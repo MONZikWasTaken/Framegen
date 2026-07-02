@@ -12,22 +12,28 @@ const say = m => { el.innerHTML += '<br>' + m; };
 const results = {};
 
 const CASES = [
-  ['360p_1blk', '/assets/rife_lite_360p_1blk_s4_student1b.onnx', 384, 640],
-  ['480p_1blk', '/assets/rife_lite_480p_1blk_s4_student1b.onnx', 480, 864],
-  ['720p_1blk', '/assets/rife_lite_720p_1blk_s4_student1b.onnx', 736, 1280],
-  ['480p_2blk', '/assets/rife_lite_480p_2blk_noref_student.onnx', 480, 864],
+  // [name, url, h, w, dtype] — f32 legacy graphs are CHW [1,3,h,w]; u8 web graphs are HWC [1,h,w,4]
+  ['720p_s84_student', '/assets/rife_lite_720p_2blk_s84_student84.onnx', 736, 1280, 'f32'],
+  ['720p_turbo_u8web', '/assets/rife_web_720x1280_turbo.onnx', 720, 1280, 'u8'],
+  ['480p_turbo_u8web', '/assets/rife_web_480x854_turbo.onnx', 480, 854, 'u8'],
+  ['720p_1blk_f32', '/assets/rife_lite_720p_1blk_s4_student1b.onnx', 736, 1280, 'f32'],
 ];
 
-async function bench(name, url, h, w) {
+async function bench(name, url, h, w, dtype) {
   const sess = await ort.InferenceSession.create(url, {
     executionProviders: [{ name: 'webnn', deviceType: 'gpu', powerPreference: 'high-performance' }],
     graphOptimizationLevel: 'all',
   });
-  const n = 3 * h * w;
-  const a = new Float32Array(n).fill(0.5), b = new Float32Array(n).fill(0.5);
   const feeds = {};
-  feeds[sess.inputNames[0]] = new ort.Tensor('float32', a, [1, 3, h, w]);
-  feeds[sess.inputNames[1]] = new ort.Tensor('float32', b, [1, 3, h, w]);
+  if (dtype === 'u8') {
+    const n = h * w * 4;
+    feeds[sess.inputNames[0]] = new ort.Tensor('uint8', new Uint8Array(n).fill(128), [1, h, w, 4]);
+    feeds[sess.inputNames[1]] = new ort.Tensor('uint8', new Uint8Array(n).fill(128), [1, h, w, 4]);
+  } else {
+    const n = 3 * h * w;
+    feeds[sess.inputNames[0]] = new ort.Tensor('float32', new Float32Array(n).fill(0.5), [1, 3, h, w]);
+    feeds[sess.inputNames[1]] = new ort.Tensor('float32', new Float32Array(n).fill(0.5), [1, 3, h, w]);
+  }
   let out = await sess.run(feeds); // warmup (webnn build is slow, one-time)
   const ts = [];
   for (let i = 0; i < 10; i++) { const t = performance.now(); out = await sess.run(feeds); ts.push(performance.now() - t); }
@@ -44,10 +50,10 @@ async function bench(name, url, h, w) {
   results.ml = !!navigator.ml;
   say('navigator.ml = ' + results.ml);
   if (results.ml) {
-    for (const [name, url, h, w] of CASES) {
+    for (const [name, url, h, w, dtype] of CASES) {
       say(name + ': building session (первый раз ~секунды)...');
       try {
-        results[name] = await bench(name, url, h, w);
+        results[name] = await bench(name, url, h, w, dtype);
         say(`${name}: p50=${results[name].p50}ms fps=${results[name].fps} out_ok=${results[name].out_ok}`);
       } catch (e) { results[name] = { error: String(e).slice(0, 300) }; say(name + ' FAILED: ' + e); }
     }

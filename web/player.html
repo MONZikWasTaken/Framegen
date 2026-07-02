@@ -14,23 +14,21 @@
 </style>
 </head>
 <body>
-<h3>Framecast — real-time 2× player (streaming)</h3>
-<p>Плеер декодирует видео на лету и вставляет интерполированный кадр между каждыми двумя —
-весь файл, со звуком. Если интерполяция не успевает за темпом видео, средние кадры
-пропускаются (см. HUD). Реальное время: <b>webnn + 360p/480p + turbo/fastest</b>.</p>
+<h3>Framecast — real-time 2× player (worker edition)</h3>
+<p>Весь пиксельный тракт — в отдельном потоке (Web Worker), модель принимает и отдаёт
+сырые пиксели канваса (никаких JS-циклов). Реальное время: <b>webnn + 360p/480p</b>.</p>
 
 <div>
   <input type="file" id="file" accept="video/*">
   <select id="ep"><option value="webnn">webnn (нужен флаг)</option><option value="webgpu">webgpu</option></select>
-  <select id="res"><option value="480">480p</option><option value="360">360p (самый быстрый)</option><option value="720">720p</option></select>
-  <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option><option value="fast">fast</option><option value="full">full</option></select>
+  <select id="res"><option value="auto">авто (макс качество+фпс)</option><option value="1080">1080p (вставки 480p)</option><option value="720">720p (вставки 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p честный (медленно)</option></select>
+  <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option></select>
 </div>
 <div style="margin-top:8px">
   <button id="playBtn" disabled>Play</button>
   <button id="pauseBtn" disabled>Pause</button>
   <label><input type="checkbox" id="interpOn" checked> интерполяция 2×</label>
   <label><input type="checkbox" id="animeMode" checked> аниме-режим (дедуп «двоек»)</label>
-  <label><input type="checkbox" id="smooth" checked> плавность+ (задержка 1 кадр)</label>
   <label><input type="checkbox" id="mute"> без звука</label>
 </div>
 
@@ -38,77 +36,47 @@
 <div id="status"></div>
 <video id="vid" style="display:none" playsinline></video>
 
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js"></script>
-<script type="module">
-import { createSession, interpolate } from './rife_session.js';
+<script>
+// disp = display/original size; comp = model size for the mids; f32res = fallback-map key.
+// '720' shows sharp 720p originals but computes mids at 480p (upscaled on display) —
+// a mid flashes for ~21ms between two sharp frames, the softness is invisible, and the
+// 480p model fits the real-time budget where the honest 720p one does not.
+const MODES = {
+  'auto': { disp: null,         comp: null,        f32res: '480' }, // disp = video native (<=1080), worker walks the ladder
+  '1080': { disp: [1920, 1080], comp: [854, 480],  f32res: '480' },
+  '360':  { disp: [640, 360],  comp: [640, 360],  f32res: '360' },
+  '480':  { disp: [854, 480],  comp: [854, 480],  f32res: '480' },
+  '720':  { disp: [1280, 720], comp: [854, 480],  f32res: '480' },
+  '720f': { disp: [1280, 720], comp: [1280, 720], f32res: '720' },
+};
+const DELAY_MS = 100; // pipeline delay (display queue + audio DelayNode)
 
 const $ = id => document.getElementById(id);
 const st = (m, bad) => { $('status').textContent += m + '\n'; if (bad) $('status').classList.add('bad'); };
 const vid = $('vid'), out = $('out'), octx = out.getContext('2d');
 
-let handle = null, sessKey = null;
-let grabCanvas = null, grabCtx = null;
+let worker = null, workerKey = null;
+let W = 0, H = 0;     // display size
+let CW = 0, CH = 0;   // compute (model) size
+let letterbox = null, lctx = null;   // display-size staging canvas (GPU draws only)
+let letterboxC = null, lcctx = null; // compute-size staging canvas for the worker
+let queue = [];   // {kind:'bmp'|'img', payload, at}
+let prevBmp = null, prevTs = 0, intervalMs = 42;
+let shown = 0, dropped = 0, dups = 0, interpMs = 0, halfRate = false, midCfg = '';
+let hudTimer = 0, shownWindow = [], running = false;
 
-// The display pipeline runs behind the (hidden) video by ~2 source intervals so every
-// mid lands exactly on its slot; the audio is delayed by the same amount via WebAudio,
-// so lipsync holds regardless of the pipeline delay.
-const DELAY_MS = 100; // fixed pipeline delay (video queue + audio DelayNode, set once)
 let audioCtx = null, audioDelay = null;
 function ensureAudioDelay() {
   if (audioCtx) return;
   audioCtx = new AudioContext();
-  const src = audioCtx.createMediaElementSource(vid);
-  audioDelay = audioCtx.createDelay(1.0);
-  src.connect(audioDelay).connect(audioCtx.destination);
+  audioCtx.createMediaElementSource(vid).connect(
+    (audioDelay = audioCtx.createDelay(1.0))).connect(audioCtx.destination);
 }
 
-// ---- display scheduler: queue of {bmp, at}; an rAF loop shows whatever is due ----
-let queue = [];
-let shown = 0, dropped = 0, interps = 0, dups = 0;
-let interpMsAvg = 0, intervalMs = 42, uniqueIntervalMs = 42;
-let lastFrame = null, lastTs = 0, lastUniqueTs = 0, transitionNo = 0;
-let hudTimer = 0, shownWindow = [], running = false, halfRate = false;
-
-// ort-web sessions cannot run() concurrently ("Session already started") — keep exactly
-// one inference in flight and at most one job waiting; a newer job replaces the waiting one.
-let busy = false, pending = null;
-function runInterp(job) {
-  busy = true;
-  const t0 = performance.now();
-  interpolate(handle, job.a, job.b).then(mid => {
-    const ms = performance.now() - t0;
-    interpMsAvg = interpMsAvg ? interpMsAvg * 0.85 + ms * 0.15 : ms;
-    interps++;
-    if (performance.now() <= job.due + job.tolerance) queue.push({ img: mid, at: job.due });
-    else dropped++;
-    busy = false;
-    if (pending) { const p = pending; pending = null; runInterp(p); }
-  }).catch(e => { st('interp ERROR: ' + (e.message || e), true); busy = false; pending = null; });
-}
-function submitInterp(job) {
-  if (!busy) runInterp(job);
-  else { if (pending) dropped++; pending = job; }
-}
-
-// Anime is drawn "on twos": the same drawing is repeated on 2 video frames. A mid
-// between identical frames adds nothing — detect near-duplicates (sampled RGB diff)
-// and interpolate only across distinct drawings. This also DOUBLES the compute budget.
-function isNearDup(a, b) {
-  const px = a.length / 4;
-  const stride = Math.max(1, Math.floor(px / 3000)) * 4;
-  let sum = 0, mx = 0, cnt = 0;
-  for (let i = 0; i < a.length; i += stride) {
-    const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
-    sum += d;
-    if (d > mx) mx = d;
-    cnt++;
-  }
-  return (sum / cnt) < 2.5 && mx < 45; // per-pixel RGB-sum; true "on twos" dups are codec-noise only
-}
-
-function draw(imgData) {
-  if (out.width !== imgData.width) { out.width = imgData.width; out.height = imgData.height; }
-  octx.putImageData(imgData, 0, 0);
+function draw(item) {
+  if (out.width !== W) { out.width = W; out.height = H; }
+  octx.drawImage(item.payload, 0, 0, W, H); // mids at compute size upscale here (GPU)
+  item.payload.close();
   shown++;
   const now = performance.now();
   shownWindow.push(now);
@@ -117,90 +85,114 @@ function draw(imgData) {
 
 function pump(now) {
   if (!running) return;
-  queue.sort((a, b) => a.at - b.at); // async mids may arrive out of order
-  // show the most recent due item; anything older due is superseded (counts as drop)
+  queue.sort((a, b) => a.at - b.at);
   let due = -1;
   for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
   if (due >= 0) {
-    for (let i = 0; i < due; i++) dropped++;
-    draw(queue[due].img);
+    for (let i = 0; i < due; i++) { dropped++; queue[i].payload.close(); }
+    draw(queue[due]);
     queue = queue.slice(due + 1);
   }
   if (now - hudTimer > 250) {
     hudTimer = now;
     $('hud').textContent =
-      `out ${shownWindow.length} fps · interp ${interpMsAvg.toFixed(0)} ms ` +
-      `(бюджет ${uniqueIntervalMs.toFixed(0)} ms)${halfRate ? ' · ½-rate' : ''}\n` +
-      `shown ${shown} · dropped ${dropped} · dups ${dups} · ${sessKey ?? ''}`;
+      `out ${shownWindow.length} fps · interp ${interpMs.toFixed(0)} ms` +
+      `${halfRate ? ' · ½-rate' : ''} · mids: ${midCfg || '—'}\n` +
+      `shown ${shown} · dropped ${dropped} · dups ${dups} · ${workerKey ?? ''}`;
   }
   requestAnimationFrame(pump);
 }
 
-function grab() {
-  const s = Math.min(1, handle.maxw / vid.videoWidth, handle.maxh / vid.videoHeight);
-  const w = Math.max(2, 2 * Math.round(vid.videoWidth * s / 2));
-  const h = Math.max(2, 2 * Math.round(vid.videoHeight * s / 2));
-  if (!grabCanvas || grabCanvas.width !== w) {
-    grabCanvas = new OffscreenCanvas(w, h);
-    grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
-  }
-  grabCtx.drawImage(vid, 0, 0, w, h);
-  return grabCtx.getImageData(0, 0, w, h);
-}
-
-// per presented source frame: schedule the PREVIOUS original now and kick off the mid
-function onFrame(now, meta) {
+async function onFrame() {
   if (!running) return;
-  const cur = grab();
   const ts = performance.now();
-  if (lastFrame) {
-    const dt = ts - lastTs;
+  // letterbox the frame into the display size and the (possibly smaller) model size —
+  // both are GPU draws, no pixel readback on this thread
+  const s = Math.min(W / vid.videoWidth, H / vid.videoHeight);
+  const dw = vid.videoWidth * s, dh = vid.videoHeight * s;
+  lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W, H);
+  lctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  lcctx.drawImage(letterbox, 0, 0, CW, CH);
+  const [bmpKeep, bmpSend] = await Promise.all([
+    createImageBitmap(letterbox), createImageBitmap(letterboxC)]);
+
+  if (prevBmp) {
+    const dt = ts - prevTs;
     if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
-    // "smooth+": show everything ~100ms later — we play a file, not a live stream, so
-    // the pipeline latency lets every mid land exactly on its slot even when inference
-    // is slower than one interval. Audio is delayed by the same CONSTANT (set once at
-    // Play — retuning the delay line per frame makes the audio stutter).
-    const delay = $('smooth').checked ? DELAY_MS : 0;
-    queue.push({ img: lastFrame, at: ts + delay });
-    const anime = $('animeMode').checked;
-    const dup = anime && isNearDup(lastFrame.data, cur.data);
-    if (dup) {
-      dups++; // same drawing repeated — a mid would be identical; skip and save the budget
-    } else {
-      const du = ts - lastUniqueTs;
-      if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
-      lastUniqueTs = ts;
-      transitionNo++;
-      // consistently over budget -> interpolate every 2nd transition (a regular cadence
-      // looks far better than random drops)
-      halfRate = interpMsAvg > uniqueIntervalMs * 1.05;
-      const skip = halfRate && (transitionNo & 1);
-      if ($('interpOn').checked && !skip) {
-        submitInterp({
-          a: lastFrame, b: cur,
-          due: ts + delay + intervalMs / 2,
-          // strict: a late mid distorts the cadence more than a missing one
-          tolerance: intervalMs / 4,
-        });
-      }
-    }
-  } else {
-    queue.push({ img: cur, at: ts + ($('smooth').checked ? intervalMs : 0) });
-    lastUniqueTs = ts;
+    queue.push({ payload: prevBmp, at: ts + DELAY_MS });
   }
-  lastFrame = cur; lastTs = ts;
+  prevBmp = bmpKeep; prevTs = ts;
+  worker.postMessage({ type: 'frame', bmp: bmpSend, ts }, [bmpSend]);
   vid.requestVideoFrameCallback(onFrame);
 }
 
-async function ensureSession() {
+function onWorkerMessage(ev) {
+  const m = ev.data;
+  if (m.type === 'mid') {
+    interpMs = m.interpMs; halfRate = m.halfRate; midCfg = m.cfg;
+    const due = m.ts + DELAY_MS + intervalMs / 2;
+    if (performance.now() <= due + intervalMs / 4) {
+      createImageBitmap(new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h))
+        .then(bmp => queue.push({ payload: bmp, at: due }));
+    } else dropped++;
+  } else if (m.type === 'dup') dups++;
+  else if (m.type === 'skipped') dropped++;
+  else if (m.type === 'log') st(m.msg);
+  else if (m.type === 'error') {
+    st('WORKER ERROR: ' + m.msg, true);
+    // error storm = the wasm runtime is likely poisoned; a fresh worker is the only cure
+    errTimes.push(performance.now());
+    while (errTimes.length && errTimes[0] < performance.now() - 10000) errTimes.shift();
+    if (errTimes.length >= 5 && !restarting) {
+      restarting = true;
+      st('слишком много ошибок — перезапускаю воркер...');
+      workerKey = null;
+      ensureWorker().then(() => { errTimes = []; restarting = false; st('воркер перезапущен'); })
+        .catch(() => { restarting = false; });
+    }
+  }
+}
+let errTimes = [], restarting = false;
+
+function ensureWorker() {
   const ep = $('ep').value, res = $('res').value, q = $('quality').value;
   const key = ep + '/' + res + 'p/' + q;
-  if (handle && sessKey === key) return;
-  st(`создаю сессию ${key} ... (webnn собирает граф несколько секунд, один раз)`);
-  handle = await createSession(ep, res, q);
-  sessKey = key;
-  st('сессия готова');
+  if (worker && workerKey === key) return Promise.resolve();
+  if (worker) worker.terminate();
+  const mode = MODES[res];
+  if (res === 'auto') {
+    // display at the video's native size (capped at FHD); mids follow the ladder
+    const s = Math.min(1, 1920 / (vid.videoWidth || 1280), 1080 / (vid.videoHeight || 720));
+    [W, H] = [Math.round((vid.videoWidth || 1280) * s), Math.round((vid.videoHeight || 720) * s)];
+    [CW, CH] = [W, H];
+  } else {
+    [W, H] = mode.disp;
+    [CW, CH] = mode.comp;
+  }
+  letterbox = new OffscreenCanvas(W, H);
+  lctx = letterbox.getContext('2d');
+  letterboxC = new OffscreenCanvas(CW, CH);
+  lcctx = letterboxC.getContext('2d');
+  worker = new Worker('player_worker.js?v=4'); // cache-bust: workers are cached aggressively
+  worker.onmessage = onWorkerMessage;
+  workerKey = key;
+  st(`создаю сессию ${key} в воркере... (webnn собирает граф несколько секунд, один раз)`);
+  return new Promise((resolve, reject) => {
+    const orig = onWorkerMessage;
+    worker.onmessage = ev => {
+      if (ev.data.type === 'ready') { st('сессия готова (режим ' + ev.data.mode + ')'); worker.onmessage = orig; resolve(); }
+      else if (ev.data.type === 'error') { st('WORKER ERROR: ' + ev.data.msg, true); reject(new Error(ev.data.msg)); }
+      else orig(ev);
+    };
+    worker.postMessage({ type: 'init', ep, auto: res === 'auto', res: mode.f32res, quality: q,
+      animeMode: $('animeMode').checked, interpOn: $('interpOn').checked });
+  });
 }
+
+$('animeMode').onchange = $('interpOn').onchange = () => {
+  if (worker) worker.postMessage({ type: 'opts',
+    animeMode: $('animeMode').checked, interpOn: $('interpOn').checked });
+};
 
 $('file').onchange = e => {
   const f = e.target.files[0];
@@ -215,12 +207,12 @@ $('file').onchange = e => {
 
 $('playBtn').onclick = async () => {
   try {
-    await ensureSession();
-    ensureAudioDelay(); // needs the click (user gesture)
+    await ensureWorker();
+    ensureAudioDelay();
     await audioCtx.resume();
-    audioDelay.delayTime.value = ($('smooth').checked ? DELAY_MS : 0) / 1000; // once, not per frame
+    audioDelay.delayTime.value = DELAY_MS / 1000;
     vid.muted = $('mute').checked;
-    lastFrame = null; queue = []; running = true;
+    prevBmp = null; queue = []; running = true;
     hudTimer = 0; shownWindow = [];
     await vid.play();
     vid.requestVideoFrameCallback(onFrame);
