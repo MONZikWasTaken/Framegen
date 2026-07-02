@@ -9,6 +9,7 @@
 // thread, which presents them the old way (present:'main' in the ready message).
 import * as ortNS from 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.mjs';
 import { createRT } from './rt/rt.js?v=4';
+import { createSR } from './rt/sr.js?v=1';
 const ort = ortNS.default ?? ortNS;
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
 
@@ -93,6 +94,34 @@ let queue = []; // {tex, at}
 let shown = 0, dropped = 0, dups = 0, cuts = 0;
 let fpsWindow = [], statsTimer = 0, presenting = false, midCfg = '';
 
+// ---- optional 2x SR pass on everything presented (anime upscale) ----
+let sr = null, srOn = false;
+const srTexs = new Map(); // "WxH" -> {ring: [tex], idx}
+async function ensureSR() {
+  if (sr) return;
+  const [bin, man] = await Promise.all([
+    fetch('/assets/rt_sr.bin').then(r => { if (!r.ok) throw new Error('rt_sr.bin missing'); return r.arrayBuffer(); }),
+    fetch('/assets/rt_sr.json').then(r => r.json())]);
+  sr = await createSR(rtDevice, { weightsBin: bin, weightsManifest: man });
+  postMessage({ type: 'log', msg: 'SR-апскейлер загружен (' + (bin.byteLength >> 10) + 'КБ)' });
+}
+function srDstFor(w, h) {
+  const k = w + 'x' + h;
+  if (!srTexs.has(k)) {
+    const ring = [];
+    for (let i = 0; i < 4; i++) {
+      ring.push(rtDevice.createTexture({ label: 'sr' + k + '#' + i, size: [w * 2, h * 2],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
+    }
+    srTexs.set(k, { ring, idx: 0 });
+  }
+  const s = srTexs.get(k);
+  const t = s.ring[s.idx];
+  s.idx = (s.idx + 1) % s.ring.length;
+  return t;
+}
+
 function ensurePresent() {
   if (blitPipe) return;
   canvasCtx = canvas.getContext('webgpu');
@@ -124,7 +153,13 @@ function blitBgFor(tex) {
   }
   return blitBgCache.get(tex);
 }
-function present(tex) {
+function present(texIn) {
+  let tex = texIn;
+  if (srOn && sr) {
+    const dst = srDstFor(texIn.width, texIn.height);
+    sr.process(texIn, dst, texIn.width, texIn.height);
+    tex = dst;
+  }
   const enc = rtDevice.createCommandEncoder();
   const pass = enc.beginRenderPass({ colorAttachments: [{
     view: canvasCtx.getCurrentTexture().createView(),
@@ -472,7 +507,16 @@ onmessage = async (ev) => {
       const S = sessions.get(startKey);
       let presentMode = 'main';
       if (S.kind === 'rt' && canvas) {
-        canvas.width = m.dispW; canvas.height = m.dispH;
+        srOn = !!m.sr;
+        if (srOn) {
+          try { await ensureSR(); } catch (e) {
+            srOn = false;
+            postMessage({ type: 'log', msg: 'SR недоступен: ' + (e.message || e) });
+          }
+        }
+        // with SR the canvas backing store is 2x — real pixels instead of browser upscale
+        const mul = srOn ? 2 : 1;
+        canvas.width = m.dispW * mul; canvas.height = m.dispH * mul;
         ensurePresent();
         presenting = true;
         requestAnimationFrame(pump);

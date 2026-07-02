@@ -32,6 +32,7 @@
   <button id="pauseBtn" disabled>Pause</button>
   <label><input type="checkbox" id="interpOn" checked> интерполяция 2×</label>
   <label><input type="checkbox" id="animeMode" checked> аниме-режим (дедуп «двоек»)</label>
+  <label><input type="checkbox" id="srOn"> SR 2× (аниме-апскейл)</label>
   <label><input type="checkbox" id="mute"> без звука</label>
 </div>
 
@@ -178,7 +179,7 @@ let errTimes = [], restarting = false;
 
 function ensureWorker() {
   const ep = $('ep').value, res = $('res').value, q = $('quality').value;
-  const key = ep + '/' + res + 'p/' + q;
+  const key = ep + '/' + res + 'p/' + q + ($('srOn').checked ? '/sr' : '');
   if (worker && workerKey === key) return Promise.resolve();
   if (worker) worker.terminate();
   const mode = MODES[res];
@@ -200,7 +201,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut; octx = null;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=19', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=20', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (первый раз собирает конвейеры пару секунд)`);
@@ -217,7 +218,7 @@ function ensureWorker() {
       else orig(ev);
     };
     worker.postMessage({ type: 'init', ep, auto: res === 'auto', res: mode.f32res, quality: q,
-      animeMode: $('animeMode').checked, interpOn: $('interpOn').checked,
+      animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
       factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen }, [offscreen]);
   });
 }
@@ -276,7 +277,7 @@ $('stage').ondrop = e => {
 };
 // settings persist across sessions
 const SETTINGS = ['ep', 'res', 'quality', 'factor'];
-const FLAGS = ['interpOn', 'animeMode', 'mute'];
+const FLAGS = ['interpOn', 'animeMode', 'mute', 'srOn'];
 try {
   const saved = JSON.parse(localStorage.getItem('framecast') || '{}');
   SETTINGS.forEach(k => { if (saved[k]) $(k).value = saved[k]; });
