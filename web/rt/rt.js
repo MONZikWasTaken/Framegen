@@ -331,6 +331,58 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
+// flowout variant writing straight into a storage texture (GPU-resident presentation:
+// the mid never leaves the GPU). rgba8unorm store rounds instead of truncating — ±1 LSB
+// vs the buffer path, invisible; the correctness harness keeps using the buffer path.
+function wgslFlowOutTex(W, H) {
+  const TW = W / 8, TH = H / 8;
+  return /* wgsl */`
+@group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
+@group(0) @binding(1) var<storage, read> imgs: array<f32>;  // [6,${H},${W}]
+@group(0) @binding(2) var outTex: texture_storage_2d<rgba8unorm, write>;
+
+fn tap(c: i32, x: i32, y: i32) -> f32 {
+  return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
+}
+fn up(c: i32, sx: f32, sy: f32) -> f32 {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
+             mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
+}
+fn img(plane: i32, x: i32, y: i32) -> f32 {
+  return imgs[plane * ${H * W} + clamp(y, 0, ${H - 1}) * ${W} + clamp(x, 0, ${W - 1})];
+}
+fn warp3(base: i32, sx: f32, sy: f32) -> vec3<f32> {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  var r: vec3<f32>;
+  for (var c = 0; c < 3; c++) {
+    let p = base + c;
+    r[c] = mix(mix(img(p, x0, y0), img(p, x0 + 1, y0), fx),
+               mix(img(p, x0, y0 + 1), img(p, x0 + 1, y0 + 1), fx), fy);
+  }
+  return r; // b,g,r
+}
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${W} || y >= ${H}) { return; }
+  let sx = (f32(x) + 0.5) / 8.0 - 0.5;
+  let sy = (f32(y) + 0.5) / 8.0 - 0.5;
+  let fx0 = up(0, sx, sy) * 8.0;
+  let fy0 = up(1, sx, sy) * 8.0;
+  let fx1 = up(2, sx, sy) * 8.0;
+  let fy1 = up(3, sx, sy) * 8.0;
+  let m = 1.0 / (1.0 + exp(-up(4, sx, sy)));
+  let w0 = warp3(0, f32(x) + fx0, f32(y) + fy0);
+  let w1 = warp3(3, f32(x) + fx1, f32(y) + fy1);
+  let bgr = clamp(w0 * m + w1 * (1.0 - m), vec3<f32>(0.0), vec3<f32>(1.0));
+  textureStore(outTex, vec2<i32>(x, y), vec4<f32>(bgr.z, bgr.y, bgr.x, 1.0));
+}`;
+}
+
 // one-shot f32 -> f16 conversion (weights at init)
 const WGSL_TO_F16 = /* wgsl */`
 enable f16;
@@ -433,7 +485,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-export async function createRT(device, { w, h, weightsBin, weightsManifest, textureInput = false }) {
+export async function createRT(device, { w, h, weightsBin, weightsManifest,
+                                          textureInput = false, textureOutput = false }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
   const useF16 = device.features.has('shader-f16');
@@ -514,7 +567,19 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
-  const pFlow = pipe(wgslFlowOut(w, h));
+  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h) : wgslFlowOut(w, h));
+  // texture-output mode: flow bind groups are per output texture (small ring — cache them)
+  const flowBgCache = new Map();
+  function flowBgFor(tex) {
+    if (!flowBgCache.has(tex)) {
+      flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: tmp8 } },
+        { binding: 1, resource: { buffer: imgs } },
+        { binding: 2, resource: tex.createView() }] }));
+      if (flowBgCache.size > 24) flowBgCache.clear();
+    }
+    return flowBgCache.get(tex);
+  }
 
   // buffer-input prep bind groups (unused in texture mode)
   const bgPrepFull = textureInput ? null : bg(pPrepFull, [rgba0, rgba1, imgs]);
@@ -555,7 +620,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
   }
   const f16out = src; // after 8 convs
   const bgDeconv = bg(pDeconv, [f16out, wbuf['block0.lastconv.weight'], wbuf['block0.lastconv.bias'], tmp8]);
-  const bgFlow = bg(pFlow, [tmp8, imgs, outp]);
+  const bgFlow = textureOutput ? null : bg(pFlow, [tmp8, imgs, outp]);
 
   const gx = (n) => Math.ceil(n / WG);
   // register-blocked convblock kernel covers 16x16 output per workgroup
@@ -629,7 +694,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
 
   // batched: upload/bind the pair once, produce mids for every t in ONE submit.
   // Buffer mode: a/b are RGBA arrays. Texture mode: a/b are GPUTextures (zero CPU pixels).
-  async function runMulti(a, b, ts) {
+  // With textureOutput, outTexs[i] receives mid i and NOTHING is read back — returns null.
+  async function runMulti(a, b, ts, outTexs) {
     if (ts.length > MAXT) throw new Error('too many timesteps');
     for (let i = 0; i < ts.length; i++) {
       device.queue.writeBuffer(tbufs[i], 0, new Float32Array([ts[i]]));
@@ -659,11 +725,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
         pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
       }
       pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
-      pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));
+      pass2.setPipeline(pFlow);
+      pass2.setBindGroup(0, textureOutput ? flowBgFor(outTexs[i]) : bgFlow);
+      pass2.dispatchWorkgroups(gx(w), gx(h));
       pass2.end();
-      enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
+      if (!textureOutput) enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
     }
     device.queue.submit([enc.finish()]);
+    if (textureOutput) return null; // mids live in outTexs, nothing crosses the bus
     // map all stagings concurrently — sequential awaits cost ~1ms each
     await Promise.all(stagings.slice(0, ts.length).map(s => s.mapAsync(GPUMapMode.READ)));
     const outs = [];

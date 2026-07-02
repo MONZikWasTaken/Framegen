@@ -61,7 +61,9 @@ const DELAY_MS = 100; // pipeline delay (display queue + audio DelayNode)
 
 const $ = id => document.getElementById(id);
 const st = (m, bad) => { $('status').textContent += m + '\n'; if (bad) $('status').classList.add('bad'); };
-const vid = $('vid'), out = $('out'), octx = out.getContext('2d');
+const vid = $('vid');
+let out = $('out'), octx = null; // canvas is replaced per worker (transferControlToOffscreen is one-shot)
+let presentMode = 'main';        // 'worker' = GPU-resident presentation inside the worker
 
 let worker = null, workerKey = null;
 let W = 0, H = 0;     // display size
@@ -82,6 +84,7 @@ function ensureAudioDelay() {
 }
 
 function draw(item) {
+  if (!octx) octx = out.getContext('2d');
   if (out.width !== W) { out.width = W; out.height = H; }
   octx.drawImage(item.payload, 0, 0, W, H); // mids at compute size upscale here (GPU)
   item.payload.close();
@@ -114,23 +117,27 @@ function pump(now) {
 async function onFrame() {
   if (!running) return;
   const ts = performance.now();
-  // letterbox the frame into the display size and the (possibly smaller) model size —
-  // both are GPU draws, no pixel readback on this thread
+  // letterbox the frame — a GPU draw, no pixel readback on this thread
   const s = Math.min(W / vid.videoWidth, H / vid.videoHeight);
   const dw = vid.videoWidth * s, dh = vid.videoHeight * s;
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W, H);
   lctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  lcctx.drawImage(letterbox, 0, 0, CW, CH);
-  const [bmpKeep, bmpSend] = await Promise.all([
-    createImageBitmap(letterbox), createImageBitmap(letterboxC)]);
-
-  if (prevBmp) {
-    const dt = ts - prevTs;
-    if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
-    queue.push({ payload: prevBmp, at: ts + DELAY_MS });
+  if (presentMode === 'worker') {
+    // the worker presents everything: one bitmap is all it needs
+    const bmp = await createImageBitmap(letterbox);
+    worker.postMessage({ type: 'frame', bmp, ts }, [bmp]);
+  } else {
+    lcctx.drawImage(letterbox, 0, 0, CW, CH);
+    const [bmpKeep, bmpSend] = await Promise.all([
+      createImageBitmap(letterbox), createImageBitmap(letterboxC)]);
+    if (prevBmp) {
+      const dt = ts - prevTs;
+      if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
+      queue.push({ payload: prevBmp, at: ts + DELAY_MS });
+    }
+    prevBmp = bmpKeep; prevTs = ts;
+    worker.postMessage({ type: 'frame', bmp: bmpSend, ts }, [bmpSend]);
   }
-  prevBmp = bmpKeep; prevTs = ts;
-  worker.postMessage({ type: 'frame', bmp: bmpSend, ts }, [bmpSend]);
   vid.requestVideoFrameCallback(onFrame);
 }
 
@@ -143,6 +150,12 @@ function onWorkerMessage(ev) {
       createImageBitmap(new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h))
         .then(bmp => queue.push({ payload: bmp, at: due }));
     } else dropped++;
+  } else if (m.type === 'stats') {
+    // worker-present mode: the worker owns the display; we just render its HUD
+    $('hud').textContent =
+      `out ${m.fps} fps · interp ${m.interpMs.toFixed(0)} ms` +
+      `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '—'}\n` +
+      `shown ${m.shown} · dropped ${m.dropped} · dups ${m.dups} · cuts ${m.cuts} · ${workerKey ?? ''}`;
   } else if (m.type === 'dup') dups++;
   else if (m.type === 'cut') cuts++;
   else if (m.type === 'skipped') dropped++;
@@ -182,20 +195,30 @@ function ensureWorker() {
   lctx = letterbox.getContext('2d');
   letterboxC = new OffscreenCanvas(CW, CH);
   lcctx = letterboxC.getContext('2d');
-  worker = new Worker('player_worker.js?v=18', { type: 'module' }); // cache-bust: workers are cached aggressively
+  // transferControlToOffscreen is one-shot per element — every worker gets a fresh canvas
+  const freshOut = out.cloneNode(false);
+  out.replaceWith(freshOut);
+  out = freshOut; octx = null;
+  const offscreen = out.transferControlToOffscreen();
+  worker = new Worker('player_worker.js?v=19', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
-  st(`создаю сессию ${key} в воркере... (webnn собирает граф несколько секунд, один раз)`);
+  st(`создаю сессию ${key} в воркере... (первый раз собирает конвейеры пару секунд)`);
   return new Promise((resolve, reject) => {
     const orig = onWorkerMessage;
     worker.onmessage = ev => {
-      if (ev.data.type === 'ready') { st('сессия готова (режим ' + ev.data.mode + ')'); worker.onmessage = orig; resolve(); }
+      if (ev.data.type === 'ready') {
+        presentMode = ev.data.present || 'main';
+        st('сессия готова (режим ' + ev.data.mode + ', показ: ' + presentMode + ')');
+        worker.onmessage = orig;
+        resolve();
+      }
       else if (ev.data.type === 'error') { st('WORKER ERROR: ' + ev.data.msg, true); reject(new Error(ev.data.msg)); }
       else orig(ev);
     };
     worker.postMessage({ type: 'init', ep, auto: res === 'auto', res: mode.f32res, quality: q,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked,
-      factor: +$('factor').value, dispH: H });
+      factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen }, [offscreen]);
   });
 }
 
@@ -238,13 +261,13 @@ function togglePlay() {
   if (!vid.src) return;
   if (vid.paused) $('playBtn').click(); else $('pauseBtn').click();
 }
-$('out').onclick = togglePlay;
+$('stage').onclick = togglePlay; // stage, not canvas — the canvas node is replaced per worker
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
 });
 $('fsBtn').onclick = () => document.fullscreenElement
   ? document.exitFullscreen() : $('stage').requestFullscreen();
-$('out').ondblclick = $('fsBtn').onclick;
+$('stage').ondblclick = $('fsBtn').onclick;
 $('stage').ondragover = e => e.preventDefault();
 $('stage').ondrop = e => {
   e.preventDefault();
@@ -278,7 +301,7 @@ $('playBtn').onclick = async () => {
     hudTimer = 0; shownWindow = [];
     await vid.play();
     vid.requestVideoFrameCallback(onFrame);
-    requestAnimationFrame(pump);
+    if (presentMode === 'main') requestAnimationFrame(pump); // worker mode presents itself
   } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
 };
 $('pauseBtn').onclick = () => { vid.pause(); running = false; };
