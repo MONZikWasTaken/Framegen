@@ -69,7 +69,7 @@
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
   let bar = null, barSeeking = false;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
-  let splitEl = null, splitX = 0.5, toggling = false;
+  let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   const sys = { gpu: '—', f16: false };
 
   const log = (...a) => console.log('[framecast]', ...a);
@@ -509,9 +509,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function updateWarn(now, vr) {
     ensureWarn();
     const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
-    const over = cfg.factor !== 'auto' && load > 1.08;
-    if (over && !overSince) overSince = now;
-    if (!over && (cfg.factor === 'auto' || load < 0.92)) overSince = 0;
+    // fixed factor: over budget. auto: even 2x is being skipped — nothing left to shed
+    const fixedOver = cfg.fg && cfg.factor !== 'auto' && load > 1.08;
+    const autoOver = cfg.fg && cfg.factor === 'auto' && autoSkipT && now - autoSkipT < 1200;
+    if ((fixedOver || autoOver) && !overSince) {
+      overSince = now;
+      warnEl.textContent = fixedOver
+        ? '⚠ Нагрузка слишком высокая — понизьте множитель или включите «авто»'
+        : '⚠ GPU не успевает даже 2× — поставьте качество «экономное»';
+    }
+    if (!fixedOver && !autoOver && load < 0.92) overSince = 0;
     const show = overSince && now - overSince > 1500; // sustained, not a warmup blip
     warnEl.style.left = (vr.left + vr.width / 2 - warnEl.offsetWidth / 2) + 'px';
     warnEl.style.top = (vr.top + 12) + 'px';
@@ -654,7 +661,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.85) n--;
             const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
             while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz * 1.15) n--;
-            if ((n - 1) * ms > uniqueIntervalMs * 1.1) run = false; // even 2x won't fit
+            if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
           } else {
             n = cfg.factor; // fixed by the user — NEVER lowered
           }
@@ -754,36 +761,55 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     st.textContent = lines.join('\n');
   }
 
+  // keep the whole panel on screen — it grows when "advanced" unfolds
+  function clampPanel() {
+    if (!panel || panel.style.display !== 'block') return;
+    const r = panel.getBoundingClientRect();
+    if (r.bottom > innerHeight - 10) panel.style.top = Math.max(10, innerHeight - r.height - 10) + 'px';
+    if (r.right > innerWidth - 10) panel.style.left = Math.max(10, innerWidth - r.width - 10) + 'px';
+  }
+
   function buildPanel() {
     panel = document.createElement('div');
     panel.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
       + 'background:rgba(16,16,16,.92); color:#ddd; border:1px solid rgba(255,255,255,.14);'
-      + 'border-radius:12px; backdrop-filter:blur(8px); box-shadow:0 6px 24px rgba(0,0,0,.45);'
-      + 'padding:12px 14px; font:12px/2 system-ui; display:none; min-width:230px;';
+      + 'border-radius:14px; backdrop-filter:blur(10px); box-shadow:0 8px 32px rgba(0,0,0,.5);'
+      + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
+      + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div><b>Framecast</b></div>
-      <label><input type="checkbox" id="fcFG"> генерация кадров (FG)</label><br>
-      <label><input type="checkbox" id="fcSR"> апскейлер SR ×2</label><br>
-      <label>множитель
-        <select id="fcFactor">
-          <option value="auto">авто</option>
-          <option value="2">2×</option><option value="3">3×</option>
-          <option value="4">4×</option><option value="5">5×</option>
-          <option value="6">6×</option>
-        </select></label><br>
-      <label>вставки
-        <select id="fcRes">
-          <option value="360">360p (быстрее)</option>
-          <option value="480">480p</option>
-          <option value="720">720p (тяжелее)</option>
-        </select></label><br>
-      <label><input type="checkbox" id="fcAnime"> аниме-дедуп «двоек»</label><br>
-      <label><input type="checkbox" id="fcHover"> контролы плеера при наведении</label><br>
-      <label><input type="checkbox" id="fcCompare"> сравнение — шторка ориг/FC</label><br>
-      <label><input type="checkbox" id="fcDebug"> debug (рамка + телеметрия)</label>
-      <hr style="border:none;border-top:1px solid #444;margin:8px 0">
-      <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">—</div>`;
+      <div class="fc-title">Framecast</div>
+      <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
+        <input class="fc-sw" type="checkbox" id="fcFG"></label>
+      <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
+        <input class="fc-sw" type="checkbox" id="fcSR"></label>
+      <label class="fc-row"><span>Качество<small>нагрузка на видеокарту</small></span>
+        <select class="fc-sel" id="fcRes">
+          <option value="360">экономное</option>
+          <option value="480">баланс</option>
+          <option value="720">максимум</option>
+        </select></label>
+      <details class="fc-details">
+        <summary>продвинутые настройки</summary>
+        <label class="fc-row"><span>Множитель кадров</span>
+          <select class="fc-sel" id="fcFactor">
+            <option value="auto">авто</option>
+            <option value="2">2×</option><option value="3">3×</option>
+            <option value="4">4×</option><option value="5">5×</option>
+            <option value="6">6×</option>
+          </select></label>
+        <label class="fc-row"><span>Аниме-дедуп<small>распознавать «двойки» кадров</small></span>
+          <input class="fc-sw" type="checkbox" id="fcAnime"></label>
+        <label class="fc-row"><span>Контролы при наведении</span>
+          <input class="fc-sw" type="checkbox" id="fcHover"></label>
+        <label class="fc-row"><span>Сравнение<small>шторка оригинал / FC</small></span>
+          <input class="fc-sw" type="checkbox" id="fcCompare"></label>
+        <label class="fc-row"><span>Debug<small>рамка + телеметрия</small></span>
+          <input class="fc-sw" type="checkbox" id="fcDebug"></label>
+        <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
+        <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">—</div>
+      </details>`;
     document.body.appendChild(panel);
+    panel.querySelector('.fc-details').addEventListener('toggle', () => requestAnimationFrame(clampPanel));
     const F = panel.querySelector('#fcFactor'), R = panel.querySelector('#fcRes');
     const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
     const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
@@ -827,7 +853,27 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         border:none;background:rgba(15,15,15,.62);color:#fff;cursor:pointer;display:none;
         backdrop-filter:blur(6px);font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
         transition:background .15s,transform .15s}
-      .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}`;
+      .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}
+      .fc-title{font:600 14px system-ui;color:#fff;display:flex;align-items:center;gap:7px;margin-bottom:8px}
+      .fc-title::before{content:'';width:8px;height:8px;border-radius:50%;background:#19c37d}
+      .fc-row{display:flex;justify-content:space-between;align-items:center;gap:18px;
+        padding:7px 0;cursor:pointer;font:12px system-ui;color:#e8e8e8}
+      .fc-row small{display:block;color:#8a8f98;font-size:10px;margin-top:1px}
+      .fc-sw{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:20px;
+        background:#3d4148;position:relative;cursor:pointer;outline:none;margin:0;
+        transition:background .2s;flex:none}
+      .fc-sw::after{content:'';position:absolute;width:16px;height:16px;border-radius:50%;
+        background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
+      .fc-sw:checked{background:#19c37d}
+      .fc-sw:checked::after{left:18px}
+      .fc-sel{background:#2a2d33;color:#eee;border:1px solid rgba(255,255,255,.14);
+        border-radius:8px;padding:4px 8px;font:12px system-ui;outline:none;cursor:pointer;flex:none}
+      .fc-details summary{cursor:pointer;color:#8a8f98;font:11px system-ui;list-style:none;
+        display:flex;align-items:center;gap:5px;padding:6px 0 2px;user-select:none}
+      .fc-details summary::before{content:'';width:0;height:0;border-left:4px solid #8a8f98;
+        border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transition:transform .15s}
+      .fc-details[open] summary::before{transform:rotate(90deg)}
+      .fc-details summary::-webkit-details-marker{display:none}`;
     (document.head || document.documentElement).appendChild(css);
     btn = document.createElement('button');
     btn.textContent = 'FC';
@@ -860,6 +906,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         panel.style.left = Math.min(g.right + 10, innerWidth - panel.offsetWidth - 10) + 'px';
         panel.style.top = Math.max(10, Math.min(g.top - panel.offsetHeight / 2, innerHeight - panel.offsetHeight - 10)) + 'px';
         updateStatus();
+        clampPanel();
       }
     };
     document.body.appendChild(btn);
