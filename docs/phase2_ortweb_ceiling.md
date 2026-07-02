@@ -47,6 +47,82 @@ before the real-GPU run below confirms whether GridSample still falls back on cu
 If it runs on GPU, the 1712 ms should collapse and the browser path becomes viable with zero
 custom-shader work.
 
+## MEASURED on the real 4060 Ti (2026-07-02) — overturns the optimism above
+
+Ran the WebGPU EP on the actual RTX 4060 Ti (adapter: nvidia / lovelace), current ort-web 1.27.0,
+at the fixed 736×1280, via an auto-runner that POSTs results back:
+
+| model | p50 | fps | output |
+|-------|----:|----:|--------|
+| fp32 webgpu | **1920 ms** | 0.5 | correct (mean 0.4998) |
+| fp16 webgpu | **1893 ms** | 0.5 | correct |
+
+Log evidence:
+- `WebGPU EP force CPU node count: 0` → GridSample **does run on the GPU** (the kernel exists, as
+  found). So "add the missing GridSample kernel" was NOT the fix.
+- `Some nodes were not assigned to the preferred EP … ORT explicitly assigns shape related ops to
+  CPU` → the Slice/Concat/shape gymnastics around the 14 warps stay on CPU → GPU↔CPU syncs.
+
+**The real conclusion (corrects the "Phase 3 moot" note):**
+- ort-web WebGPU is **~1900 ms/frame (0.5 fps)** for this model on a 4060 Ti — **fp16 gives ~0%**.
+- Native TensorRT runs the *same model on the same GPU* at ~25 ms (40 fps). The browser is
+  **~75× slower** — that gap is ort-web's WebGPU **runtime overhead** (per-op dispatch + the
+  shape-op CPU roundtrips), **not** the model and **not** raw GridSample.
+- Therefore: a hand-rolled WGSL warp (Phase 3) **alone won't fix it** — it removes GridSample's
+  cost, but GridSample already runs on GPU; the loss is the surrounding roundtrips + general
+  ort-web dispatch overhead. The levers that actually move it: **(a) own wgpu backend** controlling
+  the whole graph (Phase 6, big), **(b) model shrink** (Phase 5 — helps proportionally but ort-web
+  per-op overhead persists), or **(c) accept the browser as offline/slow-mo-only, not real-time.**
+
+## Speed-up levers TESTED on the 4060 Ti (2026-07-02) — all cheap ones are DEAD
+
+Measured each on the real GPU (auto-runner → POST). Baseline ~1950 ms/frame.
+
+| lever | what it removes | result | verdict |
+|-------|-----------------|-------:|---------|
+| fp16 | ½ the FLOPs | 1893 ms | **0%** → not FLOP-bound |
+| gpu-buffer output | output download | 1990 ms | **0%** → not IO-bound |
+| `enableGraphCapture` + GPU IO-binding | per-op JS→WebGPU dispatch | 1945 ms | **0%** → not JS-dispatch-bound |
+| WebNN EP (DirectML) | unfused execution | **558 ms** | **3.5× WIN** (measured, see below) |
+
+**Diagnosis:** fp16 halving the math changed nothing → the cost is **not compute/FLOPs**. Graph
+capture removing JS dispatch changed nothing → **not JS overhead**. Output on GPU changed nothing
+→ **not transfers**. What's left: the graph runs as ~316 **unfused** WebGPU dispatches with
+CPU-side shape ops (Slice/Concat) forcing GPU↔CPU **syncs between segments** — and those syncs +
+per-dispatch latency are intrinsic to ort-web's WebGPU EP. Native TensorRT hits ~25 ms because it
+**fuses** ~316 nodes into a handful of kernels; ort-web does not fuse.
+
+### WebNN / DirectML — the one cheap lever that WORKS (measured on 4060 Ti, 2026-07-02)
+
+Enabled Chrome flag `#web-machine-learning-neural-network` (WebNN → DirectML on Windows), ran the
+same model via `executionProviders:[{name:'webnn',deviceType:'gpu'}]`:
+
+| EP | p50 | fps | output |
+|----|----:|----:|--------|
+| webgpu (ref) | 1957 ms | 0.5 | correct |
+| **webnn (DirectML)** | **558 ms** | **1.8** | correct (mean 0.4998) |
+| webnn + wasm fallback | 523 ms | 1.9 | correct |
+
+**~3.5× for free** — DirectML fuses/optimizes the graph where the WebGPU JSEP does not. Output is
+correct. Still 22× off native TRT (25 ms), so DirectML-via-WebNN isn't native-class, but it's the
+only zero-model-work multiplier that moved the needle.
+Caveats: needs the experimental WebNN flag (not on by default in stable Chrome yet, but shipping);
+session build is slow (~3.4 s, one-time). Use `ort.all.min.js` (not `ort.webgpu.min.js`) for the
+WebNN EP.
+
+**Updated conclusion:** WebGPU JSEP alone has no cheap win, but **WebNN/DirectML gives ~3.5×**.
+To go further you still reduce what the runtime dispatches or replace the runtime:
+1. **Own fused wgpu backend** (ROADMAP Phase 6, months) — the only path to native-class speed in
+   the browser; you control fusion + keep everything GPU-resident.
+2. **Model shrink** (Phase 5, weeks) — but since it's dispatch/sync-bound not FLOP-bound, the win
+   comes from **fewer nodes**, not fewer FLOPs → sub-linear; halving nodes ≈ ~2× at best.
+3. **Lower resolution** (blocked: needs re-export) — helps compute, but we're not compute-bound,
+   so expect modest gains.
+4. **Accept browser = offline / slow-mo-only** and keep real-time on native TensorRT.
+
+Honest target read: **"at least 2×" (→ ~950 ms) needs real work** (model shrink or own backend) —
+no config flag does it. **30 fps real-time in-browser = own fused backend = months.**
+
 ## What needs the real GPU (hand-off — run in your Chrome on the 4060 Ti)
 
 The exact per-node placement log and real fps can only come from a browser with a real

@@ -24,6 +24,7 @@ just copy the whole box back.</p>
   </select>
   <select id="ep">
     <option value="webgpu">EP: webgpu</option>
+    <option value="webnn">EP: webnn (DirectML; needs flag)</option>
     <option value="wasm">EP: wasm (CPU baseline)</option>
   </select>
   <button id="run">Run</button>
@@ -32,7 +33,7 @@ just copy the whole box back.</p>
 
 <div id="log"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js"></script>
 <script>
 const logEl = document.getElementById('log');
 function line(m, cls){ const s=document.createElement('span'); if(cls)s.className=cls;
@@ -67,8 +68,11 @@ async function run(){
 
     line('creating session (verbose — watch for CPU/fallback lines)...');
     const t0 = performance.now();
+    const provider = ep === 'webnn'
+      ? { name: 'webnn', deviceType: 'gpu', powerPreference: 'high-performance' }
+      : ep;
     const sess = await ort.InferenceSession.create(url, {
-      executionProviders: [ep],
+      executionProviders: [provider],
       graphOptimizationLevel: 'all',
     });
     line('session created in '+(performance.now()-t0).toFixed(0)+'ms; inputs='+sess.inputNames+' outputs='+sess.outputNames);

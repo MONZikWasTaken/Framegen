@@ -16,7 +16,7 @@
 sequence at the original fps → smooth 2× slow-mo. Not real-time (precompute-then-play).</p>
 
 <div>
-  <select id="ep"><option value="webgpu">webgpu</option><option value="wasm">wasm</option></select>
+  <select id="ep"><option value="webgpu">webgpu</option><option value="webnn">webnn (DirectML, ~3.5×; needs flag)</option><option value="wasm">wasm</option></select>
   <label>frames <input type="number" id="nFrames" value="8" min="2" max="48" style="width:56px"></label>
   <label>fps <input type="number" id="fps" value="24" min="1" max="60" style="width:56px"></label>
   <input type="file" id="file" accept="video/*">
@@ -33,7 +33,7 @@ sequence at the original fps → smooth 2× slow-mo. Not real-time (precompute-t
 <video id="vid" preload="auto" muted playsinline style="display:none"></video>
 <canvas id="out" width="640" height="360"></canvas>
 
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js"></script>
 <script type="module">
 import { createSession, interpolate } from './rife_session.js';
 import { assembleSlowmo } from './slowmo.js';

@@ -2,10 +2,18 @@ import { toInput, fromOutput } from './rife_prepost.js';
 
 const EW = 1280, EH = 736; // engine (padded) input size
 
+// 'webnn' -> DirectML on Windows (fuses the graph; ~3.5x over the WebGPU EP, but needs the
+// Chrome flag #web-machine-learning-neural-network and the ort.all bundle). Others pass through.
+function epProvider(ep) {
+  return ep === 'webnn'
+    ? { name: 'webnn', deviceType: 'gpu', powerPreference: 'high-performance' }
+    : ep;
+}
+
 export async function createSession(ep) {
   ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
   return await ort.InferenceSession.create('/assets/rife_lite_inlined.onnx',
-    { executionProviders: [ep], graphOptimizationLevel: 'all' });
+    { executionProviders: [epProvider(ep)], graphOptimizationLevel: 'all' });
 }
 
 // Two same-size ImageData -> interpolated middle-frame ImageData.

@@ -27,7 +27,7 @@
 </div>
 
 <div>
-  <select id="ep"><option value="webgpu">webgpu</option><option value="wasm">wasm</option></select>
+  <select id="ep"><option value="webgpu">webgpu</option><option value="webnn">webnn (DirectML, ~3.5×; needs flag)</option><option value="wasm">wasm</option></select>
   <button id="demoBtn">Use demo pair</button>
   <button id="runBtn">Interpolate</button>
 </div>
@@ -40,7 +40,7 @@
 </div>
 <input type="range" id="baRange" min="0" max="100" value="50">
 
-<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js"></script>
 <script type="module">
 import { createSession, interpolate } from './rife_session.js';
 
