@@ -34,3 +34,6 @@ opencode.json
 # Scratch
 /frames_in/
 /frames_out/
+
+extension/rt/
+extension/assets/
