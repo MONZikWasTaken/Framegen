@@ -11,12 +11,46 @@
   const SIZES = { 360: [640, 352], 480: [848, 480], 720: [1280, 720] };
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
-  const cfg = { factor: 4, anime: true, debug: false, res: 480, hoverReveal: true };
+  // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
+  const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false };
+  function sanitizeCfg() {
+    if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
+    if (!SIZES[cfg.res]) cfg.res = 480;
+    cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
+    cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
+  }
   try {
-    chrome.storage.local.get(cfg, v => Object.assign(cfg, v));
+    // async: the panel may already be built with defaults by the time this lands —
+    // ALWAYS resync the UI, otherwise checkboxes show one thing and cfg does another
+    chrome.storage.local.get(cfg, v => { Object.assign(cfg, v); sanitizeCfg(); syncPanel(); });
+    // settings changed in another tab/frame apply here live
+    chrome.storage.onChanged.addListener((ch, area) => {
+      if (area !== 'local') return;
+      let resChanged = false;
+      for (const k in ch) {
+        if (!(k in cfg)) continue;
+        if (k === 'res' && cfg.res !== ch[k].newValue) resChanged = true;
+        cfg[k] = ch[k].newValue;
+      }
+      sanitizeCfg(); syncPanel();
+      if (resChanged && running && videoEl && !toggling) {
+        toggling = true;
+        const v = videoEl; stop();
+        start(v).catch(e => log('res sync', e)).finally(() => { toggling = false; });
+      }
+    });
   } catch { /* storage unavailable in some frames */ }
   function saveCfg() {
     try { chrome.storage.local.set(cfg); } catch {}
+  }
+  function syncPanel() {
+    if (!panel) return;
+    panel.querySelector('#fcFactor').value = String(cfg.factor);
+    panel.querySelector('#fcRes').value = String(cfg.res);
+    panel.querySelector('#fcAnime').checked = cfg.anime;
+    panel.querySelector('#fcDebug').checked = cfg.debug;
+    panel.querySelector('#fcHover').checked = cfg.hoverReveal;
+    panel.querySelector('#fcCompare').checked = cfg.compare;
   }
 
   let rt = null, rtRes = 0, device = null, videoEl = null;
@@ -30,12 +64,22 @@
   let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
   let bar = null, barSeeking = false;
+  let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
+  let splitEl = null, splitX = 0.5, toggling = false;
   const sys = { gpu: '—', f16: false };
 
   const log = (...a) => console.log('[framecast]', ...a);
 
   // ---------- device / runtime ----------
+  // memoized: the hover-preload and the FC click may race — only one build runs
+  let rtBuilding = null;
   async function ensureRuntime() {
+    while (rtBuilding) await rtBuilding;
+    if (device && rt && rtRes === cfg.res) return;
+    rtBuilding = buildRuntime();
+    try { await rtBuilding; } finally { rtBuilding = null; }
+  }
+  async function buildRuntime() {
     if (!device) {
       if (!navigator.gpu) throw new Error('WebGPU недоступен');
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
@@ -131,7 +175,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (overlay) return;
     overlay = document.createElement('canvas');
     // a SIBLING of the video with a modest z-index: above the video, below the controls
-    overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2;';
+    overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2;'
+      + 'opacity:0; transition:opacity .25s;';
     overlayCtx = overlay.getContext('webgpu');
     overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -161,6 +206,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (btn && btn.parentElement !== uiHost) {
       uiHost.appendChild(btn); uiHost.appendChild(gear); uiHost.appendChild(hud); uiHost.appendChild(panel);
       if (bar) uiHost.appendChild(bar);
+      if (splitEl) uiHost.appendChild(splitEl);
+      if (warnEl) uiHost.appendChild(warnEl);
+      if (flashEl) uiHost.appendChild(flashEl);
     }
     const r = videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
@@ -194,6 +242,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     pass.draw(3);
     pass.end();
     device.queue.submit([enc.finish()]);
+    if (overlay.style.opacity !== '1') overlay.style.opacity = '1'; // reveal only once pixels exist
     shown++;
     const now = performance.now();
     fpsWin.push(now);
@@ -213,6 +262,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
       revealUntil = now + 2000;
       placeSideButtons(r);
+      // hovering a video signals intent: build the runtime NOW (weights fetch +
+      // shader compilation, the expensive part) so the FC click lands instantly
+      if (!rt && !rtBuilding) ensureRuntime().catch((err) => log('preload', err));
     }
   }, { passive: true });
 
@@ -274,13 +326,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       <button id="fcFull" class="fc-btn">${svgIcon('full')}</button>`;
     document.body.appendChild(bar);
     const q = (id) => bar.querySelector(id);
+    // per-button cooldowns: hammering the buttons must never wedge the player
+    const guard = (ms) => { let t = 0; return () => {
+      const n = performance.now(); if (n - t < ms) return false; t = n; return true; }; };
+    const gPlay = guard(180), gMute = guard(120), gFull = guard(400);
     q('#fcPlay').onclick = () => {
-      if (!videoEl) return;
-      videoEl.paused ? videoEl.play() : videoEl.pause();
+      if (!videoEl || !gPlay()) return;
+      if (videoEl.paused) videoEl.play().catch(() => {}); else videoEl.pause();
       flashCenter(svgIcon(videoEl.paused ? 'pause' : 'play', 30));
       updateBar();
     };
-    q('#fcMute').onclick = () => { if (videoEl) videoEl.muted = !videoEl.muted; updateBar(); };
+    q('#fcMute').onclick = () => { if (videoEl && gMute()) { videoEl.muted = !videoEl.muted; updateBar(); } };
     q('#fcVol').oninput = (e) => { if (videoEl) { videoEl.volume = e.target.value / 100; videoEl.muted = false; } };
     q('#fcSeek').addEventListener('pointerdown', () => { barSeeking = true; });
     q('#fcSeek').addEventListener('pointerup', () => { barSeeking = false; });
@@ -292,7 +348,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // layout size, which looks like fullscreen "not working"
     let fsByUs = false, fsSaved = '';
     q('#fcFull').onclick = () => {
-      if (document.fullscreenElement) document.exitFullscreen();
+      if (!gFull()) return; // fullscreen transitions are async — no double-fire
+      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else if (videoEl) {
         fsByUs = true;
         (videoEl.parentElement || videoEl).requestFullscreen().catch(e => { fsByUs = false; log('fullscreen', e); });
@@ -360,8 +417,71 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     rangeFill(seek, p, '#19c37d');
   }
 
+  // compare mode: a draggable divider — raw video shows LEFT of it (the overlay is
+  // clipped away), interpolated frames play on the right
+  function ensureSplit() {
+    if (splitEl) return;
+    splitEl = document.createElement('div');
+    splitEl.style.cssText = 'position:fixed; z-index:2147483645; width:18px; margin-left:-9px;'
+      + 'cursor:ew-resize; touch-action:none; display:none;';
+    splitEl.innerHTML = `
+      <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px;
+        background:rgba(255,255,255,.85); box-shadow:0 0 10px rgba(0,0,0,.7)"></div>
+      <div style="position:absolute; left:50%; top:50%; width:28px; height:28px; margin:-14px 0 0 -14px;
+        border-radius:50%; background:rgba(15,15,15,.62); backdrop-filter:blur(6px);
+        border:1px solid rgba(255,255,255,.3); color:#fff; font:12px system-ui;
+        display:flex; align-items:center; justify-content:center">⇄</div>
+      <div style="position:absolute; right:14px; top:10px; color:#fff; font:10px system-ui;
+        background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">ориг.</div>
+      <div style="position:absolute; left:14px; top:10px; color:#fff; font:10px system-ui;
+        background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FC</div>`;
+    splitEl.addEventListener('pointerdown', (e) => {
+      splitEl.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        if (!videoEl) return;
+        const r = videoEl.getBoundingClientRect();
+        splitX = Math.min(0.98, Math.max(0.02, (ev.clientX - r.left) / r.width));
+      };
+      move(e);
+      splitEl.onpointermove = move;
+      splitEl.onpointerup = () => { splitEl.onpointermove = null; splitEl.onpointerup = null; };
+      e.preventDefault();
+    });
+    (document.fullscreenElement || document.body).appendChild(splitEl);
+  }
+
+  // overload plate: fixed factors are never lowered, we just tell the user
+  function ensureWarn() {
+    if (warnEl) return;
+    warnEl = document.createElement('div');
+    warnEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
+      + 'background:rgba(60,16,16,.78); backdrop-filter:blur(8px); color:#ffb4a8;'
+      + 'border:1px solid rgba(255,120,100,.35); border-radius:12px; padding:8px 14px;'
+      + 'font:12px system-ui; box-shadow:0 4px 20px rgba(0,0,0,.4);'
+      + 'opacity:0; transform:translateY(-6px); transition:opacity .25s, transform .25s;';
+    warnEl.textContent = '⚠ Нагрузка слишком высокая — понизьте множитель или включите «авто»';
+    document.body.appendChild(warnEl);
+  }
+  function updateWarn(now, vr) {
+    ensureWarn();
+    const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
+    const over = cfg.factor !== 'auto' && load > 1.08;
+    if (over && !overSince) overSince = now;
+    if (!over && (cfg.factor === 'auto' || load < 0.92)) overSince = 0;
+    const show = overSince && now - overSince > 1500; // sustained, not a warmup blip
+    warnEl.style.left = (vr.left + vr.width / 2 - warnEl.offsetWidth / 2) + 'px';
+    warnEl.style.top = (vr.top + 12) + 'px';
+    warnEl.style.opacity = show ? '1' : '0';
+    warnEl.style.transform = show ? 'translateY(0)' : 'translateY(-6px)';
+  }
+
   function pump(now) {
     if (!running) return;
+    if (lastPumpT) {
+      const d = now - lastPumpT;
+      if (d > 1 && d < 100) rafMs = rafMs ? rafMs * 0.9 + d * 0.1 : d;
+    }
+    lastPumpT = now;
     positionOverlay();
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect();
@@ -382,6 +502,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       hud.style.left = Math.max(0, vr.right - hud.offsetWidth - 10) + 'px';
       hud.style.top = Math.max(0, vr.top + 10) + 'px';
+      updateWarn(now, vr);
+      if (cfg.compare) {
+        ensureSplit();
+        splitEl.style.display = 'block';
+        splitEl.style.left = (vr.left + splitX * vr.width) + 'px';
+        splitEl.style.top = vr.top + 'px';
+        splitEl.style.height = vr.height + 'px';
+        overlay.style.clipPath = `inset(0 0 0 ${(splitX * 100).toFixed(2)}%)`;
+      } else {
+        if (splitEl) splitEl.style.display = 'none';
+        if (overlay.style.clipPath) overlay.style.clipPath = '';
+      }
     }
     queue.sort((a, b) => a.at - b.at);
     let due = -1;
@@ -398,7 +530,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
         hud.textContent =
           `видео: ${videoEl.videoWidth}x${videoEl.videoHeight} @ ${srcFps.toFixed(1)}fps\n` +
-          `выход: ${fpsWin.length}fps · факт. множитель ×${effN}\n` +
+          `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? ' (авто)' : ' (фикс)'}\n` +
           `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p · бюджет ${uniqueIntervalMs.toFixed(0)}ms\n` +
           `GPU: ${sys.gpu} · загрузка ~${load.toFixed(0)}%\n` +
           `shown ${shown} · drop ${dropped} · dups ${dups} · cuts ${cuts}\n` +
@@ -466,11 +598,21 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           const du = arrival - lastUniqueTs;
           if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
           lastUniqueTs = arrival;
-          let n = cfg.factor;
           const ms = msAvg || 10;
-          while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 1.1) n--;
+          let n, run = true;
+          if (cfg.factor === 'auto') {
+            // smart auto: as much as fits in 85% of the per-unique-frame budget,
+            // but never past the display refresh (extra frames would be thrown away)
+            n = 6;
+            while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.85) n--;
+            const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
+            while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz * 1.15) n--;
+            if ((n - 1) * ms > uniqueIntervalMs * 1.1) run = false; // even 2x won't fit
+          } else {
+            n = cfg.factor; // fixed by the user — NEVER lowered
+          }
           effN = n;
-          if ((n - 1) * ms <= uniqueIntervalMs * 1.05) {
+          if (run) {
             const job = { a: prev, b: tex, at: arrival - intervalMs + DELAY_MS, n };
             if (!busy) runPair(job);
             else pending = job;
@@ -496,7 +638,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     await ensureRuntime();
     ensureOverlay();
     positionOverlay();
+    overlay.style.opacity = '0';
     overlay.style.display = 'block';
+    // seed the canvas with the current video frame so the reveal is seamless —
+    // no black flash while the first interpolated frames are still in flight
+    const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
+    if (vw && vh) {
+      ensureFrameTextures(vw, vh);
+      const seed = frameTex[frameIdx];
+      frameIdx = (frameIdx + 1) % frameTex.length;
+      device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
+      present(seed);
+    }
     queue = []; lastTex = null; pending = null;
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
@@ -507,9 +660,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function stop() {
     running = false;
-    if (overlay) overlay.style.display = 'none';
+    if (overlay) { // fade out, then release — the raw video underneath is identical
+      overlay.style.opacity = '0';
+      setTimeout(() => { if (!running && overlay) overlay.style.display = 'none'; }, 260);
+    }
     hud.style.display = 'none';
     if (bar) bar.style.display = 'none';
+    overSince = 0;
+    if (warnEl) warnEl.style.opacity = '0';
+    if (splitEl) splitEl.style.display = 'none';
     queue = []; lastTex = null; pending = null;
     btn.style.background = '';
   }
@@ -536,7 +695,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const vramMB = (texW * texH * 4 * frameTex.length + mw * mh * 4 * midTexs.length) / 1048576;
       const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
       lines.push(
-        `выход: ${fpsWin.length}fps · множитель ×${effN}`,
+        `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? ' (авто)' : ' (фикс)'}`,
+        `дисплей: ~${rafMs > 1 ? (1000 / rafMs).toFixed(0) : '—'}Гц`,
         `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p`,
         `нагрузка GPU (наша, оценка): ~${load.toFixed(0)}%`,
         `VRAM текстуры: ~${vramMB.toFixed(0)}MB · очередь ${queue.length}`);
@@ -552,10 +712,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:12px 14px; font:12px/2 system-ui; display:none; min-width:230px;';
     panel.innerHTML = `
       <div><b>Framecast</b></div>
-      <label>множитель (потолок)
+      <label>множитель
         <select id="fcFactor">
+          <option value="auto">авто</option>
           <option value="2">2×</option><option value="3">3×</option>
-          <option value="4">4×</option><option value="6">6×</option>
+          <option value="4">4×</option><option value="5">5×</option>
+          <option value="6">6×</option>
         </select></label><br>
       <label>вставки
         <select id="fcRes">
@@ -565,22 +727,28 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         </select></label><br>
       <label><input type="checkbox" id="fcAnime"> аниме-дедуп «двоек»</label><br>
       <label><input type="checkbox" id="fcHover"> контролы плеера при наведении</label><br>
+      <label><input type="checkbox" id="fcCompare"> сравнение — шторка ориг/FC</label><br>
       <label><input type="checkbox" id="fcDebug"> debug (рамка + телеметрия)</label>
       <hr style="border:none;border-top:1px solid #444;margin:8px 0">
       <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">—</div>`;
     document.body.appendChild(panel);
     const F = panel.querySelector('#fcFactor'), R = panel.querySelector('#fcRes');
     const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
-    const Hv = panel.querySelector('#fcHover');
-    F.value = String(cfg.factor); R.value = String(cfg.res);
-    A.checked = cfg.anime; D.checked = cfg.debug; Hv.checked = cfg.hoverReveal;
-    F.onchange = () => { cfg.factor = +F.value; saveCfg(); };
+    const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
+    syncPanel();
+    F.onchange = () => { cfg.factor = F.value === 'auto' ? 'auto' : +F.value; overSince = 0; saveCfg(); };
     A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
+    Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
     R.onchange = async () => {
       cfg.res = +R.value; saveCfg();
-      if (running) { const v = videoEl; stop(); await start(v); } // rebuild the runtime
+      if (running && !toggling) { // rebuild the runtime, once
+        toggling = true;
+        try { const v = videoEl; stop(); await start(v); }
+        catch (e) { log('res switch', e); }
+        finally { toggling = false; }
+      }
     };
   }
 
@@ -617,10 +785,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     buildPanel();
     ensureBar();
     btn.onclick = async () => {
-      if (running) { stop(); return; }
-      const v = biggestVideo();
-      if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: видео не найдено'; return; }
-      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
+      if (toggling) return; // start/stop in flight — spam-proof
+      toggling = true;
+      try {
+        if (running) { stop(); return; }
+        const v = biggestVideo();
+        if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: видео не найдено'; return; }
+        try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
+      } finally { toggling = false; }
     };
     gear.onclick = () => {
       const open = panel.style.display === 'none';
