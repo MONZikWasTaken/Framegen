@@ -12,12 +12,14 @@
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
-  const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false };
+  const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
+    fg: true, sr: false };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
+    cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr;
   }
   try {
     // async: the panel may already be built with defaults by the time this lands —
@@ -51,6 +53,8 @@
     panel.querySelector('#fcDebug').checked = cfg.debug;
     panel.querySelector('#fcHover').checked = cfg.hoverReveal;
     panel.querySelector('#fcCompare').checked = cfg.compare;
+    panel.querySelector('#fcFG').checked = cfg.fg;
+    panel.querySelector('#fcSR').checked = cfg.sr;
   }
 
   let rt = null, rtRes = 0, device = null, videoEl = null;
@@ -227,7 +231,47 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const bh = Math.round(Math.min(r.height * devicePixelRatio, 1080));
     if (overlay.width !== bw || overlay.height !== bh) { overlay.width = bw; overlay.height = bh; }
   }
-  function present(tex) {
+  // ---------- TinySR 2x upscale on the present path ----------
+  let sr = null, srBuilding = null;
+  const srOut = new Map();
+  async function ensureSR() {
+    if (sr || !sys.f16 || !device) return; // SR shaders need shader-f16
+    if (srBuilding) { await srBuilding; return; }
+    srBuilding = (async () => {
+      const url = (p) => chrome.runtime.getURL(p);
+      const [bin, man] = await Promise.all([
+        fetch(url('assets/rt_sr.bin')).then(r => r.arrayBuffer()),
+        fetch(url('assets/rt_sr.json')).then(r => r.json())]);
+      const { createSR } = await import(url('rt/sr.js'));
+      sr = await createSR(device, { weightsBin: bin, weightsManifest: man });
+      log('SR up');
+    })();
+    try { await srBuilding; } finally { srBuilding = null; }
+  }
+
+  function present(tex, isMid) {
+    // interpolated frames are model-res and look soft next to native source frames;
+    // run them through TinySR (2x) when it actually adds pixels toward the canvas.
+    // With FG off, SR applies to the source frames instead (pure-upscaler mode).
+    if (cfg.sr && (isMid || !cfg.fg)) {
+      if (!sr) { ensureSR().catch(e => log('sr', e)); }
+      else if (tex.width < overlay.width) {
+        const key = tex.width + 'x' + tex.height;
+        let out = srOut.get(key);
+        if (!out) {
+          out = device.createTexture({ label: 'fcsr' + key,
+            size: [tex.width * 2, tex.height * 2], format: 'rgba8unorm',
+            usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
+          srOut.set(key, out);
+          if (srOut.size > 4) {
+            for (const [k, t] of srOut) if (k !== key) { t.destroy(); srOut.delete(k); }
+            blitBg.clear();
+          }
+        }
+        sr.process(tex, out, tex.width, tex.height);
+        tex = out;
+      }
+    }
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{
       view: overlayCtx.getCurrentTexture().createView(),
@@ -520,7 +564,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
     if (due >= 0) {
       dropped += due;
-      present(queue[due].tex);
+      present(queue[due].tex, queue[due].mid);
       queue = queue.slice(due + 1);
     }
     if (now - statsTimer > 400) {
@@ -563,7 +607,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
       });
       for (let k = 0; k < ts.length; k++) {
-        queue.push({ tex: outs[k], at: job.at + ts[k] * intervalMs });
+        queue.push({ tex: outs[k], at: job.at + ts[k] * intervalMs, mid: true });
       }
     } catch (e) {
       log('interp error', e);
@@ -588,9 +632,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: tex }, [vw, vh]);
-      queue.push({ tex, at: arrival + DELAY_MS });
+      queue.push({ tex, at: arrival + DELAY_MS, mid: false });
       const prev = lastTex;
-      if (prev) {
+      if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
+        effN = 1;
+        lastUniqueTs = arrival;
+      } else if (prev) {
         const { dup, cut } = await classifyPair(prev, tex);
         if (cut) { cuts++; lastUniqueTs = arrival; }
         else if (cfg.anime && dup) { dups++; }
@@ -648,8 +695,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const seed = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
-      present(seed);
+      present(seed, false);
     }
+    if (cfg.sr) ensureSR().catch(e => log('sr', e));
     queue = []; lastTex = null; pending = null;
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
@@ -687,8 +735,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function updateStatus() {
     const st = panel && panel.querySelector('#fcStatus');
     if (!st) return;
+    const srState = cfg.sr ? (!sys.f16 ? 'недоступен (нет f16)' : (sr ? 'вкл ×2' : 'загрузка…')) : 'выкл';
     const lines = [`GPU: ${sys.gpu}`,
       `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_slim`,
+      `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
       `статус: ${running ? 'работает' : 'остановлен'}`];
     if (running) {
       const [mw, mh] = SIZES[cfg.res];
@@ -712,6 +762,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:12px 14px; font:12px/2 system-ui; display:none; min-width:230px;';
     panel.innerHTML = `
       <div><b>Framecast</b></div>
+      <label><input type="checkbox" id="fcFG"> генерация кадров (FG)</label><br>
+      <label><input type="checkbox" id="fcSR"> апскейлер SR ×2</label><br>
       <label>множитель
         <select id="fcFactor">
           <option value="auto">авто</option>
@@ -741,6 +793,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
     Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
+    const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
+    Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
+    Sr.onchange = () => {
+      cfg.sr = Sr.checked; saveCfg();
+      if (cfg.sr && device) ensureSR().catch(e => log('sr', e));
+    };
     R.onchange = async () => {
       cfg.res = +R.value; saveCfg();
       if (running && !toggling) { // rebuild the runtime, once
