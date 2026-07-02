@@ -29,6 +29,7 @@
 <div>
   <select id="ep"><option value="webgpu">webgpu</option><option value="webnn">webnn (DirectML, ~3.5×; needs flag)</option><option value="wasm">wasm</option></select>
   <select id="res"><option value="720">720p</option><option value="480">480p (~2× faster)</option><option value="360">360p (~3× faster)</option></select>
+  <select id="quality"><option value="full">quality: full</option><option value="fast">fast (−refine, ~1.5×)</option><option value="fastest">fastest (−blk −refine, ~4×)</option></select>
   <button id="demoBtn">Use demo pair</button>
   <button id="runBtn">Interpolate</button>
 </div>
@@ -96,11 +97,12 @@ document.getElementById('demoBtn').onclick = async () => {
 };
 
 let handle = null, sessKey = null;
-async function ensureSession(ep, res) {
-  if (handle && sessKey === ep + '/' + res) return handle;
-  st('creating session on ' + ep + ' @ ' + res + 'p ...');
-  handle = await createSession(ep, res);
-  sessKey = ep + '/' + res;
+async function ensureSession(ep, res, quality) {
+  const key = ep + '/' + res + '/' + quality;
+  if (handle && sessKey === key) return handle;
+  st('creating session on ' + ep + ' @ ' + res + 'p/' + quality + ' ...');
+  handle = await createSession(ep, res, quality);
+  sessKey = key;
   st('session ready: inputs=' + handle.sess.inputNames + ' output=' + handle.sess.outputNames);
   return handle;
 }
@@ -109,7 +111,8 @@ document.getElementById('runBtn').onclick = async () => {
   try {
     if (!source[0] || !source[1]) { st('load two images first (or click "Use demo pair")', true); return; }
     const ep = document.getElementById('ep').value, res = document.getElementById('res').value;
-    const s = await ensureSession(ep, res);
+    const quality = document.getElementById('quality').value;
+    const s = await ensureSession(ep, res, quality);
     const f0 = drawNative(source[0], null, s.maxw, s.maxh);
     const f1 = drawNative(source[1], null, s.maxw, s.maxh);
     if (f0.width !== f1.width || f0.height !== f1.height) {
@@ -120,7 +123,7 @@ document.getElementById('runBtn').onclick = async () => {
     const mid = await interpolate(s, f0, f1);
     const dt = performance.now() - t0;
     renderResult(f0, mid);
-    st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep} res=${res}p`);
+    st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep} res=${res}p q=${quality}`);
   } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
 };
 

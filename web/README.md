@@ -38,12 +38,23 @@ Fixed-shape models, one per resolution; cost scales ~linearly with pixels (bandw
 Measured webgpu p50 on the 4060 Ti: **720p = 1957 ms · 480p = 1064 ms · 360p = 655 ms**
 (WebNN ≈ ⅓ of each). Frames larger than the engine are downscaled to fit before inference.
 
-Regenerate the lower-res models (assets/ is gitignored):
+## Quality tiers (quality dropdown)
+
+Training-free ablations of the net (see `../docs/phase5_ablation.md`):
+**full** (whole net) · **fast** (refinement cut: ~1.5× on webgpu, −1.3..+0.2 dB) ·
+**fastest** (block2 + refinement cut: ~4× on webgpu, −2.6..−0.8 dB).
+Measured stack on the 4060 Ti: 480p/fastest on plain webgpu = **237 ms (4.2 fps)**;
+on WebNN expected ~68 ms (~15 fps).
+
+Regenerate the models (assets/ is gitignored):
 
 ```
-python tools/restore_pkl.py            # rebuild flownet.pkl from models/rife_lite.safetensors
-python tools/export_onnx.py 480 854    # -> assets/rife_lite_480x854.onnx
-python tools/export_onnx.py 360 640    # -> assets/rife_lite_360x640.onnx
+python tools/restore_pkl.py                    # rebuild flownet.pkl from models/rife_lite.safetensors
+python tools/export_onnx.py 480 854            # full model  -> assets/rife_lite_480x854.onnx
+python tools/export_onnx.py 360 640            #             -> assets/rife_lite_360x640.onnx
+python tools/export_ablation.py 720 1280       # all 5 ablation variants at 720p
+python tools/export_ablation.py 480 854 noref 2blk_noref
+python tools/export_ablation.py 360 640 noref 2blk_noref
 ```
 
 ## Notes

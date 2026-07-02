@@ -18,6 +18,7 @@ sequence at the original fps → smooth 2× slow-mo. Not real-time (precompute-t
 <div>
   <select id="ep"><option value="webgpu">webgpu</option><option value="webnn">webnn (DirectML, ~3.5×; needs flag)</option><option value="wasm">wasm</option></select>
   <select id="res"><option value="720">720p</option><option value="480">480p (~2× faster)</option><option value="360">360p (~3× faster)</option></select>
+  <select id="quality"><option value="full">quality: full</option><option value="fast">fast (−refine, ~1.5×)</option><option value="fastest">fastest (−blk −refine, ~4×)</option></select>
   <label>frames <input type="number" id="nFrames" value="8" min="2" max="48" style="width:56px"></label>
   <label>fps <input type="number" id="fps" value="24" min="1" max="60" style="width:56px"></label>
   <input type="file" id="file" accept="video/*">
@@ -75,10 +76,11 @@ async function sampleFrames(n, fps, maxw, maxh) {
   return got;
 }
 
-async function ensureSession(ep, res) {
-  if (handle && sessKey === ep + '/' + res) return handle;
-  st('creating session on ' + ep + ' @ ' + res + 'p ...');
-  handle = await createSession(ep, res); sessKey = ep + '/' + res;
+async function ensureSession(ep, res, quality) {
+  const key = ep + '/' + res + '/' + quality;
+  if (handle && sessKey === key) return handle;
+  st('creating session on ' + ep + ' @ ' + res + 'p/' + quality + ' ...');
+  handle = await createSession(ep, res, quality); sessKey = key;
   st('session ready');
   return handle;
 }
@@ -95,8 +97,9 @@ $('demoBtn').onclick = async () => {
 $('computeBtn').onclick = async () => {
   try {
     if (!vid.videoWidth) { st('load a clip first', true); return; }
-    const ep = $('ep').value, res = $('res').value, n = +$('nFrames').value, fps = +$('fps').value;
-    const s = await ensureSession(ep, res);
+    const ep = $('ep').value, res = $('res').value, quality = $('quality').value;
+    const n = +$('nFrames').value, fps = +$('fps').value;
+    const s = await ensureSession(ep, res, quality);
     frames = await sampleFrames(n, fps, s.maxw, s.maxh);
     const mids = [];
     const t0 = performance.now();
@@ -106,7 +109,7 @@ $('computeBtn').onclick = async () => {
     }
     const dt = performance.now() - t0;
     seq = assembleSlowmo(frames, mids);
-    st(`done: ${frames.length} frames -> sequence ${seq.length} (2x), ${(dt / Math.max(1, mids.length)).toFixed(0)} ms/interp · ${ep} @ ${res}p`);
+    st(`done: ${frames.length} frames -> sequence ${seq.length} (2x), ${(dt / Math.max(1, mids.length)).toFixed(0)} ms/interp · ${ep} @ ${res}p/${quality}`);
     $('playBtn').disabled = false; $('pauseBtn').disabled = false;
     draw(0); startPlayback();
   } catch (err) { st('ERROR: ' + (err.stack || err.message || err), true); }

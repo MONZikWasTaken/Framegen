@@ -1,11 +1,24 @@
 import { toInput, fromOutput } from './rife_prepost.js';
 
-// Fixed-shape models (engine size = padded to /32). Lower res = proportionally faster
-// (the model is bandwidth/dispatch-bound): measured webgpu 720p=1957ms / 480p=1064ms / 360p=655ms.
+// Fixed-shape models (engine size = padded to /32). Lower res = proportionally faster.
+// Quality tiers (training-free ablations, see docs/phase5_ablation.md):
+//   full    - the whole net
+//   fast    - refinement (contextnet+unet) cut: ~1.5x on webgpu, -1.3..+0.2 dB
+//   fastest - block2 + refinement cut: ~4x on webgpu, -2.6..-0.8 dB
+// Measured webgpu p50 (4060 Ti): 720p full=1957 / 480p full=1064 / 480p fastest=237ms.
 export const MODELS = {
-  '720': { url: '/assets/rife_lite_inlined.onnx', ew: 1280, eh: 736, maxw: 1280, maxh: 720 },
-  '480': { url: '/assets/rife_lite_480x854.onnx', ew: 864,  eh: 480, maxw: 854,  maxh: 480 },
-  '360': { url: '/assets/rife_lite_360x640.onnx', ew: 640,  eh: 384, maxw: 640,  maxh: 360 },
+  '720': { ew: 1280, eh: 736, maxw: 1280, maxh: 720, files: {
+    full: '/assets/rife_lite_inlined.onnx',
+    fast: '/assets/rife_lite_720p_noref.onnx',
+    fastest: '/assets/rife_lite_720p_2blk_noref.onnx' } },
+  '480': { ew: 864, eh: 480, maxw: 854, maxh: 480, files: {
+    full: '/assets/rife_lite_480x854.onnx',
+    fast: '/assets/rife_lite_480p_noref.onnx',
+    fastest: '/assets/rife_lite_480p_2blk_noref.onnx' } },
+  '360': { ew: 640, eh: 384, maxw: 640, maxh: 360, files: {
+    full: '/assets/rife_lite_360x640.onnx',
+    fast: '/assets/rife_lite_360p_noref.onnx',
+    fastest: '/assets/rife_lite_360p_2blk_noref.onnx' } },
 };
 
 // 'webnn' -> DirectML on Windows (fuses the graph; ~3.5x over the WebGPU EP, but needs the
@@ -17,11 +30,13 @@ function epProvider(ep) {
 }
 
 // Returns a handle { sess, ew, eh, maxw, maxh } for interpolate().
-export async function createSession(ep, res = '720') {
+export async function createSession(ep, res = '720', quality = 'full') {
   const m = MODELS[res];
   if (!m) throw new Error(`unknown resolution: ${res}`);
+  const url = m.files[quality];
+  if (!url) throw new Error(`unknown quality: ${quality}`);
   ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
-  const sess = await ort.InferenceSession.create(m.url,
+  const sess = await ort.InferenceSession.create(url,
     { executionProviders: [epProvider(ep)], graphOptimizationLevel: 'all' });
   return { sess, ew: m.ew, eh: m.eh, maxw: m.maxw, maxh: m.maxh };
 }

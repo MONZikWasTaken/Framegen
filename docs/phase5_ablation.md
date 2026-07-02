@@ -1,0 +1,93 @@
+# Phase 5, step 1 — training-free ablation frontier
+
+Before spending weeks on distillation, measure what can be cut from IFNet_m for free.
+Variants exported by `tools/export_ablation.py` (custom inference-only forward over the
+original weights — no retraining):
+
+| variant | what's cut |
+|---|---|
+| `noref` | contextnet + unet refinement (output = warped blend) |
+| `s842` | IFBlocks run at scales [8,4,2] instead of [4,2,1] (each block ~4× cheaper) |
+| `s842_noref` | both |
+| `2blk` | block2 dropped (the most expensive IFBlock), scales [4,2] |
+| `2blk_noref` | block2 + refinement dropped |
+
+## Quality (PSNR, real triplets: predict middle frame from neighbors)
+
+Harness: `tools/quality_bench.py`, 12 triplets per clip, step 25.
+Clips: Big Buck Bunny 720p (animation, smooth motion) + Jellyfish 720p (live action, slow
+organic motion) from test-videos.co.uk. **`demo/test_720p.mp4` and `demo/test_10s.mp4` are
+NOT usable as quality benchmarks** — the first has almost no motion (trivial neighbor
+averaging beats the model there), the second is static for ~100 frames then has ~10 dB
+adjacent-frame chaos.
+
+| model | BBB (dB) | Jellyfish (dB) | Δ vs full |
+|---|---:|---:|---|
+| full (`rife_lite_inlined`) | **41.50** | **37.67** | — |
+| `noref` | 40.24 | 37.86 | −1.3 / **+0.2** |
+| `s842` | 41.01 | 37.12 | −0.5 / −0.6 |
+| `s842_noref` | 39.92 | 37.10 | −1.6 / −0.6 |
+| `2blk` | 40.12 | 36.89 | −1.4 / −0.8 |
+| `2blk_noref` | 38.91 | 36.88 | −2.6 / −0.8 |
+| *floor: avg-neighbors* | *37.35* | *31.28* | |
+| *floor: copy-prev* | *32.54* | *26.90* | |
+
+Notes:
+- The refinement (contextnet+unet) is worth ~1.3 dB on animation but ~0 on live action.
+- Every variant still clearly beats the trivial floors on both clips.
+
+## Speed — browser webgpu EP (4060 Ti, 736×1280, p50 of 6 runs)
+
+| model | p50 | vs full | PSNR cost (worst clip) |
+|---|---:|---:|---|
+| full | 1957 ms | 1× | — |
+| `noref` | 1319 ms | 1.48× | −1.3 dB |
+| `s842` | 2043 ms | **0.96× (slower!)** | −0.6 dB |
+| `s842_noref` | 810 ms | 2.4× | −1.6 dB |
+| `2blk` | 1397 ms | 1.4× | −1.4 dB |
+| `2blk_noref` | **495 ms** | **4.0×** | −2.6 dB |
+
+`s842` being *slower* than full confirms the webgpu EP is dispatch-bound: shrinking tensor
+sizes doesn't pay for the extra Resize nodes; only *removing nodes* (noref, 2blk) pays.
+
+## Speed — native TensorRT fp16 (4060 Ti, 736×1280, p50 of 50)
+
+(engines: `tools/build_trt_engine.py`; bench: `rife-trt-bench`)
+
+| model | p50 | fps | vs full | 60fps gate |
+|---|---:|---:|---:|---|
+| full | 21.6 ms | 46 | 1× | FAIL |
+| `noref` | 20.5 ms | 49 | 1.05× | FAIL |
+| `2blk_noref` | 11.2 ms | 89 | 1.9× | **PASS** |
+| `s842_noref` | **9.8 ms** | **102** | **2.2×** | **PASS** |
+
+**The two runtimes reward opposite cuts.** Browser (dispatch-bound): node count is
+everything — `2blk_noref` wins 4×, `s842` is useless. TensorRT (bandwidth/compute-bound):
+tensor sizes are everything — `s842_noref` wins 2.2×, `noref` is nearly free (fusion
+already hid it). Any distilled student must be checked on both axes.
+
+## Browser: measured stack (no training, no flag)
+
+`2blk_noref` @ 480p on plain **webgpu = 237 ms (4.2 fps)** — 8.3× over the day's starting
+point (1957 ms). With WebNN (÷3.5, needs flag): expected **~68 ms (~15 fps)** — to be
+confirmed in the user's flagged browser. The `fast`/`fastest` tiers are wired into
+demo/slowmo as a quality dropdown.
+
+## Training feasibility (checked 2026-07-02)
+
+GPU training on this machine **works**: venv `E:\venvs\rife-train` with
+`torch 2.12.1+cu130` sees the 4060 Ti (`cuda.is_available()=True`, matmul smoke-tested).
+The cu130 wheel bundles its own CUDA runtime, so the system CUDA-13.1-vs-prebuilt-binaries
+curse does not apply. (pip needs `TMP=E:\tmp` — C: is full.)
+
+## Decision input for distillation (step 2)
+
+- Native already passes 60fps@720p with `s842_noref` (−0.6..−1.6 dB) — for the native
+  product, distillation is about *quality recovery* at the fast operating points, and 1080p:
+  full 1080p was 52.9 ms → `s842_noref` should land ~24 ms ≈ real-time 1080p (verify).
+- For the browser the student should have **few blocks** (node count), for TRT **small
+  tensors** (scales); a 2-block student trained at native scale [4,2] satisfies both.
+- Concrete step-2 proposal: distill a 2-block student (init from teacher's block0/block1)
+  with the full 3-block+refine teacher, target = recover the −2.6 dB of `2blk_noref` to
+  within ~−0.5 dB at the same node count. Data: real video triplets (BBB/Jellyfish-style
+  clips are enough for a first pass; Vimeo-90K if it stalls).
