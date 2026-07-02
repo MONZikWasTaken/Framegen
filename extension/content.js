@@ -29,6 +29,7 @@
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
   let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
+  let bar = null, barSeeking = false;
   const sys = { gpu: '—', f16: false };
 
   const log = (...a) => console.log('[framecast]', ...a);
@@ -130,7 +131,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (overlay) return;
     overlay = document.createElement('canvas');
     // a SIBLING of the video with a modest z-index: above the video, below the controls
-    overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2; transition:clip-path .15s;';
+    overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2;';
     overlayCtx = overlay.getContext('webgpu');
     overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -159,6 +160,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const uiHost = document.fullscreenElement || document.body;
     if (btn && btn.parentElement !== uiHost) {
       uiHost.appendChild(btn); uiHost.appendChild(gear); uiHost.appendChild(hud); uiHost.appendChild(panel);
+      if (bar) uiHost.appendChild(bar);
     }
     const r = videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
@@ -197,27 +199,187 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     fpsWin.push(now);
     while (fpsWin.length && fpsWin[0] < now - 1000) fpsWin.shift();
   }
-  // hover-reveal: native controls render INSIDE the video element — no z-index can
-  // lift them above the overlay. When the mouse is near the BOTTOM of the video we
-  // clip only the controls strip out of the overlay: the bar shows through while
-  // the rest of the frame keeps playing interpolated.
-  let revealUntil = 0;
+  // our own control bar ON TOP of the overlay: native controls render INSIDE the
+  // video element and can never show above the canvas, so instead of ever revealing
+  // the raw video we drive the <video> ourselves — play/seek/volume/fullscreen as
+  // regular DOM above everything. Interpolation is never interrupted.
+  let revealUntil = 0, uiVideo = null, uiScan = 0;
   document.addEventListener('mousemove', (e) => {
-    if (!running || !cfg.hoverReveal) return;
-    const r = videoEl.getBoundingClientRect();
-    const zone = Math.min(160, r.height * 0.35);
-    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.bottom - zone && e.clientY <= r.bottom) {
-      revealUntil = performance.now() + 1500;
+    const now = performance.now();
+    if (!running && now - uiScan > 300) { uiScan = now; uiVideo = biggestVideo(); }
+    const v = running ? videoEl : uiVideo;
+    if (!v || !btn) return;
+    const r = v.getBoundingClientRect();
+    if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
+      revealUntil = now + 2000;
+      placeSideButtons(r);
     }
   }, { passive: true });
+
+  // FC + settings live INSIDE the player: centered vertically at the left edge
+  function placeSideButtons(r) {
+    const cy = r.top + r.height / 2;
+    btn.style.display = gear.style.display = 'block';
+    btn.style.left = gear.style.left = (r.left + 12) + 'px';
+    btn.style.top = (cy - 42) + 'px';
+    gear.style.top = (cy + 4) + 'px';
+  }
+  setInterval(() => {
+    if (!btn) return;
+    if (panel && panel.style.display === 'block') { revealUntil = performance.now() + 2000; return; }
+    if (performance.now() > revealUntil) {
+      btn.style.display = gear.style.display = 'none';
+    }
+  }, 300);
+
+  // crisp monochrome SVG icons (Feather-style) — no emoji
+  const ICONS = {
+    play: '<path d="M8 5.5v13a.5.5 0 0 0 .77.42l10.2-6.5a.5.5 0 0 0 0-.84L8.77 5.08A.5.5 0 0 0 8 5.5z" fill="currentColor"/>',
+    pause: '<rect x="7" y="5" width="3.4" height="14" rx="1" fill="currentColor"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="currentColor"/>',
+    vol: '<path d="M11 5 6.5 9H3a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h3.5L11 19V5z" fill="currentColor"/>'
+      + '<path d="M15 8.6a5 5 0 0 1 0 6.8M17.7 6a9 9 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    volX: '<path d="M11 5 6.5 9H3a1 1 0 0 0-1 1v4a1 1 0 0 0 1 1h3.5L11 19V5z" fill="currentColor"/>'
+      + '<path d="m15.5 9.5 5 5m0-5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    full: '<path d="M8.5 3.5H5a1.5 1.5 0 0 0-1.5 1.5v3.5m17 0V5A1.5 1.5 0 0 0 19 3.5h-3.5m0 17H19a1.5 1.5 0 0 0 1.5-1.5v-3.5m-17 0V19A1.5 1.5 0 0 0 5 20.5h3.5"'
+      + ' fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+    gear: '<path d="M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-5m0-4V3M1.5 14H7m2-6h6m2.5 8H21"'
+      + ' fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+  };
+  const svgIcon = (name, size = 16) =>
+    `<svg width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+
+  const fmt = (s) => {
+    s = Math.max(0, Math.floor(s || 0));
+    const m = Math.floor(s / 60), h = Math.floor(m / 60);
+    return (h ? h + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0');
+  };
+
+  function ensureBar() {
+    if (bar) return;
+    // floating glass pill, same family as the side buttons
+    bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed; z-index:2147483646; display:none; align-items:center; gap:10px;'
+      + 'background:rgba(15,15,15,.55); backdrop-filter:blur(10px);'
+      + 'border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:8px 14px;'
+      + 'color:#fff; font:11px system-ui; box-sizing:border-box; user-select:none;'
+      + 'box-shadow:0 4px 20px rgba(0,0,0,.4); opacity:0; transform:translateY(8px);'
+      + 'transition:opacity .18s, transform .18s; pointer-events:none;';
+    bar.innerHTML = `
+      <button id="fcPlay" class="fc-btn">${svgIcon('play', 19)}</button>
+      <span id="fcCur" style="min-width:34px; text-align:right">0:00</span>
+      <input id="fcSeek" class="fc-range" type="range" min="0" max="1000" value="0" style="flex:1">
+      <span id="fcDur" style="min-width:34px; color:rgba(255,255,255,.55)">0:00</span>
+      <button id="fcMute" class="fc-btn">${svgIcon('vol')}</button>
+      <input id="fcVol" class="fc-range" type="range" min="0" max="100" value="100" style="width:60px">
+      <button id="fcFull" class="fc-btn">${svgIcon('full')}</button>`;
+    document.body.appendChild(bar);
+    const q = (id) => bar.querySelector(id);
+    q('#fcPlay').onclick = () => {
+      if (!videoEl) return;
+      videoEl.paused ? videoEl.play() : videoEl.pause();
+      flashCenter(svgIcon(videoEl.paused ? 'pause' : 'play', 30));
+      updateBar();
+    };
+    q('#fcMute').onclick = () => { if (videoEl) videoEl.muted = !videoEl.muted; updateBar(); };
+    q('#fcVol').oninput = (e) => { if (videoEl) { videoEl.volume = e.target.value / 100; videoEl.muted = false; } };
+    q('#fcSeek').addEventListener('pointerdown', () => { barSeeking = true; });
+    q('#fcSeek').addEventListener('pointerup', () => { barSeeking = false; });
+    q('#fcSeek').oninput = (e) => {
+      if (videoEl && videoEl.duration) videoEl.currentTime = e.target.value / 1000 * videoEl.duration;
+    };
+    // fullscreen the PARENT (so the overlay comes along) and stretch the video to
+    // fill the screen — fullscreening just the container leaves the video at its
+    // layout size, which looks like fullscreen "not working"
+    let fsByUs = false, fsSaved = '';
+    q('#fcFull').onclick = () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (videoEl) {
+        fsByUs = true;
+        (videoEl.parentElement || videoEl).requestFullscreen().catch(e => { fsByUs = false; log('fullscreen', e); });
+      }
+    };
+    document.addEventListener('fullscreenchange', () => {
+      if (!videoEl || !fsByUs) return;
+      if (document.fullscreenElement) {
+        fsSaved = videoEl.style.cssText;
+        videoEl.style.cssText += ';position:fixed;left:0;top:0;width:100vw;height:100vh;'
+          + 'max-width:none;max-height:none;object-fit:contain;background:#000;z-index:1;';
+      } else {
+        fsByUs = false;
+        videoEl.style.cssText = fsSaved;
+      }
+    });
+    // keep the bar alive while the mouse is on it
+    bar.addEventListener('mousemove', () => { revealUntil = performance.now() + 2000; }, { passive: true });
+  }
+
+  // big centered ▶/❚❚ splash on play/pause, fades out while scaling up
+  let flashEl = null;
+  function flashCenter(sym) {
+    if (!videoEl) return;
+    if (!flashEl) {
+      flashEl = document.createElement('div');
+      flashEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
+        + 'color:#fff; font:600 26px system-ui; background:rgba(15,15,15,.55);'
+        + 'backdrop-filter:blur(6px); border-radius:50%; width:72px; height:72px;'
+        + 'display:flex; align-items:center; justify-content:center; opacity:0;';
+      document.body.appendChild(flashEl);
+    }
+    const r = videoEl.getBoundingClientRect();
+    flashEl.innerHTML = sym;
+    flashEl.style.left = (r.left + r.width / 2 - 36) + 'px';
+    flashEl.style.top = (r.top + r.height / 2 - 36) + 'px';
+    flashEl.style.transition = 'none';
+    flashEl.style.opacity = '0.95';
+    flashEl.style.transform = 'scale(0.8)';
+    requestAnimationFrame(() => {
+      flashEl.style.transition = 'opacity .5s ease-out, transform .5s ease-out';
+      flashEl.style.opacity = '0';
+      flashEl.style.transform = 'scale(1.4)';
+    });
+  }
+
+  const rangeFill = (el, p, color) => {
+    el.style.background = `linear-gradient(to right, ${color} ${p}%, rgba(255,255,255,.22) ${p}%)`;
+  };
+  let barPlayIcon = '', barMuteIcon = '';
+  function updateBar() {
+    if (!bar || bar.style.display === 'none' || !videoEl) return;
+    const pi = videoEl.paused ? 'play' : 'pause';
+    if (pi !== barPlayIcon) { barPlayIcon = pi; bar.querySelector('#fcPlay').innerHTML = svgIcon(pi, 19); }
+    const mi = (videoEl.muted || videoEl.volume === 0) ? 'volX' : 'vol';
+    if (mi !== barMuteIcon) { barMuteIcon = mi; bar.querySelector('#fcMute').innerHTML = svgIcon(mi); }
+    const vol = bar.querySelector('#fcVol'), volP = (videoEl.muted ? 0 : videoEl.volume) * 100;
+    vol.value = String(Math.round(volP));
+    rangeFill(vol, volP, '#fff');
+    const d = videoEl.duration || 0, c = videoEl.currentTime || 0;
+    bar.querySelector('#fcCur').textContent = fmt(c);
+    bar.querySelector('#fcDur').textContent = fmt(d);
+    const seek = bar.querySelector('#fcSeek'), p = d ? c / d * 100 : 0;
+    if (!barSeeking && d) seek.value = String(Math.round(p * 10));
+    rangeFill(seek, p, '#19c37d');
+  }
 
   function pump(now) {
     if (!running) return;
     positionOverlay();
-    { // controls strip cutout + keep the HUD pinned to the video's top-right corner
+    { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect();
-      const strip = Math.max(56, Math.min(110, vr.height * 0.16));
-      overlay.style.clipPath = (cfg.hoverReveal && now < revealUntil) ? `inset(0 0 ${strip}px 0)` : 'none';
+      // our bar only where the site relies on native controls (YouTube etc. draw
+      // their own DOM controls, which already sit above the overlay)
+      if (videoEl.controls && cfg.hoverReveal) {
+        const showBar = now < revealUntil;
+        const m = Math.max(10, Math.min(16, vr.width * 0.02));
+        bar.style.display = 'flex';
+        bar.style.left = (vr.left + m) + 'px';
+        bar.style.width = (vr.width - 2 * m) + 'px';
+        bar.style.top = (vr.bottom - bar.offsetHeight - m) + 'px';
+        bar.style.opacity = showBar ? '1' : '0';
+        bar.style.transform = showBar ? 'translateY(0)' : 'translateY(8px)';
+        bar.style.pointerEvents = showBar ? 'auto' : 'none';
+      } else {
+        bar.style.display = 'none';
+      }
       hud.style.left = Math.max(0, vr.right - hud.offsetWidth - 10) + 'px';
       hud.style.top = Math.max(0, vr.top + 10) + 'px';
     }
@@ -247,6 +409,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
+    updateBar();
     requestAnimationFrame(pump);
   }
 
@@ -340,16 +503,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     hud.style.display = 'block';
     videoEl.requestVideoFrameCallback(onFrame);
     requestAnimationFrame(pump);
-    btn.textContent = 'FC ✓';
-    btn.style.background = '#1a7f37';
+    btn.style.background = 'rgba(25,195,125,.9)';
   }
   function stop() {
     running = false;
     if (overlay) overlay.style.display = 'none';
     hud.style.display = 'none';
+    if (bar) bar.style.display = 'none';
     queue = []; lastTex = null; pending = null;
-    btn.textContent = 'FC ×2';
-    btn.style.background = '#333';
+    btn.style.background = '';
   }
 
   function biggestVideo() {
@@ -384,9 +546,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function buildPanel() {
     panel = document.createElement('div');
-    panel.style.cssText = 'position:fixed; right:14px; bottom:92px; z-index:2147483647;'
-      + 'background:#1c1c1c; color:#ddd; border:1px solid #555; border-radius:10px;'
-      + 'padding:10px 12px; font:13px/1.9 monospace; display:none; min-width:230px;';
+    panel.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
+      + 'background:rgba(16,16,16,.92); color:#ddd; border:1px solid rgba(255,255,255,.14);'
+      + 'border-radius:12px; backdrop-filter:blur(8px); box-shadow:0 6px 24px rgba(0,0,0,.45);'
+      + 'padding:12px 14px; font:12px/2 system-ui; display:none; min-width:230px;';
     panel.innerHTML = `
       <div><b>Framecast</b></div>
       <label>множитель (потолок)
@@ -422,20 +585,37 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function injectUI() {
+    const css = document.createElement('style');
+    css.textContent = `
+      .fc-btn{background:none;border:none;color:#fff;font:13px/1 system-ui;cursor:pointer;
+        padding:4px 6px;opacity:.85;transition:opacity .15s,transform .15s;
+        display:inline-flex;align-items:center;justify-content:center}
+      .fc-btn:hover{opacity:1;transform:scale(1.15)}
+      .fc-side svg{display:block;margin:auto}
+      .fc-range{-webkit-appearance:none;appearance:none;height:3px;border-radius:3px;margin:0;
+        background:rgba(255,255,255,.22);outline:none;cursor:pointer}
+      .fc-range::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;
+        border-radius:50%;background:#fff;transition:transform .15s}
+      .fc-range:hover::-webkit-slider-thumb{transform:scale(1.35);background:#19c37d}
+      .fc-side{position:fixed;z-index:2147483647;width:38px;height:38px;border-radius:50%;
+        border:none;background:rgba(15,15,15,.62);color:#fff;cursor:pointer;display:none;
+        backdrop-filter:blur(6px);font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
+        transition:background .15s,transform .15s}
+      .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}`;
+    (document.head || document.documentElement).appendChild(css);
     btn = document.createElement('button');
-    btn.textContent = 'FC ×2';
-    btn.style.cssText = 'position:fixed; right:14px; bottom:14px; z-index:2147483647;'
-      + 'background:#333; color:#fff; border:1px solid #666; border-radius:8px;'
-      + 'padding:6px 12px; font:13px monospace; cursor:pointer; opacity:.85;';
+    btn.textContent = 'FC';
+    btn.className = 'fc-side';
     gear = document.createElement('button');
-    gear.textContent = '⚙';
-    gear.style.cssText = btn.style.cssText + 'right:78px;';
+    gear.innerHTML = svgIcon('gear', 17);
+    gear.className = 'fc-side';
     hud = document.createElement('div');
     // anchored to the video's top-right corner every pump tick (inside the player)
     hud.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
       + 'color:#0f0; font:11px/1.5 monospace; background:rgba(0,0,0,.7); padding:4px 8px;'
       + 'border-radius:6px; white-space:pre; text-align:left; pointer-events:none; display:none;';
     buildPanel();
+    ensureBar();
     btn.onclick = async () => {
       if (running) { stop(); return; }
       const v = biggestVideo();
@@ -443,8 +623,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
     };
     gear.onclick = () => {
-      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-      if (panel.style.display === 'block') updateStatus();
+      const open = panel.style.display === 'none';
+      panel.style.display = open ? 'block' : 'none';
+      if (open) { // dock next to the gear, clamped to the viewport
+        const g = gear.getBoundingClientRect();
+        panel.style.left = Math.min(g.right + 10, innerWidth - panel.offsetWidth - 10) + 'px';
+        panel.style.top = Math.max(10, Math.min(g.top - panel.offsetHeight / 2, innerHeight - panel.offsetHeight - 10)) + 'px';
+        updateStatus();
+      }
     };
     document.body.appendChild(btn);
     document.body.appendChild(gear);
