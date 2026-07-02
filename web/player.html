@@ -17,12 +17,11 @@
 </head>
 <body>
 <h3>Framecast — real-time 2× player (worker edition)</h3>
-<p>Весь пиксельный тракт — в отдельном потоке (Web Worker), модель принимает и отдаёт
-сырые пиксели канваса (никаких JS-циклов). Реальное время: <b>webnn + 360p/480p</b>.</p>
+<p>Полностью GPU-резидентный конвейер на собственном WebGPU-рантайме: видео → текстура →
+интерполяция (2–6×) → SR-апскейл → экран. Флаги браузера не нужны.</p>
 
 <div>
   <input type="file" id="file" accept="video/*">
-  <select id="ep"><option value="webnn">webnn (нужен флаг)</option><option value="webgpu">webgpu</option></select>
   <select id="res"><option value="auto">авто (макс качество+фпс)</option><option value="1080">1080p (вставки 480p)</option><option value="720">720p (вставки 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p честный (медленно)</option></select>
   <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option></select>
   <select id="factor"><option value="6">авто (макс плавность)</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option></select>
@@ -178,8 +177,9 @@ function onWorkerMessage(ev) {
 let errTimes = [], restarting = false;
 
 function ensureWorker() {
-  const ep = $('ep').value, res = $('res').value, q = $('quality').value;
-  const key = ep + '/' + res + 'p/' + q + ($('srOn').checked ? '/sr' : '');
+  // ep is fixed: our own runtime needs plain webgpu; webnn was yesterday's crutch
+  const ep = 'webgpu', res = $('res').value, q = $('quality').value;
+  const key = res + 'p/' + q + ($('srOn').checked ? '/sr' : '');
   if (worker && workerKey === key) return Promise.resolve();
   if (worker) worker.terminate();
   const mode = MODES[res];
@@ -201,7 +201,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut; octx = null;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=20', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=21', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (первый раз собирает конвейеры пару секунд)`);
@@ -276,7 +276,7 @@ $('stage').ondrop = e => {
   if (f) { $('file').files = e.dataTransfer.files; $('file').onchange({ target: { files: [f] } }); }
 };
 // settings persist across sessions
-const SETTINGS = ['ep', 'res', 'quality', 'factor'];
+const SETTINGS = ['res', 'quality', 'factor'];
 const FLAGS = ['interpOn', 'animeMode', 'mute', 'srOn'];
 try {
   const saved = JSON.parse(localStorage.getItem('framecast') || '{}');
