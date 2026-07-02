@@ -1,4 +1,4 @@
-// Framecast player worker: the whole pixel path lives OFF the main thread.
+﻿// Framecast player worker: the whole pixel path lives OFF the main thread.
 // Receives display-size ImageBitmaps, scales to the active model size, dedups anime
 // "twos", runs the model, posts mids back as transferable buffers.
 //
@@ -7,7 +7,7 @@
 // transitions) and walks the ladder: instantly down when over budget, up after a
 // stable streak. Sessions are cached; new rungs build in the background.
 import * as ortNS from 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.mjs';
-import { createRT } from './rt/rt.js';
+import { createRT } from './rt/rt.js?v=3';
 const ort = ortNS.default ?? ortNS;
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
 
@@ -17,12 +17,15 @@ const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [192
 // mids ladder, best quality first; est = initial ms guess (learned at runtime).
 // rt = our own WebGPU runtime (1blk model): bit-exact, no flags, ~3-6x faster than ort.
 const LADDER = [
-  { key: 'rt@1080',     kind: 'rt',  q: 'turbo',   res: 1080, est: 24 },
+  { key: 'rt@1080',     kind: 'rt',  q: 'turbo',   res: 1080, est: 24, stem: 'rt_slim' },
   { key: 'fastest@720', kind: 'f32', q: 'fastest', res: 720, est: 150 },
-  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 11 },
+  { key: 'rt@720',      kind: 'rt',  q: 'turbo',   res: 720, est: 11, stem: 'rt_slim' },
   { key: 'fastest@480', kind: 'f32', q: 'fastest', res: 480, est: 60 },
-  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 5 },
-  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 3 },
+  { key: 'rt@480',      kind: 'rt',  q: 'turbo',   res: 480, est: 5, stem: 'rt_slim' },
+  { key: 'rt@352',      kind: 'rt',  q: 'turbo',   res: 352, est: 3, stem: 'rt_slim' },
+  // potato weights (c=60): never picked on strong GPUs, keeps weak ones real-time
+  { key: 'rt60@480',    kind: 'rt',  q: 'turbo',   res: 480, est: 3, stem: 'rt_slim60' },
+  { key: 'rt60@352',    kind: 'rt',  q: 'turbo',   res: 352, est: 2, stem: 'rt_slim60' },
 ];
 const F32 = {
   turbo:   { 360: { url: '/assets/rife_lite_360p_1blk_s4_student1b.onnx', ew: 640, eh: 384 },
@@ -68,27 +71,32 @@ function ctxFor(w, h) {
   return canvases.get(k);
 }
 
-// our WebGPU device + weights, shared by all rt rungs (lazy init)
-let rtDevice = null, rtWeights = null;
+// our WebGPU device + weight sets, shared by all rt rungs (lazy init).
+// Rungs may use different weight sets: rt_slim (120-wide default) and rt_slim60
+// ("potato": for integrated GPUs / 60fps sources). rt_1blk = full-width fallback.
+let rtDevice = null;
+const rtWeights = new Map(); // stem -> {bin, man}
 async function ensureRtDevice() {
   if (rtDevice) return;
   if (!navigator.gpu) throw new Error('no WebGPU in worker');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const f16 = adapter.features.has('shader-f16');
   rtDevice = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
-  // slim (120-wide) student: ~3x faster mids at -0.35dB, 4MB of weights;
-  // falls back to the full-width blob if the slim one is not deployed
-  for (const stem of ['rt_slim', 'rt_1blk']) {
-    try {
-      const [bin, man] = await Promise.all([
-        fetch(`/assets/${stem}.bin`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
-        fetch(`/assets/${stem}.json`).then(r => { if (!r.ok) throw 0; return r.json(); })]);
-      rtWeights = { bin, man };
-      postMessage({ type: 'log', msg: 'rt-веса: ' + stem + ' (' + (bin.byteLength >> 20) + 'МБ)' });
-      return;
-    } catch { /* next */ }
-  }
-  throw new Error('rt weights not found');
+}
+async function ensureWeights(stem) {
+  if (rtWeights.has(stem)) return rtWeights.get(stem);
+  const tryFetch = async (s) => {
+    const [bin, man] = await Promise.all([
+      fetch(`/assets/${s}.bin`).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
+      fetch(`/assets/${s}.json`).then(r => { if (!r.ok) throw 0; return r.json(); })]);
+    return { bin, man };
+  };
+  let w;
+  try { w = await tryFetch(stem); }
+  catch { w = await tryFetch('rt_1blk'); postMessage({ type: 'log', msg: stem + ' нет — беру rt_1blk' }); }
+  rtWeights.set(stem, w);
+  postMessage({ type: 'log', msg: 'rt-веса ' + stem + ': ' + (w.bin.byteLength >> 20 || '<1') + 'МБ' });
+  return w;
 }
 
 // ---- GPU frame path: bitmaps upload straight into textures, dedup runs on the GPU ----
@@ -167,9 +175,10 @@ async function gpuIsDup(ta, tb) {
 async function buildSession(rung) {
   if (rung.kind === 'rt') {
     await ensureRtDevice();
+    const wset = await ensureWeights(rung.stem || 'rt_slim');
     const [W, H] = SIZE_RT[rung.res];
     const rt = await createRT(rtDevice, { w: W, h: H, textureInput: true,
-      weightsBin: rtWeights.bin, weightsManifest: rtWeights.man });
+      weightsBin: wset.bin, weightsManifest: wset.man });
     return { rt, kind: 'rt', W, H, ms: 0 };
   }
   const { q, res } = rung;

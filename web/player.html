@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Framecast — real-time 2× player</title>
 <style>
@@ -182,7 +182,7 @@ function ensureWorker() {
   lctx = letterbox.getContext('2d');
   letterboxC = new OffscreenCanvas(CW, CH);
   lcctx = letterboxC.getContext('2d');
-  worker = new Worker('player_worker.js?v=15', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=18', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (webnn собирает граф несколько секунд, один раз)`);

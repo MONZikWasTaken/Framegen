@@ -54,6 +54,10 @@ def load_ifnet(weights_pkl, device):
     sd = torch.load(weights_pkl, map_location="cpu")
     sd = {k.replace("module.", ""): v for k, v in sd.items() if "module." in k}
     net = IFNet_m()
+    c0 = sd["block0.conv0.1.0.weight"].shape[0]
+    if c0 != 240:  # checkpoint carries a slim block0 — rebuild before loading
+        from model.IFNet_m import IFBlock
+        net.block0 = IFBlock(7, c=c0)
     net.load_state_dict(sd)
     return net.to(device)
 

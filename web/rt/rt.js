@@ -441,6 +441,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
   const C1 = weightsManifest['block0.conv0.0.0.weight'].shape[0]; // conv0a out (120 full / 60 slim)
   const C2 = weightsManifest['block0.conv0.1.0.weight'].shape[0]; // main width (240 full / 120 slim)
   if (C2 % 4) throw new Error('rt: main width must be /4');
+  const Z0A = C1 % 4 === 0 ? C1 / 4 : C1; // conv0a kernel packs 4 channels only when C1 is /4
 
   const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
     size: Math.ceil(bytes / 4) * 4,
@@ -567,7 +568,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     const stages = [
       ['prepFull', pPrepFull, bgPrepFull, [gx(w), gx(h), 1]],
       ['prepQ', pPrepQ, bgPrepQ, [gx(QW), gx(QH), 1]],
-      ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), C1 / 4]],
+      ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), Z0A]],
       ['conv0b', pConv0b, bgConv0b, [gx(W16), gx(H16), C2 / 4]],
       ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, C2 / 4]]),
       ['deconv', pDeconv, bgDeconv, [gx(W8), gx(H8), 5]],
@@ -606,7 +607,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     const pass = enc.beginComputePass();
     pass.setPipeline(pPrepFull); pass.setBindGroup(0, bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
     pass.setPipeline(pPrepQ); pass.setBindGroup(0, bgPrepQ); pass.dispatchWorkgroups(gx(QW), gx(QH));
-    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), C1 / 4);
+    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
     pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
     pass.end();
     // residual copy AFTER conv0b (f16r = f16a snapshot)
@@ -649,7 +650,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
     for (let i = 0; i < ts.length; i++) {
       const pass = enc.beginComputePass();
       pass.setPipeline(pPrepQ); pass.setBindGroup(0, tbg ? tbg.q[i] : bgPrepQt[i]); pass.dispatchWorkgroups(gx(QW), gx(QH));
-      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), C1 / 4);
+      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
       pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
       pass.end();
       enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
@@ -663,9 +664,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, text
       enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
     }
     device.queue.submit([enc.finish()]);
+    // map all stagings concurrently — sequential awaits cost ~1ms each
+    await Promise.all(stagings.slice(0, ts.length).map(s => s.mapAsync(GPUMapMode.READ)));
     const outs = [];
     for (let i = 0; i < ts.length; i++) {
-      await stagings[i].mapAsync(GPUMapMode.READ);
       outs.push(new Uint8Array(stagings[i].getMappedRange().slice(0)));
       stagings[i].unmap();
     }
