@@ -283,12 +283,19 @@ onmessage = async (ev) => {
         transitionNo++;
         controllerTick();
         const SS = sessions.get(capKey);
-        const perTransition = (SS.ms || 60) * (SS.kind === 'rt' ? factor - 1 : 1);
-        halfRate = perTransition > uniqueIntervalMs * 1.05;
+        // the factor is a CEILING, not a promise: shrink it until the mids fit the live
+        // budget — a steady 4x beats a stuttering 6x. Below 2x fall back to half-rate.
+        // Margin is >1: the 100ms pipeline delay absorbs transient overruns, so demand
+        // only sustained throughput, not per-interval slack (0.95 cost a whole rung:
+        // 48fps when 72 was sustainable).
+        let effN = SS.kind === 'rt' ? factor : 2;
+        const ms = SS.ms || 60;
+        while (effN > 2 && (effN - 1) * ms > uniqueIntervalMs * 1.1) effN--;
+        halfRate = (effN - 1) * ms > uniqueIntervalMs * 1.05;
         const skip = halfRate && (transitionNo & 1);
         if (interpOn && !skip) {
           // the job runs on capKey — the session whose dims match these pixels
-          const job = { a: prevFrame, b: rgba, ts: m.ts, key: capKey, n: factor };
+          const job = { a: prevFrame, b: rgba, ts: m.ts, key: capKey, n: effN };
           if (!busy) runPair(job);
           else { if (pending) postMessage({ type: 'skipped' }); pending = job; }
         }
