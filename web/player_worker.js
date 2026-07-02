@@ -144,7 +144,11 @@ async function gpuIsDup(ta, tb) {
   await dedupRead.mapAsync(GPUMapMode.READ);
   const s = new Uint32Array(dedupRead.getMappedRange().slice(0));
   dedupRead.unmap();
-  return (s[0] / DEDUP_N) < 2.5 && s[1] < 45;
+  const mean = s[0] / DEDUP_N;
+  return {
+    dup: mean < 2.5 && s[1] < 45,
+    cut: mean > 90, // scene cut: a mid would be a ghost-blend of two scenes
+  };
 }
 
 // NOTE: the u8 rife_web_* graphs are healthy only on MAIN-thread webnn today:
@@ -340,15 +344,24 @@ onmessage = async (ev) => {
     if (m.factor) factor = m.factor;
     return;
   }
+  if (m.type === 'flush') { // seek: the previous frame is unrelated now
+    last = null; lastTex = null; pending = null;
+    return;
+  }
   if (m.type === 'frame') {
-    // handlers await GPU results (dedup) — keep strict frame order via a promise chain
-    frameChain = frameChain.then(() => handleFrame(m))
-      .catch(e => postMessage({ type: 'error', msg: 'frame: ' + (e.message || e) }));
+    // one frame in flight; a backlog of transferred bitmaps (8MB of GPU memory each)
+    // grinds everything — excess frames are dropped for interpolation (originals are
+    // displayed by the MAIN thread and don't pass through here)
+    if (processingFrame) { m.bmp.close(); return; }
+    processingFrame = true;
+    handleFrame(m)
+      .catch(e => postMessage({ type: 'error', msg: 'frame: ' + (e.message || e) }))
+      .finally(() => { processingFrame = false; });
     return;
   }
 };
 
-let frameChain = Promise.resolve();
+let processingFrame = false;
 let lastTex = null;
 
 function scheduleTransition(ts, S, job) {
@@ -385,7 +398,11 @@ async function handleFrame(m) {
     m.bmp.close();
     const prevTex = lastTex;
     if (prevTex) {
-      if (animeMode && await gpuIsDup(prevTex, tex)) {
+      const { dup, cut } = await gpuIsDup(prevTex, tex);
+      if (cut) {
+        postMessage({ type: 'cut', ts: m.ts });
+        lastUniqueTs = m.ts; // new scene starts its own rhythm
+      } else if (animeMode && dup) {
         postMessage({ type: 'dup', ts: m.ts });
       } else {
         scheduleTransition(m.ts, S, { a: prevTex, b: tex, ts: m.ts, key: activeKey });

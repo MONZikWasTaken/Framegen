@@ -8,6 +8,8 @@
   canvas { width:100%; background:#000; display:block; border-radius:6px; }
   #hud { position:absolute; top:8px; left:8px; font:13px/1.5 monospace; color:#0f0;
          background:rgba(0,0,0,.55); padding:6px 10px; border-radius:6px; white-space:pre; }
+  #stage:fullscreen { background:#000; display:flex; align-items:center; }
+  #stage:fullscreen canvas { width:100%; height:100%; object-fit:contain; }
   #status { font:13px monospace; white-space:pre-wrap; color:#aaa; margin-top:8px; }
   .bad { color:#f66; }
   label { margin-right:12px; }
@@ -34,6 +36,11 @@
 </div>
 
 <div id="stage"><canvas id="out"></canvas><div id="hud">—</div></div>
+<div id="bar" style="margin-top:6px; max-width:1024px; display:flex; align-items:center; gap:10px;">
+  <button id="fsBtn" title="полноэкранный (или двойной клик)">⛶</button>
+  <span id="clock" style="font:13px monospace; min-width:110px;">0:00 / 0:00</span>
+  <input type="range" id="seek" min="0" max="1000" value="0" style="flex:1;">
+</div>
 <div id="status"></div>
 <video id="vid" style="display:none" playsinline></video>
 
@@ -63,7 +70,7 @@ let letterbox = null, lctx = null;   // display-size staging canvas (GPU draws o
 let letterboxC = null, lcctx = null; // compute-size staging canvas for the worker
 let queue = [];   // {kind:'bmp'|'img', payload, at}
 let prevBmp = null, prevTs = 0, intervalMs = 42;
-let shown = 0, dropped = 0, dups = 0, interpMs = 0, halfRate = false, midCfg = '';
+let shown = 0, dropped = 0, dups = 0, cuts = 0, interpMs = 0, halfRate = false, midCfg = '';
 let hudTimer = 0, shownWindow = [], running = false;
 
 let audioCtx = null, audioDelay = null;
@@ -99,7 +106,7 @@ function pump(now) {
     $('hud').textContent =
       `out ${shownWindow.length} fps · interp ${interpMs.toFixed(0)} ms` +
       `${halfRate ? ' · ½-rate' : ''} · mids: ${midCfg || '—'}\n` +
-      `shown ${shown} · dropped ${dropped} · dups ${dups} · ${workerKey ?? ''}`;
+      `shown ${shown} · dropped ${dropped} · dups ${dups} · cuts ${cuts} · ${workerKey ?? ''}`;
   }
   requestAnimationFrame(pump);
 }
@@ -137,6 +144,7 @@ function onWorkerMessage(ev) {
         .then(bmp => queue.push({ payload: bmp, at: due }));
     } else dropped++;
   } else if (m.type === 'dup') dups++;
+  else if (m.type === 'cut') cuts++;
   else if (m.type === 'skipped') dropped++;
   else if (m.type === 'log') st(m.msg);
   else if (m.type === 'error') {
@@ -174,7 +182,7 @@ function ensureWorker() {
   lctx = letterbox.getContext('2d');
   letterboxC = new OffscreenCanvas(CW, CH);
   lcctx = letterboxC.getContext('2d');
-  worker = new Worker('player_worker.js?v=11', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=14', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (webnn собирает граф несколько секунд, один раз)`);
@@ -207,6 +215,57 @@ $('file').onchange = e => {
   };
   vid.onerror = () => st('видео не декодируется (кодек?)', true);
 };
+
+// ---- player controls: seek/clock/fullscreen/drag&drop/space/persisted settings ----
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+let seeking = false;
+setInterval(() => {
+  if (!vid.duration) return;
+  $('clock').textContent = `${fmt(vid.currentTime)} / ${fmt(vid.duration)}`;
+  if (!seeking) $('seek').value = Math.round(vid.currentTime / vid.duration * 1000);
+}, 250);
+$('seek').oninput = () => { seeking = true; };
+$('seek').onchange = () => {
+  if (vid.duration) {
+    vid.currentTime = +$('seek').value / 1000 * vid.duration;
+    queue.forEach(i => i.payload.close());
+    queue = []; prevBmp?.close(); prevBmp = null;
+    if (worker) worker.postMessage({ type: 'flush' }); // a mid across the seek is garbage
+  }
+  seeking = false;
+};
+function togglePlay() {
+  if (!vid.src) return;
+  if (vid.paused) $('playBtn').click(); else $('pauseBtn').click();
+}
+$('out').onclick = togglePlay;
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
+});
+$('fsBtn').onclick = () => document.fullscreenElement
+  ? document.exitFullscreen() : $('stage').requestFullscreen();
+$('out').ondblclick = $('fsBtn').onclick;
+$('stage').ondragover = e => e.preventDefault();
+$('stage').ondrop = e => {
+  e.preventDefault();
+  const f = e.dataTransfer.files[0];
+  if (f) { $('file').files = e.dataTransfer.files; $('file').onchange({ target: { files: [f] } }); }
+};
+// settings persist across sessions
+const SETTINGS = ['ep', 'res', 'quality', 'factor'];
+const FLAGS = ['interpOn', 'animeMode', 'mute'];
+try {
+  const saved = JSON.parse(localStorage.getItem('framecast') || '{}');
+  SETTINGS.forEach(k => { if (saved[k]) $(k).value = saved[k]; });
+  FLAGS.forEach(k => { if (k in saved) $(k).checked = saved[k]; });
+} catch {}
+function saveSettings() {
+  const s = {};
+  SETTINGS.forEach(k => s[k] = $(k).value);
+  FLAGS.forEach(k => s[k] = $(k).checked);
+  localStorage.setItem('framecast', JSON.stringify(s));
+}
+[...SETTINGS, ...FLAGS].forEach(k => $(k).addEventListener('change', saveSettings));
 
 $('playBtn').onclick = async () => {
   try {
