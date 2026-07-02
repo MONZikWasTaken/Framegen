@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Framecast — real-time 2× player</title>
+<style>
+  body { font:14px/1.5 system-ui, sans-serif; margin:20px; max-width:1100px; background:#181818; color:#ddd; }
+  button,select { font-size:15px; padding:5px 10px; margin-right:8px; }
+  #stage { position:relative; margin-top:12px; max-width:1024px; }
+  canvas { width:100%; background:#000; display:block; border-radius:6px; }
+  #hud { position:absolute; top:8px; left:8px; font:13px/1.5 monospace; color:#0f0;
+         background:rgba(0,0,0,.55); padding:6px 10px; border-radius:6px; white-space:pre; }
+  #status { font:13px monospace; white-space:pre-wrap; color:#aaa; margin-top:8px; }
+  .bad { color:#f66; }
+  label { margin-right:12px; }
+</style>
+</head>
+<body>
+<h3>Framecast — real-time 2× player (streaming)</h3>
+<p>Плеер декодирует видео на лету и вставляет интерполированный кадр между каждыми двумя —
+весь файл, со звуком. Если интерполяция не успевает за темпом видео, средние кадры
+пропускаются (см. HUD). Реальное время: <b>webnn + 360p/480p + turbo/fastest</b>.</p>
+
+<div>
+  <input type="file" id="file" accept="video/*">
+  <select id="ep"><option value="webnn">webnn (нужен флаг)</option><option value="webgpu">webgpu</option></select>
+  <select id="res"><option value="480">480p</option><option value="360">360p (самый быстрый)</option><option value="720">720p</option></select>
+  <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option><option value="fast">fast</option><option value="full">full</option></select>
+</div>
+<div style="margin-top:8px">
+  <button id="playBtn" disabled>Play</button>
+  <button id="pauseBtn" disabled>Pause</button>
+  <label><input type="checkbox" id="interpOn" checked> интерполяция 2×</label>
+  <label><input type="checkbox" id="animeMode" checked> аниме-режим (дедуп «двоек»)</label>
+  <label><input type="checkbox" id="smooth" checked> плавность+ (задержка 1 кадр)</label>
+  <label><input type="checkbox" id="mute"> без звука</label>
+</div>
+
+<div id="stage"><canvas id="out"></canvas><div id="hud">—</div></div>
+<div id="status"></div>
+<video id="vid" style="display:none" playsinline></video>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.all.min.js"></script>
+<script type="module">
+import { createSession, interpolate } from './rife_session.js';
+
+const $ = id => document.getElementById(id);
+const st = (m, bad) => { $('status').textContent += m + '\n'; if (bad) $('status').classList.add('bad'); };
+const vid = $('vid'), out = $('out'), octx = out.getContext('2d');
+
+let handle = null, sessKey = null;
+let grabCanvas = null, grabCtx = null;
+
+// The display pipeline runs behind the (hidden) video by ~2 source intervals so every
+// mid lands exactly on its slot; the audio is delayed by the same amount via WebAudio,
+// so lipsync holds regardless of the pipeline delay.
+const DELAY_MS = 100; // fixed pipeline delay (video queue + audio DelayNode, set once)
+let audioCtx = null, audioDelay = null;
+function ensureAudioDelay() {
+  if (audioCtx) return;
+  audioCtx = new AudioContext();
+  const src = audioCtx.createMediaElementSource(vid);
+  audioDelay = audioCtx.createDelay(1.0);
+  src.connect(audioDelay).connect(audioCtx.destination);
+}
+
+// ---- display scheduler: queue of {bmp, at}; an rAF loop shows whatever is due ----
+let queue = [];
+let shown = 0, dropped = 0, interps = 0, dups = 0;
+let interpMsAvg = 0, intervalMs = 42, uniqueIntervalMs = 42;
+let lastFrame = null, lastTs = 0, lastUniqueTs = 0, transitionNo = 0;
+let hudTimer = 0, shownWindow = [], running = false, halfRate = false;
+
+// ort-web sessions cannot run() concurrently ("Session already started") — keep exactly
+// one inference in flight and at most one job waiting; a newer job replaces the waiting one.
+let busy = false, pending = null;
+function runInterp(job) {
+  busy = true;
+  const t0 = performance.now();
+  interpolate(handle, job.a, job.b).then(mid => {
+    const ms = performance.now() - t0;
+    interpMsAvg = interpMsAvg ? interpMsAvg * 0.85 + ms * 0.15 : ms;
+    interps++;
+    if (performance.now() <= job.due + job.tolerance) queue.push({ img: mid, at: job.due });
+    else dropped++;
+    busy = false;
+    if (pending) { const p = pending; pending = null; runInterp(p); }
+  }).catch(e => { st('interp ERROR: ' + (e.message || e), true); busy = false; pending = null; });
+}
+function submitInterp(job) {
+  if (!busy) runInterp(job);
+  else { if (pending) dropped++; pending = job; }
+}
+
+// Anime is drawn "on twos": the same drawing is repeated on 2 video frames. A mid
+// between identical frames adds nothing — detect near-duplicates (sampled RGB diff)
+// and interpolate only across distinct drawings. This also DOUBLES the compute budget.
+function isNearDup(a, b) {
+  const px = a.length / 4;
+  const stride = Math.max(1, Math.floor(px / 3000)) * 4;
+  let sum = 0, mx = 0, cnt = 0;
+  for (let i = 0; i < a.length; i += stride) {
+    const d = Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]);
+    sum += d;
+    if (d > mx) mx = d;
+    cnt++;
+  }
+  return (sum / cnt) < 2.5 && mx < 45; // per-pixel RGB-sum; true "on twos" dups are codec-noise only
+}
+
+function draw(imgData) {
+  if (out.width !== imgData.width) { out.width = imgData.width; out.height = imgData.height; }
+  octx.putImageData(imgData, 0, 0);
+  shown++;
+  const now = performance.now();
+  shownWindow.push(now);
+  while (shownWindow.length && shownWindow[0] < now - 1000) shownWindow.shift();
+}
+
+function pump(now) {
+  if (!running) return;
+  queue.sort((a, b) => a.at - b.at); // async mids may arrive out of order
+  // show the most recent due item; anything older due is superseded (counts as drop)
+  let due = -1;
+  for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
+  if (due >= 0) {
+    for (let i = 0; i < due; i++) dropped++;
+    draw(queue[due].img);
+    queue = queue.slice(due + 1);
+  }
+  if (now - hudTimer > 250) {
+    hudTimer = now;
+    $('hud').textContent =
+      `out ${shownWindow.length} fps · interp ${interpMsAvg.toFixed(0)} ms ` +
+      `(бюджет ${uniqueIntervalMs.toFixed(0)} ms)${halfRate ? ' · ½-rate' : ''}\n` +
+      `shown ${shown} · dropped ${dropped} · dups ${dups} · ${sessKey ?? ''}`;
+  }
+  requestAnimationFrame(pump);
+}
+
+function grab() {
+  const s = Math.min(1, handle.maxw / vid.videoWidth, handle.maxh / vid.videoHeight);
+  const w = Math.max(2, 2 * Math.round(vid.videoWidth * s / 2));
+  const h = Math.max(2, 2 * Math.round(vid.videoHeight * s / 2));
+  if (!grabCanvas || grabCanvas.width !== w) {
+    grabCanvas = new OffscreenCanvas(w, h);
+    grabCtx = grabCanvas.getContext('2d', { willReadFrequently: true });
+  }
+  grabCtx.drawImage(vid, 0, 0, w, h);
+  return grabCtx.getImageData(0, 0, w, h);
+}
+
+// per presented source frame: schedule the PREVIOUS original now and kick off the mid
+function onFrame(now, meta) {
+  if (!running) return;
+  const cur = grab();
+  const ts = performance.now();
+  if (lastFrame) {
+    const dt = ts - lastTs;
+    if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
+    // "smooth+": show everything ~100ms later — we play a file, not a live stream, so
+    // the pipeline latency lets every mid land exactly on its slot even when inference
+    // is slower than one interval. Audio is delayed by the same CONSTANT (set once at
+    // Play — retuning the delay line per frame makes the audio stutter).
+    const delay = $('smooth').checked ? DELAY_MS : 0;
+    queue.push({ img: lastFrame, at: ts + delay });
+    const anime = $('animeMode').checked;
+    const dup = anime && isNearDup(lastFrame.data, cur.data);
+    if (dup) {
+      dups++; // same drawing repeated — a mid would be identical; skip and save the budget
+    } else {
+      const du = ts - lastUniqueTs;
+      if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
+      lastUniqueTs = ts;
+      transitionNo++;
+      // consistently over budget -> interpolate every 2nd transition (a regular cadence
+      // looks far better than random drops)
+      halfRate = interpMsAvg > uniqueIntervalMs * 1.05;
+      const skip = halfRate && (transitionNo & 1);
+      if ($('interpOn').checked && !skip) {
+        submitInterp({
+          a: lastFrame, b: cur,
+          due: ts + delay + intervalMs / 2,
+          // strict: a late mid distorts the cadence more than a missing one
+          tolerance: intervalMs / 4,
+        });
+      }
+    }
+  } else {
+    queue.push({ img: cur, at: ts + ($('smooth').checked ? intervalMs : 0) });
+    lastUniqueTs = ts;
+  }
+  lastFrame = cur; lastTs = ts;
+  vid.requestVideoFrameCallback(onFrame);
+}
+
+async function ensureSession() {
+  const ep = $('ep').value, res = $('res').value, q = $('quality').value;
+  const key = ep + '/' + res + 'p/' + q;
+  if (handle && sessKey === key) return;
+  st(`создаю сессию ${key} ... (webnn собирает граф несколько секунд, один раз)`);
+  handle = await createSession(ep, res, q);
+  sessKey = key;
+  st('сессия готова');
+}
+
+$('file').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  vid.src = URL.createObjectURL(f);
+  vid.onloadeddata = () => {
+    st(`видео: ${vid.videoWidth}x${vid.videoHeight}, ${vid.duration.toFixed(1)}с — жми Play`);
+    $('playBtn').disabled = false; $('pauseBtn').disabled = false;
+  };
+  vid.onerror = () => st('видео не декодируется (кодек?)', true);
+};
+
+$('playBtn').onclick = async () => {
+  try {
+    await ensureSession();
+    ensureAudioDelay(); // needs the click (user gesture)
+    await audioCtx.resume();
+    audioDelay.delayTime.value = ($('smooth').checked ? DELAY_MS : 0) / 1000; // once, not per frame
+    vid.muted = $('mute').checked;
+    lastFrame = null; queue = []; running = true;
+    hudTimer = 0; shownWindow = [];
+    await vid.play();
+    vid.requestVideoFrameCallback(onFrame);
+    requestAnimationFrame(pump);
+  } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
+};
+$('pauseBtn').onclick = () => { vid.pause(); running = false; };
+$('mute').onchange = () => { vid.muted = $('mute').checked; };
+vid.onended = () => { running = false; st('конец видео'); };
+</script>
+</body>
+</html>
