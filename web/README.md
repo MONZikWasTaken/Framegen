@@ -11,6 +11,8 @@ python -m http.server 8123 --bind 127.0.0.1
 - `web/demo.html` — drop two frames (or "Use demo pair") → interpolated middle frame + slider.
 - `web/probe.html` — ceiling probe: p50/p10 fps, mirrored ort-web console (node placement +
   per-kernel WebGPU profiling), fp32/fp16 × webgpu/wasm.
+- `web/slowmo.html` — 2× slow-mo: load a short clip → precompute interpolated frames → play
+  smooth. Not real-time (precompute-then-play). Fixed 2× (model timestep=0.5).
 
 ## Pre/post
 

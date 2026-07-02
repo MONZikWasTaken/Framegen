@@ -42,9 +42,8 @@
 
 <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
 <script type="module">
-import { toInput, fromOutput } from './rife_prepost.js';
+import { createSession, interpolate } from './rife_session.js';
 
-const EW = 1280, EH = 736;         // engine (padded) size
 const MAXW = 1280, MAXH = 720;     // max native size we feed
 const st = (m, bad) => { const s=document.getElementById('status');
   s.textContent += m + '\n'; if (bad) s.classList.add('bad'); };
@@ -96,10 +95,8 @@ document.getElementById('demoBtn').onclick = async () => {
 let sess = null, sessEp = null;
 async function ensureSession(ep) {
   if (sess && sessEp === ep) return sess;
-  ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
   st('creating session on ' + ep + ' ...');
-  sess = await ort.InferenceSession.create('/assets/rife_lite_inlined.onnx',
-    { executionProviders: [ep], graphOptimizationLevel: 'all' });
+  sess = await createSession(ep);
   sessEp = ep;
   st('session ready: inputs=' + sess.inputNames + ' output=' + sess.outputNames);
   return sess;
@@ -114,17 +111,10 @@ document.getElementById('runBtn').onclick = async () => {
     const ep = document.getElementById('ep').value;
     const s = await ensureSession(ep);
     const w = frame[0].width, h = frame[0].height;
-    const a = toInput(frame[0].data, w, h, EW, EH);
-    const b = toInput(frame[1].data, w, h, EW, EH);
-    const feeds = {};
-    feeds[s.inputNames[0]] = new ort.Tensor('float32', a, [1, 3, EH, EW]);
-    feeds[s.inputNames[1]] = new ort.Tensor('float32', b, [1, 3, EH, EW]);
     const t0 = performance.now();
-    const out = await s.run(feeds);
+    const mid = await interpolate(s, frame[0], frame[1]);
     const dt = performance.now() - t0;
-    const chw = out[s.outputNames[0]].data;
-    const rgba = fromOutput(chw, w, h, EW, EH);
-    renderResult(frame[0], new ImageData(rgba, w, h));
+    renderResult(frame[0], mid);
     st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep}`);
   } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
 };
