@@ -28,6 +28,7 @@
 
 <div>
   <select id="ep"><option value="webgpu">webgpu</option><option value="webnn">webnn (DirectML, ~3.5×; needs flag)</option><option value="wasm">wasm</option></select>
+  <select id="res"><option value="720">720p</option><option value="480">480p (~2× faster)</option><option value="360">360p (~3× faster)</option></select>
   <button id="demoBtn">Use demo pair</button>
   <button id="runBtn">Interpolate</button>
 </div>
@@ -44,29 +45,31 @@
 <script type="module">
 import { createSession, interpolate } from './rife_session.js';
 
-const MAXW = 1280, MAXH = 720;     // max native size we feed
 const st = (m, bad) => { const s=document.getElementById('status');
   s.textContent += m + '\n'; if (bad) s.classList.add('bad'); };
 
-// Loaded native ImageData for each input (RGBA at native w×h ≤ MAXW×MAXH).
-const frame = [null, null];
+// Original loaded Image per input; ImageData is derived at Run time so the
+// frame fits the engine size of whichever resolution is selected.
+const source = [null, null];
 
-function drawNative(source, canvasEl) {
-  const iw = source.width, ih = source.height;
-  const s = Math.min(1, MAXW / iw, MAXH / ih);
+function drawNative(src, canvasEl, maxw, maxh) {
+  const iw = src.width, ih = src.height;
+  const s = Math.min(1, maxw / iw, maxh / ih);
   const w = Math.max(1, Math.round(iw * s)), h = Math.max(1, Math.round(ih * s));
   const off = new OffscreenCanvas(w, h);
   const octx = off.getContext('2d');
-  octx.drawImage(source, 0, 0, w, h);
-  canvasEl.width = 320; canvasEl.height = Math.round(320 * h / w);
-  canvasEl.getContext('2d').drawImage(off, 0, 0, canvasEl.width, canvasEl.height);
+  octx.drawImage(src, 0, 0, w, h);
+  if (canvasEl) {
+    canvasEl.width = 320; canvasEl.height = Math.round(320 * h / w);
+    canvasEl.getContext('2d').drawImage(off, 0, 0, canvasEl.width, canvasEl.height);
+  }
   return octx.getImageData(0, 0, w, h);
 }
 
 function loadFileToFrame(file, idx, canvasEl) {
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => { frame[idx] = drawNative(img, canvasEl); URL.revokeObjectURL(img.src); res(); };
+    img.onload = () => { source[idx] = img; drawNative(img, canvasEl, 1280, 720); URL.revokeObjectURL(img.src); res(); };
     img.onerror = rej;
     img.src = URL.createObjectURL(file);
   });
@@ -74,7 +77,7 @@ function loadFileToFrame(file, idx, canvasEl) {
 function loadUrlToFrame(url, idx, canvasEl) {
   return new Promise((res, rej) => {
     const img = new Image();
-    img.onload = () => { frame[idx] = drawNative(img, canvasEl); res(); };
+    img.onload = () => { source[idx] = img; drawNative(img, canvasEl, 1280, 720); res(); };
     img.onerror = rej;
     img.src = url;
   });
@@ -89,33 +92,35 @@ document.getElementById('demoBtn').onclick = async () => {
     loadUrlToFrame('/demo/I0_0.png', 0, document.getElementById('c0')),
     loadUrlToFrame('/demo/I0_1.png', 1, document.getElementById('c1')),
   ]);
-  st('demo pair loaded (' + frame[0].width + 'x' + frame[0].height + ')');
+  st('demo pair loaded (' + source[0].width + 'x' + source[0].height + ')');
 };
 
-let sess = null, sessEp = null;
-async function ensureSession(ep) {
-  if (sess && sessEp === ep) return sess;
-  st('creating session on ' + ep + ' ...');
-  sess = await createSession(ep);
-  sessEp = ep;
-  st('session ready: inputs=' + sess.inputNames + ' output=' + sess.outputNames);
-  return sess;
+let handle = null, sessKey = null;
+async function ensureSession(ep, res) {
+  if (handle && sessKey === ep + '/' + res) return handle;
+  st('creating session on ' + ep + ' @ ' + res + 'p ...');
+  handle = await createSession(ep, res);
+  sessKey = ep + '/' + res;
+  st('session ready: inputs=' + handle.sess.inputNames + ' output=' + handle.sess.outputNames);
+  return handle;
 }
 
 document.getElementById('runBtn').onclick = async () => {
   try {
-    if (!frame[0] || !frame[1]) { st('load two images first (or click "Use demo pair")', true); return; }
-    if (frame[0].width !== frame[1].width || frame[0].height !== frame[1].height) {
+    if (!source[0] || !source[1]) { st('load two images first (or click "Use demo pair")', true); return; }
+    const ep = document.getElementById('ep').value, res = document.getElementById('res').value;
+    const s = await ensureSession(ep, res);
+    const f0 = drawNative(source[0], null, s.maxw, s.maxh);
+    const f1 = drawNative(source[1], null, s.maxw, s.maxh);
+    if (f0.width !== f1.width || f0.height !== f1.height) {
       st('the two frames must be the same size', true); return;
     }
-    const ep = document.getElementById('ep').value;
-    const s = await ensureSession(ep);
-    const w = frame[0].width, h = frame[0].height;
+    const w = f0.width, h = f0.height;
     const t0 = performance.now();
-    const mid = await interpolate(s, frame[0], frame[1]);
+    const mid = await interpolate(s, f0, f1);
     const dt = performance.now() - t0;
-    renderResult(frame[0], mid);
-    st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep}`);
+    renderResult(f0, mid);
+    st(`interpolated ${w}x${h}: ${dt.toFixed(1)} ms · ep=${ep} res=${res}p`);
   } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
 };
 

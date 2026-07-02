@@ -148,18 +148,33 @@ What to look for in the mirrored log:
   roundtrips the whole cost, or do Conv/Resize also dominate?).
 - `RESULT p50=… fps=…` for fp32 vs fp16.
 
-## Blocked / deferred
+## Resolution curve (measured 2026-07-02, 4060 Ti, webgpu EP, clean runs)
 
-- **480p measurement:** the models are fixed-shape (736×1280, 1080×1920). A 480p ONNX needs
-  a re-export from the RIFE checkpoint. The reference code still exists at
-  `%TEMP%\opencode\rife_ref`, but the weights dir `%TEMP%\opencode\rife_m\RIFE_m_train_log`
-  is gone. To do 480p: recover `flownet.pkl` and run
-  `python tools/export_onnx.py 480 854` (then inline + `tools/export_fp16.py`).
-- The fp16 model is validated (loads + runs, output ≈0.5 on flat 0.5 input) but its real-GPU
-  speed/quality vs fp32 is the open question the hand-off answers.
+The weights were UNBLOCKED: `tools/restore_pkl.py` rebuilds `flownet.pkl` from
+`models/rife_lite.safetensors` (inverse of `convert_weights.py`; verified bit-exact —
+PyTorch-on-restored-pkl vs fresh 480p ONNX on CPU EP: mean|Δ|=0, max|Δ|=0). Any-size export:
+`python tools/export_onnx.py H W`.
+
+| model (engine shape) | webgpu p50 | fps | vs 720p |
+|---|---:|---:|---:|
+| 720p (736×1280) | 1957 ms | 0.5 | 1× |
+| 480p (480×864)  | 1064 ms | 0.94 | 1.84× |
+| 360p (384×640)  | 655 ms  | 1.53 | 3.0× |
+
+Cost scales ~linearly with pixel count (944k → 415k → 246k px) — consistent with
+bandwidth-bound, not fixed-dispatch-bound. Extrapolated WebNN/DirectML (÷3.5):
+480p ≈ 300 ms (3.3 fps), 360p ≈ 190 ms (5+ fps). The demo/slowmo pages now have a
+resolution selector (`web/rife_session.js` `MODELS`).
+
+## Deferred
+
+- The fp16 model is validated (loads + runs, output ≈0.5 on flat 0.5 input) but fp16 was
+  measured at 0% gain on WebGPU, so no fp16 variants of the small models were made.
 
 ## Artifacts
 
-- `web/probe.html` — the probe harness (console-mirroring, fp32/fp16 × webgpu/wasm).
+- `web/probe.html` — the probe harness (console-mirroring, per-model dims, EP × model matrix).
+- `tools/restore_pkl.py` — rebuild `flownet.pkl` from `models/rife_lite.safetensors`.
 - `tools/export_fp16.py` — reproducible fp32→fp16 ONNX conversion (no torch).
-- `assets/rife_lite_fp16.onnx` — generated fp16 model (gitignored, regenerable).
+- `assets/rife_lite_fp16.onnx`, `assets/rife_lite_480x854.onnx`, `assets/rife_lite_360x640.onnx`
+  — generated models (gitignored, regenerable).

@@ -32,10 +32,25 @@ over RGBA8 canvas pixels. Unit tests: `node web/prepost.test.js`.
 Measured levers (4060 Ti): fp16, graph-capture, gpu-buffer output = 0% on WebGPU; WebNN = 3.5×.
 See `../docs/phase2_ortweb_ceiling.md`.
 
+## Resolutions (res dropdown)
+
+Fixed-shape models, one per resolution; cost scales ~linearly with pixels (bandwidth-bound).
+Measured webgpu p50 on the 4060 Ti: **720p = 1957 ms · 480p = 1064 ms · 360p = 655 ms**
+(WebNN ≈ ⅓ of each). Frames larger than the engine are downscaled to fit before inference.
+
+Regenerate the lower-res models (assets/ is gitignored):
+
+```
+python tools/restore_pkl.py            # rebuild flownet.pkl from models/rife_lite.safetensors
+python tools/export_onnx.py 480 854    # -> assets/rife_lite_480x854.onnx
+python tools/export_onnx.py 360 640    # -> assets/rife_lite_360x640.onnx
+```
+
 ## Notes
 
-- Model `assets/rife_lite_inlined.onnx` is fixed-shape `[1,3,736,1280]`; smaller frames are
-  zero-padded to that and cropped back (native ≤ engine), same as the native TensorRT path.
+- Models are fixed-shape (`720`: `[1,3,736,1280]`, `480`: `[1,3,480,864]`, `360`: `[1,3,384,640]`);
+  smaller frames are zero-padded to the engine size and cropped back (native ≤ engine), same as
+  the native TensorRT path. The map lives in `rife_session.js` (`MODELS`).
 - Verified: on the demo pair the browser output matches the PyTorch middle frame
   (`demo/mid_pytorch.png`) to `mean|Δ|=0.10`, `max|Δ|=22` — pixel-accurate.
 - Real WebGPU **speed** must be measured in a browser with a real GPU adapter (Playwright's
