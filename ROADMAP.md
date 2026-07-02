@@ -58,6 +58,13 @@ NVIDIA. Цель — real-time интерполяция, которую можн
 
 ## Фаза 3 — Свой WGSL-warp (1–2 недели) 🔥
 
+> ⚠️ **ЛИКЕЛИ НЕ НУЖНА (2026-07-02).** Проба Фазы 2 показала: ort-web 1.27.0 уже
+> содержит WebGPU-кернел `GridSample` (проверено в `ort-wasm-simd-threaded.jsep.mjs`),
+> покрывающий наши атрибуты (linear/border/align_corners). Прошлогодний CPU-fallback был
+> ограничением старой версии. Свой WGSL-warp дублировал бы апстрим. **Не начинать, пока
+> прогон на реальном GPU (`web/probe.html`) не подтвердит, что GridSample всё ещё падает в
+> CPU на текущей версии.** См. `docs/phase2_ortweb_ceiling.md`.
+
 Крупнейший браузерный скачок. Аналог твоего CUDA-warp, но на WebGPU.
 
 - [ ] Реализовать backward-warp (bilinear, border) как WGSL compute-шейдер.

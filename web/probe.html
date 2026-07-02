@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Framecast — ort-web ceiling probe (Phase 2)</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 20px; max-width: 1100px; }
+  button { font-size: 15px; padding: 6px 14px; margin-right: 8px; }
+  select { font-size: 15px; padding: 4px; }
+  #log { background:#111; color:#ddd; padding:10px; white-space:pre-wrap; font:12px/1.4 monospace;
+         max-height:60vh; overflow:auto; border-radius:6px; margin-top:12px; }
+  .hot { color:#ff8; } .bad { color:#f88; } .ok { color:#8f8; }
+  h3 { margin-bottom:4px; }
+</style>
+</head>
+<body>
+<h3>Framecast — ort-web WebGPU ceiling probe</h3>
+<p>Model is fixed-shape <b>736×1280</b> (720p padded). Pick a model, click Run.
+The console (incl. ort-web node-placement + per-kernel timings) is mirrored below —
+just copy the whole box back.</p>
+
+<div>
+  <select id="model">
+    <option value="/assets/rife_lite_inlined.onnx">fp32 (rife_lite_inlined.onnx)</option>
+    <option value="/assets/rife_lite_fp16.onnx">fp16 (rife_lite_fp16.onnx)</option>
+  </select>
+  <select id="ep">
+    <option value="webgpu">EP: webgpu</option>
+    <option value="wasm">EP: wasm (CPU baseline)</option>
+  </select>
+  <button id="run">Run</button>
+  <button id="clear">Clear log</button>
+</div>
+
+<div id="log"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.webgpu.min.js"></script>
+<script>
+const logEl = document.getElementById('log');
+function line(m, cls){ const s=document.createElement('span'); if(cls)s.className=cls;
+  s.textContent=m+'\n'; logEl.appendChild(s); logEl.scrollTop=logEl.scrollHeight; }
+
+// Mirror console into the page so node-placement / profiling lines are visible without devtools.
+for (const k of ['log','warn','error']) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => {
+    orig(...a);
+    const msg = a.map(x => typeof x==='string'?x:JSON.stringify(x)).join(' ');
+    let cls = k==='error'?'bad':(k==='warn'?'hot':null);
+    if (/grid.?sample|fallback|not? .*support|CPU|cpu/i.test(msg)) cls = cls||'hot';
+    line(msg, cls);
+  };
+}
+
+async function run(){
+  const url = document.getElementById('model').value;
+  const ep  = document.getElementById('ep').value;
+  line('\n===== RUN model='+url+' ep='+ep+' =====', 'ok');
+  try {
+    ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/';
+    ort.env.logLevel = 'verbose';
+    ort.env.debug = true;
+    if (ep === 'webgpu') { ort.env.webgpu.profiling = { mode: 'default' }; } // per-kernel GPU times
+
+    if (navigator.gpu) {
+      const ad = await navigator.gpu.requestAdapter();
+      line('WebGPU adapter: ' + (ad?.info ? JSON.stringify(ad.info) : (ad?'present':'NULL')), ad?'ok':'bad');
+    } else line('navigator.gpu MISSING', 'bad');
+
+    line('creating session (verbose — watch for CPU/fallback lines)...');
+    const t0 = performance.now();
+    const sess = await ort.InferenceSession.create(url, {
+      executionProviders: [ep],
+      graphOptimizationLevel: 'all',
+    });
+    line('session created in '+(performance.now()-t0).toFixed(0)+'ms; inputs='+sess.inputNames+' outputs='+sess.outputNames);
+
+    const dims=[1,3,736,1280], n=1*3*736*1280;
+    const a=new Float32Array(n).fill(0.5), b=new Float32Array(n).fill(0.5);
+    const feeds={}; feeds[sess.inputNames[0]]=new ort.Tensor('float32',a,dims);
+    feeds[sess.inputNames[1]]=new ort.Tensor('float32',b,dims);
+
+    let out = await sess.run(feeds); // warmup
+    const N=10, ts=[];
+    for(let i=0;i<N;i++){ const t=performance.now(); out=await sess.run(feeds); ts.push(performance.now()-t); }
+    ts.sort((x,y)=>x-y);
+    const od = out[sess.outputNames[0]].data;
+    let mn=1e9,mx=-1e9,s=0; for(let i=0;i<od.length;i++){const v=od[i];s+=v;if(v<mn)mn=v;if(v>mx)mx=v;}
+    line(`RESULT ep=${ep} p50=${ts[5].toFixed(1)}ms p10=${ts[1].toFixed(1)}ms fps=${(1000/ts[5]).toFixed(1)}`, 'ok');
+    line(`OUTPUT mean=${(s/od.length).toFixed(4)} min=${mn.toFixed(3)} max=${mx.toFixed(3)} (all-zero => broken)`,
+         (mn===0&&mx===0)?'bad':'ok');
+    line('DONE');
+  } catch(e){ line('FATAL: '+(e.stack||e.message||e), 'bad'); }
+}
+document.getElementById('run').onclick = run;
+document.getElementById('clear').onclick = () => logEl.textContent='';
+</script>
+</body>
+</html>
