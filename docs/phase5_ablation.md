@@ -1,4 +1,31 @@
-# Phase 5 — model shrink: ablation frontier (step 1) + distilled student (step 2)
+# Phase 5 — model shrink: ablations (1) + student [4,2] (2) + aggressive students (3)
+
+## Step 3 result — the student ladder (2026-07-02, 10k steps each, ~35 min per run)
+
+| model | BBB dB | Jelly dB | TRT 720p | TRT 1080p | webgpu 360p | WebNN 360p |
+|---|---:|---:|---:|---:|---:|---:|
+| full teacher | 41.50 | 37.67 | 21.6 ms | 52.9 ms | — | — |
+| student [4,2] | 40.14 | 37.14 | 11.3 ms | 22.1 ms | ~140 ms | 59 ms |
+| student [8,4] | 39.54 | 35.68 | **6.6 ms (151 fps)** | **16.5 ms (60.4 fps — 1080p60 PASS)** | — | — |
+| student 1blk [4] | 39.68 | 35.25 | **5.8 ms (172 fps)** | — | 84 ms | **29.4 ms (34 fps — real-time)** |
+
+- **1080p60 native: closed** by the [8,4] student (16.5 ms < 16.7 gate).
+- **Browser real-time: closed** by the 1-block student on WebNN @360p (29.4 ms), 480p = 57 ms.
+- The 1blk student BEATS [8,4] on animation with HALF the nodes; [8,4] wins on live action.
+  Ladder visual on the max-motion frame: `docs/student_ladder_bbb.jpg`.
+- Web app tiers: `fastest` = student [4,2] (best quality/speed), `turbo` = 1blk student.
+- Weights of record: `models/rife_lite_student_{2blk,2blk_s84,1blk}.safetensors` (local; manifests in git).
+
+## u8-IO engines + variable timestep (same day)
+
+`tools/export_u8.py` bakes prepost into the graph (uint8 HWC I/O, bit-exact vs f32:
+max|Δ|=0) + a scalar `t` input (RIFEm is natively arbitrary-t). Shim/pipeline support:
+`--times N`, `--skip-static`, audio passthrough, reader/writer thread overlap.
+**End-to-end wall (720p, student [4,2] u8 engine): 2× = 178.6 fps (7.4 ms/infer —
+the u8 engine is FASTER than its f32 twin's 11.3 ms: fused prepost + 4× less PCIe),
+4× = 183 fps wall.** Morning baseline end-to-end was 59 fps → 3× on the product path.
+
+
 
 ## Step 2 result — distilled 2-block student (2026-07-02)
 

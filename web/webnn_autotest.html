@@ -12,10 +12,10 @@ const say = m => { el.innerHTML += '<br>' + m; };
 const results = {};
 
 const CASES = [
-  ['480p_student',  '/assets/rife_lite_480p_2blk_noref_student.onnx', 480, 864],
-  ['360p_student',  '/assets/rife_lite_360p_2blk_noref_student.onnx', 384, 640],
-  ['720p_student',  '/assets/rife_lite_720p_2blk_noref_student.onnx', 736, 1280],
-  ['480p_full',     '/assets/rife_lite_480x854.onnx',                 480, 864],
+  ['360p_1blk', '/assets/rife_lite_360p_1blk_s4_student1b.onnx', 384, 640],
+  ['480p_1blk', '/assets/rife_lite_480p_1blk_s4_student1b.onnx', 480, 864],
+  ['720p_1blk', '/assets/rife_lite_720p_1blk_s4_student1b.onnx', 736, 1280],
+  ['480p_2blk', '/assets/rife_lite_480p_2blk_noref_student.onnx', 480, 864],
 ];
 
 async function bench(name, url, h, w) {

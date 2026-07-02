@@ -4,23 +4,28 @@ import { toInput, fromOutput } from './rife_prepost.js';
 // Quality tiers (see docs/phase5_ablation.md):
 //   full    - the whole net
 //   fast    - refinement (contextnet+unet) cut: ~1.5x on webgpu, -1.3..+0.2 dB
-//   fastest - DISTILLED 2-block student (tools/train_student.py): ~4x on webgpu,
-//             -0.5..-1.4 dB (was -2.6 before distillation; BBB 40.14 / Jelly 37.14
+//   fastest - DISTILLED 2-block student: ~4x on webgpu (BBB 40.14 / Jelly 37.14
 //             vs full 41.50 / 37.67)
-// Measured webgpu p50 (4060 Ti): 720p full=1957 / 480p full=1064 / 480p fastest=~250ms.
+//   turbo   - DISTILLED 1-block student: ~9x on webgpu, half the nodes
+//             (BBB 39.68 / Jelly 35.25). WebNN measured: 360p=29ms (34 fps —
+//             real-time), 480p=57ms, 720p=120ms.
+// Measured webgpu p50 (4060 Ti): 720p full=1957 / 480p fastest=~250 / 360p turbo=84ms.
 export const MODELS = {
   '720': { ew: 1280, eh: 736, maxw: 1280, maxh: 720, files: {
     full: '/assets/rife_lite_inlined.onnx',
     fast: '/assets/rife_lite_720p_noref.onnx',
-    fastest: '/assets/rife_lite_720p_2blk_noref_student.onnx' } },
+    fastest: '/assets/rife_lite_720p_2blk_noref_student.onnx',
+    turbo: '/assets/rife_lite_720p_1blk_s4_student1b.onnx' } },
   '480': { ew: 864, eh: 480, maxw: 854, maxh: 480, files: {
     full: '/assets/rife_lite_480x854.onnx',
     fast: '/assets/rife_lite_480p_noref.onnx',
-    fastest: '/assets/rife_lite_480p_2blk_noref_student.onnx' } },
+    fastest: '/assets/rife_lite_480p_2blk_noref_student.onnx',
+    turbo: '/assets/rife_lite_480p_1blk_s4_student1b.onnx' } },
   '360': { ew: 640, eh: 384, maxw: 640, maxh: 360, files: {
     full: '/assets/rife_lite_360x640.onnx',
     fast: '/assets/rife_lite_360p_noref.onnx',
-    fastest: '/assets/rife_lite_360p_2blk_noref_student.onnx' } },
+    fastest: '/assets/rife_lite_360p_2blk_noref_student.onnx',
+    turbo: '/assets/rife_lite_360p_1blk_s4_student1b.onnx' } },
 };
 
 // 'webnn' -> DirectML on Windows (fuses the graph; ~3.5x over the WebGPU EP, but needs the
