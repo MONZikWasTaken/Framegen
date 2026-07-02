@@ -1,11 +1,34 @@
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><title>Framecast — extension test page</title>
-<style>body{font:14px system-ui;margin:24px;background:#222;color:#ddd} video{max-width:900px;width:100%}</style>
+<style>
+body{font:14px system-ui;margin:24px;background:#222;color:#ddd}
+video{max-width:900px;width:100%}
+.fps button{background:#333;color:#ddd;border:1px solid #555;border-radius:8px;
+  padding:6px 14px;font:13px system-ui;cursor:pointer;margin-right:6px}
+.fps button.on{background:#19c37d;color:#111;border-color:#19c37d}
+</style>
 </head>
 <body>
 <h3>Обычная страница с обычным &lt;video&gt; — как на любом сайте</h3>
-<p>Если расширение установлено, справа внизу появится кнопка «FC ×2».</p>
-<video src="/assets/bbb_720_10s.mp4" controls loop muted autoplay></video>
+<p>Наведи на видео — слева появятся кнопки FC и настроек.</p>
+<div class="fps" style="margin:10px 0">
+  <button data-src="/assets/bbb_720_10s_5fps.mp4">5 fps</button>
+  <button data-src="/assets/bbb_720_10s_15fps.mp4">15 fps</button>
+  <button data-src="/assets/bbb_720_10s_30fps.mp4" class="on">30 fps</button>
+  <button data-src="/assets/bbb_720_10s.mp4">оригинал (24)</button>
+</div>
+<video src="/assets/bbb_720_10s_30fps.mp4" controls loop muted autoplay></video>
+<script>
+const v = document.querySelector('video');
+document.querySelectorAll('.fps button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.fps button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on');
+  const t = v.currentTime;
+  v.src = b.dataset.src;
+  v.currentTime = t;
+  v.play();
+});
+</script>
 </body>
 </html>
