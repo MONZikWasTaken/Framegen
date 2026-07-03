@@ -104,9 +104,11 @@
     }
     if (rt && rtRes === cfg.res) return;
     const url = (p) => chrome.runtime.getURL(p);
+    // rt_tfact: t-factored slim student — trunk once per pair, FiLM head per mid
+    // (beats plain slim on PSNR at every t AND is ~2.4x cheaper at high factors)
     const [bin, man] = await Promise.all([
-      fetch(url('assets/rt_slim.bin')).then(r => r.arrayBuffer()),
-      fetch(url('assets/rt_slim.json')).then(r => r.json())]);
+      fetch(url('assets/rt_tfact.bin')).then(r => r.arrayBuffer()),
+      fetch(url('assets/rt_tfact.json')).then(r => r.json())]);
     const { createRT } = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
     rt = await createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
@@ -855,7 +857,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!st) return;
     const srState = cfg.sr ? (!sys.f16 ? 'недоступен (нет f16)' : (sr ? 'вкл ×2' : 'загрузка…')) : 'выкл';
     const lines = [`GPU: ${sys.gpu}`,
-      `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_slim`,
+      `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_tfact`,
       `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'дисплей не HDR' : (cfg.hdr ? (sys.hdrOn ? 'вкл (ITM)' : 'ошибка, SDR') : 'выкл')}`,
       `статус: ${running ? 'работает' : 'остановлен'}`];
@@ -907,7 +909,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.3.1</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.0</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>

@@ -39,8 +39,14 @@ is structural — WGSL has no tensor-core access yet (waiting on
 | teacher (full) | 41.50 | 37.67 | 16 MB | 21.6 ms (TRT) |
 | 2-block | 40.14 | 37.14 | 8 MB | — |
 | 1-block | 39.68 | 35.25 | 16 MB f32 | 25 ms (WGSL) |
-| **slim c=120 (default)** | **39.31** | **34.83** | **4 MB** | **9.8 ms** |
+| slim c=120 | 39.31 | 34.83 | 4 MB | 9.8 ms |
+| **t-factored slim (default)** | **39.48** | **34.99** | **4.5 MB** | **4.9 ms trunk + 2.1 ms/mid** |
 | potato c=60 | 39.05 | 34.44 | 1 MB | 6 ms |
+
+The t-factored student splits the network into a timestep-free trunk (run once
+per frame pair) and a tiny FiLM(t) head (run per interpolated frame): at 6x a
+mid costs ~2 ms instead of a full 8 ms pass (~2.4x), and it scores HIGHER than
+plain slim at every timestep (t=0.25: 37.08 vs 36.86 dB on stride-4 pairs).
 
 All students keep **arbitrary timestep** (t = k/n for 2×–6× factors) — trained
 with stride-4 ground-truth samples, not just t=0.5. Plus **TinySR**: a 26 KB

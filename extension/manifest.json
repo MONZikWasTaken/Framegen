@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Framecast — Frame Interpolation",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "permissions": ["storage"],
   "description": "Real-time 2-4x frame interpolation for any <video> (own WebGPU runtime, runs fully on your GPU)",
   "content_scripts": [
