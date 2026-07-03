@@ -959,7 +959,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // lazy submission: a mid only waits for ITS OWN compute, not the whole batch;
       // sustained lateness (external GPU bursts) buys extra buffer, up to +60ms
       const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2));
-      const dTarget = Math.min(180, Math.max(60, 2 * (msAvg || 10) + 25 + burstPad));
+      // light, stable runs earn a lower floor: 60ms of buffer is safety for heavy
+      // factors and jittery GPUs, but a fast card doing 2-3x with no lateness only
+      // needs ~40ms - streams/interactive feel snappier without dropping a frame
+      const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
+      const dTarget = Math.min(180, Math.max(floorMs, 2 * (msAvg || 10) + 25 + burstPad));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       queue.push({ tex, at: schedT + delayMs, mid: false });
       const prev = lastTex;
