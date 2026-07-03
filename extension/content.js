@@ -191,6 +191,19 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       + 'opacity:0; transition:opacity .25s;';
     overlayCtx = overlay.getContext('webgpu');
     blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    // on native-controls players the overlay OWNS the pointer (pointer-events:auto
+    // set in start): dblclick must never reach the native video, whose shadow-DOM
+    // handler fullscreens the bare <video> where our canvas cannot exist
+    overlay.addEventListener('click', () => {
+      if (!videoEl || !videoEl.controls) return;
+      if (videoEl.paused) videoEl.play().catch(() => {}); else videoEl.pause();
+      flashCenter(svgIcon(videoEl.paused ? 'pause' : 'play', 30));
+      updateBar();
+    });
+    overlay.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      if (videoEl && videoEl.controls) toggleFullscreen();
+    });
     configureOverlay();
   }
 
@@ -426,29 +439,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     q('#fcSeek').oninput = (e) => {
       if (videoEl && videoEl.duration) videoEl.currentTime = e.target.value / 1000 * videoEl.duration;
     };
-    // fullscreen the PARENT (so the overlay comes along) and stretch the video to
-    // fill the screen — fullscreening just the container leaves the video at its
-    // layout size, which looks like fullscreen "not working"
-    let fsByUs = false, fsSaved = '';
-    q('#fcFull').onclick = () => {
-      if (!gFull()) return; // fullscreen transitions are async — no double-fire
-      if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      else if (videoEl) {
-        fsByUs = true;
-        (videoEl.parentElement || videoEl).requestFullscreen().catch(e => { fsByUs = false; log('fullscreen', e); });
-      }
-    };
-    document.addEventListener('fullscreenchange', () => {
-      if (!videoEl || !fsByUs) return;
-      if (document.fullscreenElement) {
-        fsSaved = videoEl.style.cssText;
-        videoEl.style.cssText += ';position:fixed;left:0;top:0;width:100vw;height:100vh;'
-          + 'max-width:none;max-height:none;object-fit:contain;background:#000;z-index:1;';
-      } else {
-        fsByUs = false;
-        videoEl.style.cssText = fsSaved;
-      }
-    });
+    q('#fcFull').onclick = () => { if (gFull()) toggleFullscreen(); }; // async transition — no double-fire
     // keep the bar alive while the mouse is on it
     bar.addEventListener('mousemove', () => { revealUntil = performance.now() + 2000; }, { passive: true });
   }
@@ -479,6 +470,28 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     });
   }
 
+  // fullscreen the PARENT (so the overlay comes along) and stretch the video to
+  // fill the screen — fullscreening just the container leaves the video at its
+  // layout size, which looks like fullscreen "not working"
+  let fsByUs = false, fsSaved = '';
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else if (videoEl) {
+      fsByUs = true;
+      (videoEl.parentElement || videoEl).requestFullscreen().catch(e => { fsByUs = false; log('fullscreen', e); });
+    }
+  }
+  document.addEventListener('fullscreenchange', () => {
+    if (!videoEl || !fsByUs) return;
+    if (document.fullscreenElement) {
+      fsSaved = videoEl.style.cssText;
+      videoEl.style.cssText += ';position:fixed;left:0;top:0;width:100vw;height:100vh;'
+        + 'max-width:none;max-height:none;object-fit:contain;background:#000;z-index:1;';
+    } else {
+      fsByUs = false;
+      videoEl.style.cssText = fsSaved;
+    }
+  });
   const rangeFill = (el, p, color) => {
     el.style.background = `linear-gradient(to right, ${color} ${p}%, rgba(255,255,255,.22) ${p}%)`;
   };
@@ -774,6 +787,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     positionOverlay();
     overlay.style.opacity = '0';
     overlay.style.display = 'block';
+    // native players: we own clicks (play/pause + our fullscreen). Sites with DOM
+    // controls (YouTube etc.) keep the overlay transparent to the pointer.
+    overlay.style.pointerEvents = videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless —
     // no black flash while the first interpolated frames are still in flight
     const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
@@ -971,8 +987,24 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
       .fc-sw:checked{background:#19c37d}
       .fc-sw:checked::after{left:18px}
-      .fc-sel{background:#2a2d33;color:#eee;border:1px solid rgba(255,255,255,.14);
-        border-radius:8px;padding:4px 8px;font:12px system-ui;outline:none;cursor:pointer;flex:none}
+      /* customizable select (Chrome base-select): button + popup in the same glass */
+      .fc-sel, .fc-sel::picker(select){appearance:base-select}
+      .fc-sel{background:rgba(255,255,255,.07);color:#eee;border:1px solid rgba(255,255,255,.14);
+        border-radius:8px;padding:5px 11px;font:12px system-ui;outline:none;cursor:pointer;
+        flex:none;min-width:118px;display:flex;align-items:center;justify-content:space-between;
+        gap:8px;transition:background .15s,border-color .15s}
+      .fc-sel:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
+      .fc-sel:open{border-color:rgba(25,195,125,.6)}
+      .fc-sel::picker-icon{color:#8a8f98;font-size:9px;transition:rotate .15s}
+      .fc-sel:open::picker-icon{rotate:180deg}
+      .fc-sel::picker(select){background:rgba(20,22,26,.95);backdrop-filter:blur(12px);
+        border:1px solid rgba(255,255,255,.14);border-radius:10px;padding:4px;margin-top:4px;
+        box-shadow:0 8px 28px rgba(0,0,0,.55)}
+      .fc-sel option{padding:5px 10px;border-radius:7px;font:12px system-ui;color:#ddd;
+        background:transparent;cursor:pointer}
+      .fc-sel option:hover{background:rgba(255,255,255,.09)}
+      .fc-sel option:checked{background:rgba(25,195,125,.16);color:#8ee7bd}
+      .fc-sel option::checkmark{color:#19c37d}
       .fc-details summary{cursor:pointer;color:#8a8f98;font:11px system-ui;list-style:none;
         display:flex;align-items:center;gap:5px;padding:6px 0 2px;user-select:none}
       .fc-details summary::before{content:'';width:0;height:0;border-left:4px solid #8a8f98;
