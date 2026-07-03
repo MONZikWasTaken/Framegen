@@ -23,7 +23,6 @@
 <div>
   <input type="file" id="file" accept="video/*">
   <select id="res"><option value="auto">авто (макс качество+фпс)</option><option value="1080">1080p (вставки 480p)</option><option value="720">720p (вставки 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p честный (медленно)</option></select>
-  <select id="quality"><option value="turbo">turbo (1blk)</option><option value="fastest">fastest (student)</option></select>
   <select id="factor"><option value="6">авто (макс плавность)</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option></select>
 </div>
 <div style="margin-top:8px">
@@ -177,9 +176,9 @@ function onWorkerMessage(ev) {
 let errTimes = [], restarting = false;
 
 function ensureWorker() {
-  // ep is fixed: our own runtime needs plain webgpu; webnn was yesterday's crutch
-  const ep = 'webgpu', res = $('res').value, q = $('quality').value;
-  const key = res + 'p/' + q + ($('srOn').checked ? '/sr' : '');
+  // our own runtime, WebGPU only — the ort-web fallback (and its quality tiers) is gone
+  const res = $('res').value;
+  const key = res + 'p' + ($('srOn').checked ? '/sr' : '');
   if (worker && workerKey === key) return Promise.resolve();
   if (worker) worker.terminate();
   const mode = MODES[res];
@@ -201,7 +200,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut; octx = null;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=21', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=22', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`создаю сессию ${key} в воркере... (первый раз собирает конвейеры пару секунд)`);
@@ -217,7 +216,7 @@ function ensureWorker() {
       else if (ev.data.type === 'error') { st('WORKER ERROR: ' + ev.data.msg, true); reject(new Error(ev.data.msg)); }
       else orig(ev);
     };
-    worker.postMessage({ type: 'init', ep, auto: res === 'auto', res: mode.f32res, quality: q,
+    worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.f32res,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
       factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen }, [offscreen]);
   });
@@ -276,7 +275,7 @@ $('stage').ondrop = e => {
   if (f) { $('file').files = e.dataTransfer.files; $('file').onchange({ target: { files: [f] } }); }
 };
 // settings persist across sessions
-const SETTINGS = ['res', 'quality', 'factor'];
+const SETTINGS = ['res', 'factor'];
 const FLAGS = ['interpOn', 'animeMode', 'mute', 'srOn'];
 try {
   const saved = JSON.parse(localStorage.getItem('framecast') || '{}');
