@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 300px; margin: 0; background: #131418; color: #e8e8e8;
+         font: 12px/1.5 system-ui; user-select: none; }
+  .wrap { padding: 12px 16px 10px; }
+  .title { font: 600 15px system-ui; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #555; }
+  .dot.on { background: #19c37d; box-shadow: 0 0 8px rgba(25,195,125,.7); }
+  .ver { color: #667; font: 400 10px system-ui; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 10px; background: #1c1e24;
+          border-radius: 9px; padding: 3px; }
+  .tabs button { flex: 1; border: none; background: none; color: #9aa0aa; font: 600 11px system-ui;
+                 padding: 5px 0; border-radius: 7px; cursor: pointer; transition: background .15s, color .15s; }
+  .tabs button.act { background: #2c2f36; color: #fff; }
+  #state { font: 600 12px system-ui; margin-bottom: 8px; color: #aab; }
+  #state.on { color: #7ee2b8; }
+  hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 8px 0; }
+  #stat { font: 11px/1.8 ui-monospace, monospace; color: #9c9; white-space: pre-wrap; }
+  #sys { font: 11px/1.7 system-ui; color: #8a8f98; white-space: pre-wrap; }
+  #sys.warn { color: #ffd88a; }
+  .hint { margin-top: 10px; font: 10px system-ui; color: #667; }
+  #help h4 { font: 600 12px system-ui; color: #cdd3dd; margin: 10px 0 3px; }
+  #help h4:first-child { margin-top: 0; }
+  #help p, #help ol { margin: 0 0 4px; color: #9aa0aa; font: 11px/1.6 system-ui; }
+  #help ol { padding-left: 16px; }
+  .foot { display: flex; justify-content: space-between; align-items: center;
+          margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.08); }
+  .foot a { color: #7ab8ff; font: 11px system-ui; text-decoration: none; display: flex;
+            align-items: center; gap: 5px; }
+  .foot a:hover { text-decoration: underline; }
+  .foot .v { color: #556; font: 10px system-ui; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="title"><span class="dot" id="dot"></span>Framecast <span class="ver" id="ver"></span></div>
+  <div class="tabs">
+    <button id="tabStatus" class="act">Статус</button>
+    <button id="tabHelp">Инструкции</button>
+  </div>
+
+  <div id="status">
+    <div id="state">—</div>
+    <div id="stat"></div>
+    <hr>
+    <div id="sys"></div>
+    <div class="hint">Управление и настройки — внутри плеера: наведи на видео,
+      слева кнопки FC и ⚙.</div>
+  </div>
+
+  <div id="help" style="display:none">
+    <h4>Две видеокарты (ноутбук)</h4>
+    <p>Chrome на Windows часто садится на встройку — fps почти не растёт.</p>
+    <ol>
+      <li>Параметры Windows → Система → Дисплей → Графика</li>
+      <li>Добавь Chrome → «Высокая производительность»</li>
+      <li>Полностью перезапусти Chrome</li>
+    </ol>
+    <p>Проверка: на вкладке «Статус» в строке GPU должна быть дискретная карта.</p>
+    <h4>Требования</h4>
+    <p>Десктопный Chrome/Edge свежей версии, видеокарта примерно 2016+.
+       Firefox, Safari и телефоны — нет.</p>
+    <h4>Как пользоваться</h4>
+    <p>Наведи мышь на любое видео → слева кнопки FC (вкл/выкл) и ⚙ (настройки).
+       В настройках есть «Сравнение» — шторка оригинал/обработка.</p>
+    <h4>Что не работает</h4>
+    <p>Netflix, Crunchyroll и другие DRM-сайты — браузер не отдаёт им пиксели,
+       это ограничение платформы. На аниме-сайтах при первом включении видео
+       может перезагрузиться на пару секунд (CORS) — это норма.</p>
+  </div>
+
+  <div class="foot">
+    <a href="https://github.com/MONZikWasTaken/Framecast" target="_blank">
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="#7ab8ff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      GitHub</a>
+    <span class="v">Framecast</span>
+  </div>
+</div>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -83,6 +83,29 @@
 
   const log = (...a) => console.log('[framecast]', ...a);
 
+  // Chrome on Windows IGNORES powerPreference (crbug.com/369219127): on dual-GPU
+  // machines we get whatever GPU Chrome runs on. Detect integrated ones and tell
+  // the user how to move Chrome to the discrete card.
+  function classifyAdapter(adapter) {
+    sys.f16 = adapter.features.has('shader-f16');
+    const inf = adapter.info || {};
+    sys.gpu = inf.description || [inf.vendor, inf.architecture].filter(Boolean).join(' ') || 'неизвестный GPU';
+    sys.integrated = /intel|iris|uhd|graphics 6|vega|radeon\(tm\) graphics|apu/i.test(sys.gpu)
+      && !/nvidia|geforce|rtx|gtx|radeon rx|arc a|arc b/i.test(sys.gpu);
+  }
+  // lightweight probe for the popup: adapter info only, no device, no weights
+  let probing = null;
+  async function probeAdapter() {
+    if (sys.gpu !== '—' || !navigator.gpu) return;
+    if (!probing) probing = (async () => {
+      try {
+        const a = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+        if (a) classifyAdapter(a);
+      } catch { /* leave unknown */ }
+    })();
+    await probing;
+  }
+
   // ---------- device / runtime ----------
   // memoized: the hover-preload and the FC click may race — only one build runs
   let rtBuilding = null;
@@ -99,14 +122,7 @@
       if (!adapter) throw new Error('нет GPU-адаптера');
       const f16 = adapter.features.has('shader-f16');
       device = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
-      sys.f16 = f16;
-      const inf = adapter.info || {};
-      sys.gpu = inf.description || [inf.vendor, inf.architecture].filter(Boolean).join(' ') || 'неизвестный GPU';
-      // Chrome on Windows IGNORES powerPreference (crbug.com/369219127): on dual-GPU
-      // machines we get whatever GPU Chrome itself runs on. Detect integrated ones
-      // and tell the user how to move Chrome to the discrete card.
-      sys.integrated = /intel|iris|uhd|graphics 6|vega|radeon\(tm\) graphics|apu/i.test(sys.gpu)
-        && !/nvidia|geforce|rtx|gtx|radeon rx|arc a|arc b/i.test(sys.gpu);
+      classifyAdapter(adapter);
     }
     if (rt && rtRes === cfg.res) return;
     const url = (p) => chrome.runtime.getURL(p);
@@ -392,6 +408,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       btn.style.display = gear.style.display = 'none';
     }
   }, 300);
+  // scrolling moves the video but not our fixed-position buttons — re-pin them
+  // (capture: catches scrolling containers, not just the window)
+  document.addEventListener('scroll', () => {
+    if (!btn || btn.style.display === 'none') return;
+    const v = running ? videoEl : uiVideo;
+    if (v) placeSideButtons(v.getBoundingClientRect());
+  }, { passive: true, capture: true });
 
   // crisp monochrome SVG icons (Feather-style) — no emoji
   const ICONS = {
@@ -655,6 +678,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       hud.style.left = Math.max(0, vr.right - hud.offsetWidth - 10) + 'px';
       hud.style.top = Math.max(0, vr.top + 10) + 'px';
+      if (btn.style.display !== 'none') placeSideButtons(vr); // stay pinned while running
       updateWarn(now, vr);
       updateAdvise(now, vr);
       if (cfg.compare) {
@@ -1030,7 +1054,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.5</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
@@ -1092,6 +1116,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         finally { toggling = false; }
       }
     };
+  }
+
+  async function toggleFC() {
+    if (toggling) return; // start/stop in flight — spam-proof
+    if (!btn) injectUI(); // popup can toggle before the in-page UI ever booted
+    toggling = true;
+    try {
+      if (running) { stop(); return; }
+      const v = biggestVideo();
+      if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: видео не найдено'; return; }
+      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
+    } finally { toggling = false; }
   }
 
   function injectUI() {
@@ -1162,16 +1198,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'border-radius:6px; white-space:pre; text-align:left; pointer-events:none; display:none;';
     buildPanel();
     ensureBar();
-    btn.onclick = async () => {
-      if (toggling) return; // start/stop in flight — spam-proof
-      toggling = true;
-      try {
-        if (running) { stop(); return; }
-        const v = biggestVideo();
-        if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: видео не найдено'; return; }
-        try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
-      } finally { toggling = false; }
-    };
+    btn.onclick = toggleFC;
     gear.onclick = () => {
       const open = panel.style.display === 'none';
       panel.style.display = open ? 'block' : 'none';
@@ -1187,6 +1214,34 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     document.body.appendChild(gear);
     document.body.appendChild(hud);
   }
+
+  // toolbar popup protocol: status snapshot + remote toggle. With all_frames every
+  // frame gets the message; the RUNNING frame answers instantly, a frame that merely
+  // has a video answers after 120ms, video-less frames after 250ms — first response
+  // wins, so the most relevant frame speaks for the tab.
+  const VERSION = '0.4.7';
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (msg && msg.type === 'fcStatus') {
+        const v = videoEl || biggestVideo();
+        const respond = async () => { await probeAdapter(); try { sendResponse({
+          version: VERSION, gpu: sys.gpu, integrated: sys.integrated, f16: sys.f16,
+          hasVideo: !!v, running, fps: fpsWin.length, effN,
+          ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor,
+          drops: dropped, model: 'rt_tfact',
+        }); } catch {} };
+        if (running) respond();
+        else setTimeout(respond, v ? 120 : 250);
+        return true;
+      }
+      if (msg && msg.type === 'fcToggle') {
+        const v = videoEl || biggestVideo();
+        if (!running && !v) return undefined; // let a frame that HAS video take it
+        toggleFC().then(() => { try { sendResponse({ running }); } catch {} });
+        return true;
+      }
+    });
+  } catch { /* messaging unavailable in some frames */ }
 
   const boot = () => {
     if (btn) return;
