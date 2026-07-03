@@ -110,7 +110,7 @@ def main():
     ap.add_argument("--data", default=r"E:\data\framecast\frames")
     ap.add_argument("--out", default=r"E:\data\framecast\ckpt_tfact2")
     ap.add_argument("--teacher", default=os.path.join(
-        os.environ["TEMP"], "opencode", "rife_m", "RIFE_m_train_log", "flownet.pkl"))
+        os.environ.get("TEMP", "/tmp"), "opencode", "rife_m", "RIFE_m_train_log", "flownet.pkl"))
     ap.add_argument("--slim-ckpt", default=r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl")
     ap.add_argument("--tfact-ckpt", default=r"E:\data\framecast\ckpt_tfact\tfact_best.pt")
     ap.add_argument("--steps", type=int, default=25000)
@@ -143,7 +143,10 @@ def main():
     slim = load_ifnet(args.slim_ckpt, device)
     ck = torch.load(args.tfact_ckpt, map_location="cpu")
     net = TFact2(slim.block0, ck["c"]).to(device)
-    net.core.load_state_dict(ck["sd"])
+    if any(k.startswith("core.") for k in ck["sd"]):
+        net.load_state_dict(ck["sd"])  # full tfact2 checkpoint — resume everything
+    else:
+        net.core.load_state_dict(ck["sd"])  # plain tfact — refine starts at zero
     del slim
 
     data = TripletData(args.data, args.crop, arbitrary_t=True)

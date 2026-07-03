@@ -36,6 +36,10 @@ os.environ["PATH"] = ";".join(
 import cv2
 import numpy as np
 import torch
+
+# dataloader workers each spawn OpenCV's internal thread pool — N workers x M cores
+# thrash each other into single-digit GPU utilization on many-core boxes
+cv2.setNumThreads(0)
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
