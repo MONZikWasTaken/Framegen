@@ -43,13 +43,13 @@ yet (waiting on `subgroup-matrix` shipping in Chrome).
 | 1-block | 39.68 | 35.25 | 17 MB f32 | 25 ms (WGSL) |
 | slim c=120 | 39.31 | 34.83 | 4.5 MB | 9.8 ms |
 | t-factored slim | 39.48 | 34.99 | 4.5 MB | 4.9 ms trunk + 2.1 ms/mid |
-| **tfact2 = t-factored + refine (default)** | **39.59** | **35.14** | **4.6 MB** | **+0.3-0.6 ms over t-factored** |
+| **tfact2 = t-factored + refine (default)** | **39.94** | **35.44** | **4.6 MB** | **+0.3-0.6 ms over t-factored** |
 | potato c=60 | 39.05 | 34.44 | 1.1 MB | 6 ms |
 
 The t-factored student splits the network into a timestep-free trunk (run once
 per frame pair) and a tiny FiLM(t) head (run per interpolated frame): at 6x a
 mid costs ~2 ms instead of a full 8 ms pass (~2.4x), and it scores HIGHER than
-plain slim at every timestep (t=0.25: 37.08 vs 36.86 dB on stride-4 pairs).
+plain slim at every timestep (t=0.25: 37.56 vs 36.86 dB on stride-4 pairs).
 tfact2 adds a quarter-res refine head (occlusion repair) on top and ships as
 the extension default since v0.5.0.
 

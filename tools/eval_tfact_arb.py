@@ -20,6 +20,7 @@ import torch
 sys.path.insert(0, r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from train_tfact import TFactSlim
+from train_tfact2 import TFact2
 from train_student import load_ifnet, two_block_forward
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +39,8 @@ def main():
     device = torch.device("cuda")
     ck = torch.load(ckpt, map_location="cpu")
     slim = load_ifnet(SLIM, device).eval()
-    net = TFactSlim(slim.block0, ck["c"]).to(device)
+    kind = TFact2 if any(k.startswith("core.") for k in ck["sd"]) else TFactSlim
+    net = kind(slim.block0, ck["c"]).to(device)
     net.load_state_dict(ck["sd"])
     net.eval()
 
