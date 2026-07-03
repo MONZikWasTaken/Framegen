@@ -3,6 +3,8 @@
 // Texture in -> texture out (2x size); everything stays on the GPU.
 // Weights: assets/rt_sr.{bin,json} (tools/export_sr_weights.py).
 
+import { wgslConvRB, WGSL_TO_F16 } from './rt.js';
+
 const WG = 8;
 
 function wgslIn(C) {
@@ -45,83 +47,35 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // NOTE: torch Conv2d weight is [CO,CI,3,3]; the wgslIn indexing above expects
 // [CO][CI][k] flattened as co*27 + ci*9 + k - matches torch layout directly.
-function wgslMid(C) {
+// mid convs use the register-blocked kernel from rt.js (2x2 patch x 4 output
+// channels per thread, shared-memory tiles) - the naive per-pixel loops cost
+// 3.5x more at c=32. The out conv computes ALL 12 pixel-shuffle outputs per
+// low-res pixel in one thread: the four 2x-quadrant threads used to re-read
+// the same CxHxW window four times.
+function wgslShuffle(W, H) {
   return /* wgsl */`
 enable f16;
-@group(0) @binding(0) var<storage, read> src: array<f16>;
-@group(0) @binding(1) var<storage, read> wgt: array<f32>;   // [C,C,3,3]
-@group(0) @binding(2) var<storage, read> bias: array<f32>;
-@group(0) @binding(3) var<storage, read> alpha: array<f32>;
-@group(0) @binding(4) var<storage, read_write> dst: array<f16>;
-@group(0) @binding(5) var<storage, read> dims: array<u32>;
-
-@compute @workgroup_size(${WG}, ${WG})
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let W = i32(dims[0]); let H = i32(dims[1]);
-  let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= W || y >= H) { return; }
-  for (var co = 0; co < ${C}; co++) {
-    var acc = bias[co];
-    for (var ci = 0; ci < ${C}; ci++) {
-      let sb = ci * H * W;
-      let wb = (co * ${C} + ci) * 9;
-      for (var ky = 0; ky < 3; ky++) {
-        let sy = clamp(y + ky - 1, 0, H - 1);
-        for (var kx = 0; kx < 3; kx++) {
-          let sx = clamp(x + kx - 1, 0, W - 1);
-          acc += f32(src[sb + sy * W + sx]) * wgt[wb + ky * 3 + kx];
-        }
-      }
-    }
-    let v = select(alpha[co] * acc, acc, acc >= 0.0);
-    dst[co * H * W + y * W + x] = f16(v);
-  }
-}`;
-}
-
-// final conv C->12 + pixel-shuffle(2) + bilinear base from the source texture
-function wgslOut(C) {
-  return /* wgsl */`
-enable f16;
-@group(0) @binding(0) var<storage, read> src: array<f16>;   // [C,H,W] features
+@group(0) @binding(0) var<storage, read> det: array<f16>;    // [12,H,W] conv output
 @group(0) @binding(1) var srcTex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
-@group(0) @binding(3) var<storage, read> wgt: array<f32>;   // [12,C,3,3]
-@group(0) @binding(4) var<storage, read> bias: array<f32>;  // [12]
-@group(0) @binding(5) var outTex: texture_storage_2d<rgba8unorm, write>;
-@group(0) @binding(6) var<storage, read> dims: array<u32>;  // [W,H] of the LOW res
+@group(0) @binding(3) var outTex: texture_storage_2d<rgba8unorm, write>;
 
-@compute @workgroup_size(${WG}, ${WG})
+@compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let W = i32(dims[0]); let H = i32(dims[1]);
-  let ox = i32(gid.x); let oy = i32(gid.y);        // output (2x) coords
-  if (ox >= W * 2 || oy >= H * 2) { return; }
+  let ox = i32(gid.x); let oy = i32(gid.y);
+  if (ox >= ${W * 2} || oy >= ${H * 2}) { return; }
   let x = ox / 2; let y = oy / 2;
-  let sub = (oy & 1) * 2 + (ox & 1);               // pixel-shuffle quadrant
-  // detail: channels [b,g,r] live at co = ch*4 + sub (torch PixelShuffle layout)
-  var det: array<f32, 3>;
-  for (var ch = 0; ch < 3; ch++) {
-    let co = ch * 4 + sub;
-    var acc = bias[co];
-    for (var ci = 0; ci < ${C}; ci++) {
-      let sb = ci * H * W;
-      let wb = (co * ${C} + ci) * 9;
-      for (var ky = 0; ky < 3; ky++) {
-        let sy = clamp(y + ky - 1, 0, H - 1);
-        for (var kx = 0; kx < 3; kx++) {
-          let sx = clamp(x + kx - 1, 0, W - 1);
-          acc += f32(src[sb + sy * W + sx]) * wgt[wb + ky * 3 + kx];
-        }
-      }
-    }
-    det[ch] = acc;
-  }
-  // bilinear base sampled at the 2x grid (align_corners=false semantics == sampler)
-  let uv = (vec2<f32>(f32(ox), f32(oy)) + 0.5) / vec2<f32>(f32(W * 2), f32(H * 2));
-  let base = textureSampleLevel(srcTex, samp, uv, 0.0).rgb; // r,g,b
-  let b = clamp(base.b + det[0], 0.0, 1.0);
-  let g = clamp(base.g + det[1], 0.0, 1.0);
-  let r = clamp(base.r + det[2], 0.0, 1.0);
+  let sub = (oy & 1) * 2 + (ox & 1);
+  let p = y * ${W} + x;
+  // detail channels [b,g,r] live at co = ch*4 + sub (torch PixelShuffle layout)
+  let db = f32(det[u32(sub) * ${H * W}u + u32(p)]);
+  let dg = f32(det[(u32(sub) + 4u) * ${H * W}u + u32(p)]);
+  let dr = f32(det[(u32(sub) + 8u) * ${H * W}u + u32(p)]);
+  let uv = (vec2<f32>(f32(ox), f32(oy)) + 0.5) / vec2<f32>(${W * 2}.0, ${H * 2}.0);
+  let base = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
+  let b = clamp(base.b + db, 0.0, 1.0);
+  let g = clamp(base.g + dg, 0.0, 1.0);
+  let r = clamp(base.r + dr, 0.0, 1.0);
   textureStore(outTex, vec2<i32>(ox, oy), vec4<f32>(r, g, b, 1.0));
 }`;
 }
@@ -142,7 +96,28 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
     addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
   const pipe = (code) => device.createComputePipeline({ layout: 'auto',
     compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-  const pIn = pipe(wgslIn(C)), pMid = pipe(wgslMid(C)), pOut = pipe(wgslOut(C));
+  const pIn = pipe(wgslIn(C));
+  // f16 copies of the heavy conv weights (the RB kernels read f16)
+  const pToH = pipe(WGSL_TO_F16);
+  const wbufH = {};
+  {
+    const enc = device.createCommandEncoder();
+    for (const name of ['c2.weight', 'c3.weight', 'c4.weight']) {
+      const n = weightsManifest[name].shape.reduce((a, b) => a * b, 1);
+      wbufH[name] = device.createBuffer({ size: Math.ceil(n / 2) * 4,
+        usage: GPUBufferUsage.STORAGE });
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pToH);
+      pass.setBindGroup(0, device.createBindGroup({ layout: pToH.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: wbuf[name] } },
+          { binding: 1, resource: { buffer: wbufH[name] } }] }));
+      pass.dispatchWorkgroups(Math.ceil(n / 256));
+      pass.end();
+    }
+    device.queue.submit([enc.finish()]);
+  }
+  const onesAlpha = bufN(12 * 4);
+  device.queue.writeBuffer(onesAlpha, 0, new Float32Array(12).fill(1));
 
   // per-input-size state (feature buffers + dims); keyed by "WxH"
   const states = new Map();
@@ -151,10 +126,29 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
     if (!states.has(k)) {
       const dims = bufN(8);
       device.queue.writeBuffer(dims, 0, new Uint32Array([w, h]));
+      const fa = bufN(C * w * h * 2);
+      const fb = bufN(C * w * h * 2);
+      const det = bufN(12 * w * h * 2);
+      const pMid = pipe(wgslConvRB(C, C, w, h, w, h, false));
+      const pOutConv = pipe(wgslConvRB(C, 12, w, h, w, h, false));
+      const pShuf = pipe(wgslShuffle(w, h));
+      const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
+        layout: pMid.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: { buffer: sBuf } },
+          { binding: 1, resource: { buffer: wbufH[wname] } },
+          { binding: 2, resource: { buffer: wbuf[wname.replace('.weight', '.bias')] } },
+          { binding: 3, resource: { buffer: wbuf[aname] } },
+          { binding: 4, resource: { buffer: dBuf } }] });
       states.set(k, {
-        dims,
-        fa: bufN(C * w * h * 2),
-        fb: bufN(C * w * h * 2),
+        dims, fa, fb, det, pMid, pOutConv, pShuf,
+        bgM2: midBg('c2.weight', 'a2.weight', fa, fb),
+        bgM3: midBg('c3.weight', 'a3.weight', fb, fa),
+        bgOut: device.createBindGroup({ layout: pOutConv.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: { buffer: fa } },
+          { binding: 1, resource: { buffer: wbufH['c4.weight'] } },
+          { binding: 2, resource: { buffer: wbuf['c4.bias'] } },
+          { binding: 3, resource: { buffer: onesAlpha } },
+          { binding: 4, resource: { buffer: det } }] }),
       });
       if (states.size > 6) { // sizes changed wholesale
         for (const [kk, s] of states) if (kk !== k) { s.fa.destroy(); s.fb.destroy(); s.dims.destroy(); states.delete(kk); }
@@ -186,36 +180,23 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
           { binding: 4, resource: { buffer: wbuf['a1.weight'] } },
           { binding: 5, resource: { buffer: S.fa } },
           { binding: 6, resource: { buffer: S.dims } }] }),
-        m2: device.createBindGroup({ layout: pMid.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: { buffer: S.fa } },
-          { binding: 1, resource: { buffer: wbuf['c2.weight'] } },
-          { binding: 2, resource: { buffer: wbuf['c2.bias'] } },
-          { binding: 3, resource: { buffer: wbuf['a2.weight'] } },
-          { binding: 4, resource: { buffer: S.fb } },
-          { binding: 5, resource: { buffer: S.dims } }] }),
-        m3: device.createBindGroup({ layout: pMid.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: { buffer: S.fb } },
-          { binding: 1, resource: { buffer: wbuf['c3.weight'] } },
-          { binding: 2, resource: { buffer: wbuf['c3.bias'] } },
-          { binding: 3, resource: { buffer: wbuf['a3.weight'] } },
-          { binding: 4, resource: { buffer: S.fa } },
-          { binding: 5, resource: { buffer: S.dims } }] }),
-        out: device.createBindGroup({ layout: pOut.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: { buffer: S.fa } },
+        shuf: device.createBindGroup({ layout: S.pShuf.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: { buffer: S.det } },
           { binding: 1, resource: srcView }, { binding: 2, resource: sampler },
-          { binding: 3, resource: { buffer: wbuf['c4.weight'] } },
-          { binding: 4, resource: { buffer: wbuf['c4.bias'] } },
-          { binding: 5, resource: dstTex.createView() },
-          { binding: 6, resource: { buffer: S.dims } }] }),
+          { binding: 3, resource: dstTex.createView() }] }),
       };
       perSrc.set(dstTex, bgs);
     }
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(gx(w), gx(h));
-    pass.setPipeline(pMid); pass.setBindGroup(0, bgs.m2); pass.dispatchWorkgroups(gx(w), gx(h));
-    pass.setPipeline(pMid); pass.setBindGroup(0, bgs.m3); pass.dispatchWorkgroups(gx(w), gx(h));
-    pass.setPipeline(pOut); pass.setBindGroup(0, bgs.out); pass.dispatchWorkgroups(gx(w * 2), gx(h * 2));
+    pass.setPipeline(S.pMid);
+    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), C / 4);
+    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), C / 4);
+    pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
+    pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), 3);
+    pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
+    pass.dispatchWorkgroups(gx(w * 2), gx(h * 2));
     pass.end();
     device.queue.submit([enc.finish()]);
   }

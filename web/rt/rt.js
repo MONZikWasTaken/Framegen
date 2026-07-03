@@ -191,7 +191,7 @@ ${stride === 1 ? `
 // register-blocked conv3x3 s1 (f16 storage): each thread computes a 2x2 pixel patch x
 // 4 output channels (16 accumulators) - every shared read now feeds 4 FMAs instead of ~1.
 // Workgroup = 8x8 threads = 16x16 output tile; input tiles 18x18 per ci staged per slab.
-function wgslConvRB(CI, CO, IW, IH, OW, OH, residual) {
+export function wgslConvRB(CI, CO, IW, IH, OW, OH, residual) {
   const COC = 4, SLAB = 20;
   const slabW = COC * SLAB * 9;      // f16 weights in shared
   const slabT = SLAB * 324;          // 18x18 tiles
@@ -572,7 +572,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // one-shot f32 -> f16 conversion (weights at init)
-const WGSL_TO_F16 = /* wgsl */`
+export const WGSL_TO_F16 = /* wgsl */`
 enable f16;
 @group(0) @binding(0) var<storage, read> src: array<f32>;
 @group(0) @binding(1) var<storage, read_write> dst: array<f16>;
