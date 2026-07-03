@@ -129,11 +129,11 @@
     }
     if (rt && rtRes === cfg.res) return;
     const url = (p) => chrome.runtime.getURL(p);
-    // rt_tfact: t-factored slim student — trunk once per pair, FiLM head per mid
-    // (beats plain slim on PSNR at every t AND is ~2.4x cheaper at high factors)
+    // rt_tfact2: t-factored student + quarter-res refine head (occlusion repair),
+    // trained on movies + real footage — better on BOTH at +0.25-0.55ms/mid
     const [bin, man] = await Promise.all([
-      fetch(url('assets/rt_tfact.bin')).then(r => r.arrayBuffer()),
-      fetch(url('assets/rt_tfact.json')).then(r => r.json())]);
+      fetch(url('assets/rt_tfact2.bin')).then(r => r.arrayBuffer()),
+      fetch(url('assets/rt_tfact2.json')).then(r => r.json())]);
     const { createRT } = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
     rt = await createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
@@ -1061,7 +1061,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!st) return;
     const srState = cfg.sr ? (!sys.f16 ? 'недоступен (нет f16)' : (sr ? 'вкл ×2' : 'загрузка…')) : 'выкл';
     const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ ВСТРОЙКА' : ''}`,
-      `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_tfact`,
+      `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_tfact2`,
       `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'дисплей не HDR' : (cfg.hdr ? (sys.hdrOn ? 'вкл (ITM)' : 'ошибка, SDR') : 'выкл')}`,
       `статус: ${running ? 'работает' : 'остановлен'}`];
@@ -1304,7 +1304,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.14';
+  const VERSION = '0.5.0';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -1313,7 +1313,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           version: VERSION, gpu: sys.gpu, integrated: sys.integrated, f16: sys.f16,
           hasVideo: !!v, running, fps: fpsWin.length, effN,
           ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor,
-          drops: dropped, model: 'rt_tfact',
+          drops: dropped, model: 'rt_tfact2',
         }); } catch {} };
         if (running) respond();
         else setTimeout(respond, v ? 120 : 250);

@@ -4,8 +4,9 @@ New-Item -ItemType Directory -Force "$root\extension\rt" | Out-Null
 New-Item -ItemType Directory -Force "$root\extension\assets" | Out-Null
 Copy-Item "$root\web\rt\rt.js" "$root\extension\rt\rt.js" -Force
 Copy-Item "$root\web\rt\sr.js" "$root\extension\rt\sr.js" -Force
-Copy-Item "$root\assets\rt_tfact.bin" "$root\extension\assets\" -Force
-Copy-Item "$root\assets\rt_tfact.json" "$root\extension\assets\" -Force
+Copy-Item "$root\assets\rt_tfact2.bin" "$root\extension\assets\" -Force
+Copy-Item "$root\assets\rt_tfact2.json" "$root\extension\assets\" -Force
+Remove-Item "$root\extension\assets\rt_tfact.bin", "$root\extension\assets\rt_tfact.json" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\assets\rt_sr.bin" "$root\extension\assets\" -Force
 Copy-Item "$root\assets\rt_sr.json" "$root\extension\assets\" -Force
 # slim copies no longer shipped — tfact replaced them
