@@ -126,8 +126,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-export async function createSR(device, { weightsBin, weightsManifest, channels = 16 }) {
-  const C = channels;
+export async function createSR(device, { weightsBin, weightsManifest, channels }) {
+  // channel width lives in the weights: c1 is the 3->C input conv
+  const C = channels || (weightsManifest['c1.weight'] ? weightsManifest['c1.weight'].shape[0] : 16);
   const bufN = (bytes) => device.createBuffer({
     size: Math.ceil(bytes / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
