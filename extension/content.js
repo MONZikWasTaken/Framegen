@@ -17,7 +17,7 @@
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
     fg: true, sr: false, hdr: false, showFps: true, guard: true };
   function sanitizeCfg() {
-    if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
+    if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
@@ -72,6 +72,7 @@
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupRead = null, dedupSampler = null;
   let queue = [], running = false, processingFrame = false;
+  let hzNext = 0; // display-match mode: absolute time of the next output vsync tick
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
   let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
@@ -967,22 +968,62 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
       const dTarget = Math.min(180, Math.max(floorMs, 2 * (msAvg || 10) + 25 + burstPad));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
-      queue.push({ tex, at: schedT + delayMs, mid: false });
+      const srcAt = schedT + delayMs;
+      const hzMode = cfg.factor === 'hz' && cfg.fg;
+      if (!hzMode) queue.push({ tex, at: srcAt, mid: false });
       const prev = lastTex;
       if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
         effN = 1;
         lastUniqueTs = arrival;
       } else if (prev) {
         const { dup, cut } = await classifyPair(prev, tex);
-        if (cut) { cuts++; lastUniqueTs = arrival; }
-        else if (cfg.anime && dup) { dups++; }
+        if (cut) { cuts++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
+        else if (cfg.anime && dup) { dups++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
         else {
           const du = arrival - lastUniqueTs;
           if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
           lastUniqueTs = arrival;
           const ms = msAvg || 10;
-          let n, run = true;
-          if (cfg.factor === 'auto') {
+          let n, run = true, hzTs = null;
+          if (cfg.factor === 'hz') {
+            // display-match: one output frame per vsync tick, exactly on the grid.
+            // 24fps@60Hz -> alternating 2/3 mids per source interval (x2.5); source
+            // frames display only when a tick lands within 8% of them.
+            // the raf-floor estimate jitters (3.2ms "312Hz" moments) - snap it to
+            // the nearest REAL refresh rate so the divisor grid stays sane
+            const RATES = [240, 165, 144, 120, 100, 75, 60];
+            const rawHz = (rafFloor > 2 && rafFloor < 90) ? 1000 / rafFloor : 60;
+            let snapHz = 60;
+            for (const r of RATES) if (Math.abs(rawHz - r) / r < Math.abs(rawHz - snapHz) / snapHz) snapHz = r;
+            const vs = 1000 / snapHz;
+            // high-Hz displays: full rate is unaffordable AND unnecessary - any
+            // divisor of the display rate keeps a perfect tick grid. Climb to the
+            // highest divisor that fits the GPU budget and the x6 product cap.
+            const srcFps = 1000 / uniqueIntervalMs;
+            let m = 1;
+            // hz mode dares past the x6 product cap: the tick grid keeps pacing
+            // honest and the budget governor steps down a divisor when needed.
+            // x20 ceiling: anime-on-twos has ~12 UNIQUE fps, so a 240Hz grid
+            // means 19 mids per real pair (t-step 0.05). The budget governor is
+            // the real guard; this cap only fences absurdity.
+            while (m < 10 && ((1000 / (vs * m) - srcFps) * ms > 0.85 * 1000
+                              || 1000 / (vs * m) > srcFps * 20 + 1)) m++;
+            const vsOut = vs * m;
+            const T0 = schedT - intervalMs + delayMs, T1 = T0 + intervalMs;
+            if (hzNext < T0 - vsOut || hzNext > T1 + vsOut) hzNext = T0 + vsOut; // (re)sync
+            hzTs = [];
+            while (hzNext < T1 - 0.25 * vsOut) {
+              const t = (hzNext - T0) / intervalMs;
+              if (t <= 0.08) queue.push({ tex: prev, at: hzNext, mid: false });
+              else if (t < 0.97) hzTs.push(t);
+              hzNext += vsOut;
+            }
+            n = hzTs.length + 1;
+            if (hzTs.length === 0 || hzTs.length * ms > uniqueIntervalMs * 0.9) {
+              queue.push({ tex, at: srcAt, mid: false }); // can't afford / nothing due
+              run = false;
+            }
+          } else if (cfg.factor === 'auto') {
             // smart auto: as much as fits in 85% of the per-unique-frame budget,
             // but never past the display refresh (extra frames would be thrown away)
             n = 6;
@@ -1000,18 +1041,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             n = cfg.factor; // fixed by the user - NEVER lowered
           }
           effN = n;
+          if (run && switching && hzTs) queue.push({ tex, at: srcAt, mid: false });
           if (run && !switching) {
             flushJob(); // leftovers of the previous pair go out before the new prep
             try {
               rt.prepPair(prev, tex);
-              const ts = [];
-              for (let k = 1; k < n; k++) ts.push(k / n);
+              let ts = hzTs;
+              if (!ts) { ts = []; for (let k = 1; k < n; k++) ts.push(k / n); }
               curJob = { ts, next: 0, at: schedT - intervalMs + delayMs };
-            } catch (e) { log('prep', e); }
+            } catch (e) {
+              log('prep', e);
+              if (hzTs) queue.push({ tex, at: srcAt, mid: false });
+            }
           }
         }
       } else {
         lastUniqueTs = arrival;
+        if (hzMode) queue.push({ tex, at: srcAt, mid: false });
       }
       lastTex = tex;
     } catch (e) {
@@ -1072,7 +1118,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function onSrcChange() {
-    queue = []; curJob = null; lastTex = null; schedT = 0; lastUniqueTs = 0;
+    queue = []; curJob = null; lastTex = null; schedT = 0; lastUniqueTs = 0; hzNext = 0;
     if (overlay) overlay.style.opacity = '0'; // present() reveals on the next real frame
   }
   let srcWatchEl = null;
@@ -1118,7 +1164,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
-    queue = []; lastTex = null; curJob = null; schedT = 0;
+    queue = []; lastTex = null; curJob = null; schedT = 0; hzNext = 0;
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
@@ -1234,6 +1280,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         <label class="fc-row"><span>Frame factor</span>
           <select class="fc-sel" id="fcFactor">
             <option value="auto">auto</option>
+            <option value="hz">display Hz</option>
             <option value="2">2×</option><option value="3">3×</option>
             <option value="4">4×</option><option value="5">5×</option>
             <option value="6">6×</option>
@@ -1259,7 +1306,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
     const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
     syncPanel();
-    F.onchange = () => { cfg.factor = F.value === 'auto' ? 'auto' : +F.value; overSince = 0; saveCfg(); };
+    F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
     A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
@@ -1411,7 +1458,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.6.1';
+  const VERSION = '0.6.2';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
