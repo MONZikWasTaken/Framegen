@@ -34,6 +34,18 @@ name_map["lastconv.bias"] = "block0.lastconv.bias"
 for k in ("film.0.weight", "film.0.bias", "film.2.weight", "film.2.bias"):
     name_map[k] = k
 
+# tfact2 checkpoints carry the core under "core." plus a refine head
+if any(k.startswith("core.") for k in sd):
+    sd = ({k[5:]: v for k, v in sd.items() if k.startswith("core.")}
+          | {k: v for k, v in sd.items() if k.startswith("refine.")})
+for i in range(3):
+    for tail in ("weight", "bias"):
+        name_map[f"refine.c{i}.{tail}"] = f"refine.c{i}.{tail}"
+    name_map[f"refine.a{i}.weight"] = f"refine.a{i}.weight"
+name_map["refine.c3.weight"] = "refine.c3.weight"
+name_map["refine.c3.bias"] = "refine.c3.bias"
+name_map = {s: d for s, d in name_map.items() if s in sd}  # refine absent in plain tfact
+
 blob, manifest, offset = [], {}, 0
 for src_name, dst_name in name_map.items():
     a = sd[src_name].numpy().astype(np.float32)

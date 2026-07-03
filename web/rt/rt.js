@@ -378,8 +378,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // flowout variant writing straight into a storage texture (GPU-resident presentation:
 // the mid never leaves the GPU). rgba8unorm store rounds instead of truncating — ±1 LSB
 // vs the buffer path, invisible; the correctness harness keeps using the buffer path.
-function wgslFlowOutTex(W, H, staticGuard = false) {
-  const TW = W / 8, TH = H / 8;
+function wgslFlowOutTex(W, H, staticGuard = false, withRes = false) {
+  const TW = W / 8, TH = H / 8, RW = W / 4, RH = H / 4;
+  // tfact2: the refine residual (quarter res) is folded straight into this pass —
+  // bilinear x4 upsample (align_corners=False grid), added BEFORE the clamp
+  const RES_DECL = withRes ? /* wgsl */`
+@group(0) @binding(3) var<storage, read> res: array<f32>; // [3,${RH},${RW}]
+fn rtap(c: i32, x: i32, y: i32) -> f32 {
+  return res[c * ${RH * RW} + clamp(y, 0, ${RH - 1}) * ${RW} + clamp(x, 0, ${RW - 1})];
+}
+fn rup(c: i32, sx: f32, sy: f32) -> f32 {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  return mix(mix(rtap(c, x0, y0), rtap(c, x0 + 1, y0), fx),
+             mix(rtap(c, x0, y0 + 1), rtap(c, x0 + 1, y0 + 1), fx), fy);
+}` : '';
+  const RES_ADD = withRes ? /* wgsl */`
+  let rx = (f32(x) + 0.5) / 4.0 - 0.5;
+  let ry = (f32(y) + 0.5) / 4.0 - 0.5;
+  bgr = bgr + vec3<f32>(rup(0, rx, ry), rup(1, rx, ry), rup(2, rx, ry));` : '';
   // static-region protection (SVP-style): where A and B are locally identical
   // (subtitles, logos, UI, frozen shots-in-motion) the warp can still DRAG other
   // content there — blend back to the untouched source instead. Soft ramp so
@@ -407,7 +424,7 @@ function wgslFlowOutTex(W, H, staticGuard = false) {
 @group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
 @group(0) @binding(1) var<storage, read> imgs: array<f32>;  // [6,${H},${W}]
 @group(0) @binding(2) var outTex: texture_storage_2d<rgba8unorm, write>;
-
+${RES_DECL}
 fn tap(c: i32, x: i32, y: i32) -> f32 {
   return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
 }
@@ -445,9 +462,112 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m = 1.0 / (1.0 + exp(-up(4, sx, sy)));
   let w0 = warp3(0, f32(x) + fx0, f32(y) + fy0);
   let w1 = warp3(3, f32(x) + fx1, f32(y) + fy1);
-  var bgr = clamp(w0 * m + w1 * (1.0 - m), vec3<f32>(0.0), vec3<f32>(1.0));
+  var bgr = w0 * m + w1 * (1.0 - m);
+${RES_ADD}
+  bgr = clamp(bgr, vec3<f32>(0.0), vec3<f32>(1.0));
 ${GUARD}
   textureStore(outTex, vec2<i32>(x, y), vec4<f32>(bgr.z, bgr.y, bgr.x, 1.0));
+}`;
+}
+
+// ---- refine head (tfact2): occlusion repair at QUARTER resolution ----
+// Gathers [warped0(3), warped1(3), mask(1), flow*(0.25/20)(4)] = 11ch at H/4.
+// F.interpolate(x, 0.25, bilinear, align_corners=False) samples the source at
+// 4x+1.5 — i.e. the mean of the CENTER 2x2 of each 4x4 block; we warp those
+// four full-res positions and average, matching the trainer exactly.
+function wgslRefinePrep(W, H, f16) {
+  const TW = W / 8, TH = H / 8, HW = W / 4, HH = H / 4;
+  const T = f16 ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
+@group(0) @binding(1) var<storage, read> imgs: array<f32>;  // [6,${H},${W}]
+@group(0) @binding(2) var<storage, read_write> rin: array<${T}>; // [11,${HH},${HW}]
+
+fn tap(c: i32, x: i32, y: i32) -> f32 {
+  return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
+}
+fn up(c: i32, sx: f32, sy: f32) -> f32 {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
+             mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
+}
+fn img(plane: i32, x: i32, y: i32) -> f32 {
+  return imgs[plane * ${H * W} + clamp(y, 0, ${H - 1}) * ${W} + clamp(x, 0, ${W - 1})];
+}
+fn warp3(base: i32, sx: f32, sy: f32) -> vec3<f32> {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  var r: vec3<f32>;
+  for (var c = 0; c < 3; c++) {
+    let p = base + c;
+    r[c] = mix(mix(img(p, x0, y0), img(p, x0 + 1, y0), fx),
+               mix(img(p, x0, y0 + 1), img(p, x0 + 1, y0 + 1), fx), fy);
+  }
+  return r;
+}
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let hx = i32(gid.x); let hy = i32(gid.y);
+  if (hx >= ${HW} || hy >= ${HH}) { return; }
+  var w0 = vec3<f32>(0.0); var w1 = vec3<f32>(0.0);
+  var mk = 0.0; var fl = vec4<f32>(0.0);
+  for (var sy = 1; sy <= 2; sy++) {
+    for (var sxp = 1; sxp <= 2; sxp++) {
+      let X = hx * 4 + sxp; let Y = hy * 4 + sy; // center 2x2 of the 4x4 block
+      let gx8 = (f32(X) + 0.5) / 8.0 - 0.5;
+      let gy8 = (f32(Y) + 0.5) / 8.0 - 0.5;
+      let fx0 = up(0, gx8, gy8) * 8.0; let fy0 = up(1, gx8, gy8) * 8.0;
+      let fx1 = up(2, gx8, gy8) * 8.0; let fy1 = up(3, gx8, gy8) * 8.0;
+      mk += 1.0 / (1.0 + exp(-up(4, gx8, gy8)));
+      w0 += warp3(0, f32(X) + fx0, f32(Y) + fy0);
+      w1 += warp3(3, f32(X) + fx1, f32(Y) + fy1);
+      fl += vec4<f32>(fx0, fy0, fx1, fy1);
+    }
+  }
+  let P = ${HH * HW};
+  let o = hy * ${HW} + hx;
+  let q = 0.25;
+  let fn_ = 0.25 * (0.25 / 20.0); // mean * (0.25/FLOW_NORM)
+  rin[o] = ${T}(w0.x * q);           rin[P + o] = ${T}(w0.y * q);     rin[2 * P + o] = ${T}(w0.z * q);
+  rin[3 * P + o] = ${T}(w1.x * q);   rin[4 * P + o] = ${T}(w1.y * q); rin[5 * P + o] = ${T}(w1.z * q);
+  rin[6 * P + o] = ${T}(mk * q);
+  rin[7 * P + o] = ${T}(fl.x * fn_); rin[8 * P + o] = ${T}(fl.y * fn_);
+  rin[9 * P + o] = ${T}(fl.z * fn_); rin[10 * P + o] = ${T}(fl.w * fn_);
+}`;
+}
+
+// final refine conv (C->3) + sigmoid*2-1 residual, half res, f32 out
+function wgslRefineOut(C, HW, HH, f16) {
+  const T = f16 ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var<storage, read> src: array<${T}>;  // [${C},${HH},${HW}]
+@group(0) @binding(1) var<storage, read> wgt: array<f32>;   // [3,${C},3,3]
+@group(0) @binding(2) var<storage, read> bias: array<f32>;  // [3]
+@group(0) @binding(3) var<storage, read_write> dst: array<f32>; // [3,${HH},${HW}]
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${HW} || y >= ${HH}) { return; }
+  for (var co = 0; co < 3; co++) {
+    var acc = bias[co];
+    for (var ci = 0; ci < ${C}; ci++) {
+      let sb = ci * ${HH * HW};
+      let wb = (co * ${C} + ci) * 9;
+      for (var ky = 0; ky < 3; ky++) {
+        let sy = clamp(y + ky - 1, 0, ${HH - 1});
+        for (var kx = 0; kx < 3; kx++) {
+          let sx = clamp(x + kx - 1, 0, ${HW - 1});
+          acc += f32(src[sb + sy * ${HW} + sx]) * wgt[wb + ky * 3 + kx];
+        }
+      }
+    }
+    dst[co * ${HH * HW} + y * ${HW} + x] = 2.0 / (1.0 + exp(-acc)) - 1.0;
+  }
 }`;
 }
 
@@ -571,6 +691,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   if (tfact && (!textureInput || !textureOutput)) {
     throw new Error('rt: tfact weights need texture input/output mode');
   }
+  const refi = tfact && ('refine.c0.weight' in weightsManifest); // tfact2
   const Z0A = C1 % 4 === 0 ? C1 / 4 : C1; // conv0a kernel packs 4 channels only when C1 is /4
 
   const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
@@ -645,15 +766,17 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
-  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard) : wgslFlowOut(w, h));
+  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h));
   // texture-output mode: flow bind groups are per output texture (small ring — cache them)
   const flowBgCache = new Map();
   function flowBgFor(tex) {
     if (!flowBgCache.has(tex)) {
-      flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries: [
+      const entries = [
         { binding: 0, resource: { buffer: tmp8 } },
         { binding: 1, resource: { buffer: imgs } },
-        { binding: 2, resource: tex.createView() }] }));
+        { binding: 2, resource: tex.createView() }];
+      if (refi) entries.push({ binding: 3, resource: { buffer: rRes } }); // tfact2 residual
+      flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries }));
       if (flowBgCache.size > 24) flowBgCache.clear();
     }
     return flowBgCache.get(tex);
@@ -701,6 +824,29 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     filmW = { w0: f32('film.0.weight'), b0: f32('film.0.bias'),
               w2: f32('film.2.weight'), b2: f32('film.2.bias') };
   }
+  // tfact2 refine head: occlusion repair at QUARTER res; the residual is folded
+  // into the flowout pass (withRes)
+  const RW4 = w / 4, RH4 = h / 4;
+  let pRPrep = null, pRC0 = null, pRC1 = null, pROut = null;
+  let bgRPrep = null, bgRC0 = null, bgRC1 = null, bgRC2 = null, bgROut = null;
+  let RC = 0, rRes = null;
+  if (refi) {
+    RC = man['refine.c0.weight'].shape[0];
+    const rIn = abuf(11 * RH4 * RW4);
+    const rA2 = abuf(RC * RH4 * RW4);
+    const rB2 = abuf(RC * RH4 * RW4);
+    rRes = buf(3 * RH4 * RW4);
+    pRPrep = pipe(wgslRefinePrep(w, h, useF16));
+    pRC0 = pipe(wgslConv(11, RC, RW4, RH4, RW4, RH4, 1, false, useF16));
+    pRC1 = pipe(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16));
+    pROut = pipe(wgslRefineOut(RC, RW4, RH4, useF16));
+    bgRPrep = bg(pRPrep, [tmp8, imgs, rIn]);
+    bgRC0 = bg(pRC0, [rIn, convW('refine.c0.weight'), wbuf['refine.c0.bias'], wbuf['refine.a0.weight'], rA2]);
+    bgRC1 = bg(pRC1, [rA2, convW('refine.c1.weight'), wbuf['refine.c1.bias'], wbuf['refine.a1.weight'], rB2]);
+    bgRC2 = bg(pRC1, [rB2, convW('refine.c2.weight'), wbuf['refine.c2.bias'], wbuf['refine.a2.weight'], rA2]);
+    bgROut = bg(pROut, [rA2, wbuf['refine.c3.weight'], wbuf['refine.c3.bias'], rRes]);
+  }
+
   function filmParams(t) {
     const HN = filmW.b0.length, out = new Float32Array(2 * C2), h = new Float32Array(HN);
     for (let j = 0; j < HN; j++) h[j] = Math.max(0, filmW.w0[j] * t + filmW.b0[j]);
@@ -903,6 +1049,13 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
       pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
       pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
       pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8), 5);
+      if (refi) { // quarter-res refine chain; the flowout below folds the residual in
+        pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
+        pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
+        pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
+        pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
+        pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
+      }
       pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex)); pass.dispatchWorkgroups(gx(w), gx(h));
       pass.end();
       device.queue.submit([enc.finish()]);
