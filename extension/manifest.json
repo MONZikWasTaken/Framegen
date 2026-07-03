@@ -1,8 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Framecast — Frame Interpolation",
-  "version": "0.4.0",
-  "permissions": ["storage"],
+  "version": "0.4.2",
+  "permissions": ["storage", "declarativeNetRequest"],
+  "host_permissions": ["<all_urls>"],
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "cors_media", "enabled": true, "path": "rules.json" }]
+  },
   "description": "Real-time 2-4x frame interpolation for any <video> (own WebGPU runtime, runs fully on your GPU)",
   "content_scripts": [
     {

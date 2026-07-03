@@ -787,16 +787,62 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       lastTex = tex;
     } catch (e) {
-      log('frame error', e);
-      stop();
-      hud.style.display = 'block';
-      hud.textContent = 'FC ошибка: ' + (e.message || e);
+      if (e.name === 'OperationError') {
+        log('frame skipped (decoder gap)'); // transient: no decoded frame this tick
+      } else {
+        log('frame error', e);
+        stop();
+        hud.style.display = 'block';
+        hud.textContent = 'FC ошибка: ' + (e.message || e);
+      }
     } finally {
       processingFrame = false;
     }
   }
 
   // ---------- lifecycle / UI ----------
+  // cross-origin video taints the pixel path (SecurityError on copy). Our DNR rule
+  // injects ACAO:* on media responses, so reloading the element in CORS mode makes
+  // it readable — one reload, playback position preserved, reverted on failure.
+  async function makeReadable(v) {
+    if (v.crossOrigin === 'anonymous') throw new Error('видео недоступно даже с CORS');
+    const t = v.currentTime, playing = !v.paused;
+    v.crossOrigin = 'anonymous';
+    v.load();
+    try {
+      await new Promise((res, rej) => {
+        const ok = () => { cleanup(); res(); };
+        const bad = () => { cleanup(); rej(new Error('CDN не отдаёт видео с CORS')); };
+        const timer = setTimeout(bad, 8000);
+        const cleanup = () => {
+          clearTimeout(timer);
+          v.removeEventListener('loadeddata', ok);
+          v.removeEventListener('error', bad);
+        };
+        v.addEventListener('loadeddata', ok);
+        v.addEventListener('error', bad);
+      });
+    } catch (e) {
+      v.removeAttribute('crossorigin'); // put the player back the way it was
+      v.load();
+      v.currentTime = t;
+      if (playing) v.play().catch(() => {});
+      throw e;
+    }
+    v.currentTime = t;
+    if (playing) v.play().catch(() => {});
+    // loadeddata != decoded frame: copying right away throws "no back resource".
+    // Wait for a real presented frame (rVFC), with a timeout so a stalled decoder
+    // can't wedge the start path.
+    await new Promise((res) => {
+      let done = false;
+      const fin = () => { if (!done) { done = true; res(); } };
+      v.requestVideoFrameCallback(() => fin());
+      setTimeout(fin, 1500);
+    });
+    log('video reloaded with CORS — pixels readable now');
+  }
+
   async function start(v) {
     videoEl = v;
     await ensureRuntime();
@@ -814,8 +860,24 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
-      device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
-      present(seed, false);
+      try {
+        device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
+        present(seed, false);
+      } catch (e) {
+        if (e.name === 'SecurityError' || String(e).includes('cross-origin')) {
+          hud.style.display = 'block';
+          hud.textContent = 'FC: видео без CORS — перезагружаю…';
+          await makeReadable(videoEl); // throws a friendly error if the CDN refuses
+          // seed is cosmetic (seamless fade-in): if the decoder still has no frame,
+          // skip it — the rVFC pipeline below presents the first real frame anyway
+          try {
+            device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
+            present(seed, false);
+          } catch (e2) { log('seed skipped', e2.name); }
+        } else if (e.name === 'OperationError') {
+          log('seed skipped', e.name); // no decoded frame yet — rVFC will deliver
+        } else throw e;
+      }
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
     queue = []; lastTex = null; curJob = null;
@@ -909,7 +971,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.0</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.2</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
