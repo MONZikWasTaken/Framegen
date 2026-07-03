@@ -348,6 +348,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // video element and can never show above the canvas, so instead of ever revealing
   // the raw video we drive the <video> ourselves — play/seek/volume/fullscreen as
   // regular DOM above everything. Interpolation is never interrupted.
+  // sites whose own DOM controls are KNOWN to render above our overlay — there we
+  // don't double up with our bar. Everywhere else (jut.su-style players put their
+  // bar BELOW the canvas) our controls are the only usable ones.
+  const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv)$/
+    .test(location.hostname);
   let revealUntil = 0, uiVideo = null, uiScan = 0;
   document.addEventListener('mousemove', (e) => {
     const now = performance.now();
@@ -595,9 +600,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     positionOverlay();
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect();
-      // our bar only where the site relies on native controls (YouTube etc. draw
-      // their own DOM controls, which already sit above the overlay)
-      if (videoEl.controls && cfg.hoverReveal) {
+      // our bar everywhere except sites whose own controls verifiably sit above
+      // the overlay (see SITE_CONTROLS_OK)
+      if (cfg.hoverReveal && (videoEl.controls || !SITE_CONTROLS_OK)) {
         const showBar = now < revealUntil;
         const m = Math.max(10, Math.min(16, vr.width * 0.02));
         bar.style.display = 'flex';
@@ -971,7 +976,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.2</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.3</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
