@@ -378,8 +378,31 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // flowout variant writing straight into a storage texture (GPU-resident presentation:
 // the mid never leaves the GPU). rgba8unorm store rounds instead of truncating — ±1 LSB
 // vs the buffer path, invisible; the correctness harness keeps using the buffer path.
-function wgslFlowOutTex(W, H) {
+function wgslFlowOutTex(W, H, staticGuard = false) {
   const TW = W / 8, TH = H / 8;
+  // static-region protection (SVP-style): where A and B are locally identical
+  // (subtitles, logos, UI, frozen shots-in-motion) the warp can still DRAG other
+  // content there — blend back to the untouched source instead. Soft ramp so
+  // moving-edge pixels transition smoothly.
+  const GUARD = staticGuard ? /* wgsl */`
+  var d = 0.0;
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let xx = x + dx; let yy = y + dy;
+      d += max(abs(img(0, xx, yy) - img(3, xx, yy)),
+           max(abs(img(1, xx, yy) - img(4, xx, yy)),
+               abs(img(2, xx, yy) - img(5, xx, yy))));
+    }
+  }
+  d *= (1.0 / 9.0);
+  let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  if (wStatic > 0.001) {
+    let stat = vec3<f32>(
+      (img(0, x, y) + img(3, x, y)) * 0.5,
+      (img(1, x, y) + img(4, x, y)) * 0.5,
+      (img(2, x, y) + img(5, x, y)) * 0.5);
+    bgr = mix(bgr, stat, wStatic);
+  }` : '';
   return /* wgsl */`
 @group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
 @group(0) @binding(1) var<storage, read> imgs: array<f32>;  // [6,${H},${W}]
@@ -422,7 +445,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let m = 1.0 / (1.0 + exp(-up(4, sx, sy)));
   let w0 = warp3(0, f32(x) + fx0, f32(y) + fy0);
   let w1 = warp3(3, f32(x) + fx1, f32(y) + fy1);
-  let bgr = clamp(w0 * m + w1 * (1.0 - m), vec3<f32>(0.0), vec3<f32>(1.0));
+  var bgr = clamp(w0 * m + w1 * (1.0 - m), vec3<f32>(0.0), vec3<f32>(1.0));
+${GUARD}
   textureStore(outTex, vec2<i32>(x, y), vec4<f32>(bgr.z, bgr.y, bgr.x, 1.0));
 }`;
 }
@@ -530,7 +554,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 export async function createRT(device, { w, h, weightsBin, weightsManifest,
-                                          textureInput = false, textureOutput = false }) {
+                                          textureInput = false, textureOutput = false,
+                                          staticGuard = false }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
   const useF16 = device.features.has('shader-f16');
@@ -620,7 +645,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
-  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h) : wgslFlowOut(w, h));
+  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard) : wgslFlowOut(w, h));
   // texture-output mode: flow bind groups are per output texture (small ring — cache them)
   const flowBgCache = new Map();
   function flowBgFor(tex) {

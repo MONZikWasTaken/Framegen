@@ -15,14 +15,14 @@
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true };
+    fg: true, sr: false, hdr: false, showFps: true, guard: true };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
-    cfg.showFps = !!cfg.showFps;
+    cfg.showFps = !!cfg.showFps; cfg.guard = !!cfg.guard;
   }
   try {
     // async: the panel may already be built with defaults by the time this lands —
@@ -56,6 +56,7 @@
     panel.querySelector('#fcDebug').checked = cfg.debug;
     panel.querySelector('#fcHover').checked = cfg.hoverReveal;
     panel.querySelector('#fcFps').checked = cfg.showFps;
+    panel.querySelector('#fcGuard').checked = cfg.guard;
     panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
@@ -78,7 +79,7 @@
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
-  let schedT = 0, rafFloor = 100, uiTick = 0;
+  let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '—', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
@@ -136,7 +137,7 @@
     const { createRT } = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
     rt = await createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
-      weightsBin: bin, weightsManifest: man });
+      staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man });
     rtRes = cfg.res;
     midTexs.forEach(t => t.destroy());
     midTexs = [];
@@ -205,6 +206,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     dedupRead.unmap();
     const mean = s[0] / (48 * 27);
     lastStat = { mean, max: s[1] };
+    // motion EMA feeds the artifact-aware factor cap; dups/cuts don't count as motion
+    if (mean < 90) motionAvg = motionAvg * 0.7 + mean * 0.3;
     return { dup: mean < 2.5 && s[1] < 45, cut: mean > 90, black: s[1] === 0 };
   }
 
@@ -748,6 +751,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `raf ${rafMs.toFixed(1)}/${rafFloor.toFixed(1)}`,
           `drop ${dropped} (${dropPressure.toFixed(1)})`,
           `dup ${dups} cut ${cuts}`,
+          `движ ${motionAvg.toFixed(0)}`,
           `diff ${lastStat ? lastStat.mean.toFixed(1) : '—'}/${lastStat ? lastStat.max : '—'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
         ].join('  ·  ');
       } else {
@@ -857,6 +861,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
             while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz) n--;
             n = Math.max(2, n - autoPenalty); // drop-rate feedback (see pump)
+            // fast scenes: interpolation artifacts scale with motion while the eye
+            // can't rate smoothness anyway — cap the factor by measured motion
+            const mcap = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
+            if (n > mcap) n = mcap;
             if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
           } else {
             n = cfg.factor; // fixed by the user — NEVER lowered
@@ -1096,6 +1104,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           <input class="fc-sw" type="checkbox" id="fcHover"></label>
         <label class="fc-row"><span>Счётчик FPS<small>плашка сверху слева</small></span>
           <input class="fc-sw" type="checkbox" id="fcFps"></label>
+        <label class="fc-row"><span>Защита субтитров<small>статика не варпится</small></span>
+          <input class="fc-sw" type="checkbox" id="fcGuard"></label>
         <label class="fc-row"><span>Сравнение<small>шторка оригинал / FC</small></span>
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
         <label class="fc-row"><span>Debug<small>рамка + телеметрия</small></span>
@@ -1115,6 +1125,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
     const Fp = panel.querySelector('#fcFps');
     Fp.onchange = () => { cfg.showFps = Fp.checked; saveCfg(); };
+    const Gd = panel.querySelector('#fcGuard');
+    Gd.onchange = async () => { // the guard is baked into the flow kernel — rebuild
+      cfg.guard = Gd.checked; saveCfg();
+      if (running && !toggling) {
+        toggling = true;
+        try { rtRes = -1; await switchRes(); }
+        catch (e) { log('guard switch', e); }
+        finally { toggling = false; }
+      } else { rtRes = -1; }
+    };
     Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
@@ -1243,7 +1263,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.8';
+  const VERSION = '0.4.9';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
