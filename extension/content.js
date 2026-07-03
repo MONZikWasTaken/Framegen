@@ -68,7 +68,7 @@
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupRead = null, dedupSampler = null;
-  let queue = [], running = false, busy = false, pending = null, processingFrame = false;
+  let queue = [], running = false, processingFrame = false;
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
   let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
@@ -582,6 +582,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function pump(now) {
     if (!running) return;
+    driveJob(now); // just-in-time mid submission
     if (lastPumpT) {
       const d = now - lastPumpT;
       // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) —
@@ -670,36 +671,41 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     requestAnimationFrame(pump);
   }
 
-  // ---------- interpolation ----------
-  async function runPair(job) {
-    if (switching) return; // mid textures are being replaced under our feet
-    busy = true;
-    try {
-      const ts = [];
-      for (let k = 1; k < job.n; k++) ts.push(k / job.n);
-      const outs = [];
-      const busyMid = new Set(queue.map(q => q.tex)); // don't clobber queued mids
-      for (let k = 0; k < ts.length; k++) {
-        let guard = midTexs.length;
-        while (guard-- > 0 && busyMid.has(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
-        outs.push(midTexs[midIdx]);
-        busyMid.add(midTexs[midIdx]);
-        midIdx = (midIdx + 1) % midTexs.length;
-      }
-      const t0 = performance.now();
-      await rt.runMulti(job.a, job.b, ts, outs);
-      device.queue.onSubmittedWorkDone().then(() => {
-        const ms = (performance.now() - t0) / ts.length;
-        msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
-      });
-      for (let k = 0; k < ts.length; k++) {
-        queue.push({ tex: outs[k], at: job.at + ts[k] * intervalMs, mid: true });
-      }
-    } catch (e) {
-      log('interp error', e);
+  // ---------- interpolation (lazy per-mid submission) ----------
+  // prepPair runs once per frame pair; each mid's compute is submitted just-in-time
+  // for its display slot, so present blits interleave with computes on the GPU
+  // queue instead of the first mid waiting for the whole batch.
+  let curJob = null;
+  function submitMid() {
+    const k = curJob.next;
+    const disp = curJob.at + curJob.ts[k] * intervalMs;
+    const busyMid = new Set(queue.map(q => q.tex)); // don't clobber queued mids
+    let guard = midTexs.length;
+    while (guard-- > 0 && busyMid.has(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
+    const out = midTexs[midIdx];
+    midIdx = (midIdx + 1) % midTexs.length;
+    const t0 = performance.now();
+    try { rt.runT(curJob.ts[k], out); } catch (e) { log('runT', e); curJob = null; return; }
+    device.queue.onSubmittedWorkDone().then(() => {
+      const ms = performance.now() - t0;
+      msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
+    });
+    queue.push({ tex: out, at: disp, mid: true });
+    curJob.next++;
+    if (curJob.next >= curJob.ts.length) curJob = null;
+  }
+  function flushJob() {
+    while (curJob && curJob.next < curJob.ts.length) submitMid();
+    curJob = null;
+  }
+  function driveJob(now) {
+    if (!curJob || switching) return;
+    const lead = 2 * (msAvg || 10) + 8; // submit when the display slot is one compute away
+    while (curJob && curJob.next < curJob.ts.length) {
+      const disp = curJob.at + curJob.ts[curJob.next] * intervalMs;
+      if (disp - now > lead) break;
+      submitMid();
     }
-    busy = false;
-    if (pending) { const p = pending; pending = null; runPair(p); }
   }
 
   async function onFrame() {
@@ -719,7 +725,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // as an interpolation input — reuse of live textures = timeline soup
       const busyTex = new Set(queue.map(q => q.tex));
       if (lastTex) busyTex.add(lastTex);
-      if (pending) { busyTex.add(pending.a); busyTex.add(pending.b); }
       let guard = frameTex.length;
       while (guard-- > 0 && busyTex.has(frameTex[frameIdx])) frameIdx = (frameIdx + 1) % frameTex.length;
       const tex = frameTex[frameIdx];
@@ -728,7 +733,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // Slewed ±2ms/frame so pacing never jumps.
-      const dTarget = Math.min(180, Math.max(60, 2 * Math.max(0, effN - 1) * (msAvg || 10) + 15));
+      // lazy submission: a mid only waits for ITS OWN compute, not the whole batch
+      const dTarget = Math.min(180, Math.max(60, 2 * (msAvg || 10) + 25));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       queue.push({ tex, at: arrival + delayMs, mid: false });
       const prev = lastTex;
@@ -760,9 +766,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           }
           effN = n;
           if (run && !switching) {
-            const job = { a: prev, b: tex, at: arrival - intervalMs + delayMs, n };
-            if (!busy) runPair(job);
-            else pending = job;
+            flushJob(); // leftovers of the previous pair go out before the new prep
+            try {
+              rt.prepPair(prev, tex);
+              const ts = [];
+              for (let k = 1; k < n; k++) ts.push(k / n);
+              curJob = { ts, next: 0, at: arrival - intervalMs + delayMs };
+            } catch (e) { log('prep', e); }
           }
         }
       } else {
@@ -801,7 +811,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       present(seed, false);
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
-    queue = []; lastTex = null; pending = null;
+    queue = []; lastTex = null; curJob = null;
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
@@ -820,7 +830,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overSince = 0;
     if (warnEl) warnEl.style.opacity = '0';
     if (splitEl) splitEl.style.display = 'none';
-    queue = []; lastTex = null; pending = null;
+    queue = []; lastTex = null; curJob = null;
     btn.style.background = '';
   }
 
@@ -867,8 +877,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     try {
       // loop: the user may flip the select again mid-rebuild — converge on the latest
       while (rtRes !== cfg.res) {
-        pending = null;
-        await new Promise((res) => { const w = () => (busy ? setTimeout(w, 8) : res()); w(); });
+        curJob = null; // abandon un-submitted mids of the old pair
         queue = queue.filter((it) => !it.mid);
         msAvg = 0; // cost at the new size is different — relearn
         await ensureRuntime();

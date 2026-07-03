@@ -743,5 +743,43 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     return outs;
   }
 
-  return { run, runMulti, profile, w, h };
+  // ---- lazy per-mid API (texture in/out mode) ----
+  // The queue is FIFO: a mid's present blit executes after EVERYTHING submitted
+  // before it. Batching all mids upfront therefore makes the FIRST mid wait for
+  // the WHOLE batch on the GPU. prepPair + runT let the caller submit each mid
+  // just-in-time so present blits interleave with computes — the required
+  // presentation delay shrinks from ~2x batch time to ~one mid time.
+  let curPrep = null;
+  function prepPair(a, b) {
+    if (!textureInput) throw new Error('prepPair: texture-input mode only');
+    curPrep = texPrepBgs(a, b);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  }
+  function runT(t, outTex) {
+    if (!curPrep) throw new Error('runT before prepPair');
+    if (!textureOutput) throw new Error('runT: texture-output mode only');
+    // single tbuf is safe: writeBuffer and submits are queue-ordered
+    device.queue.writeBuffer(tbufs[0], 0, new Float32Array([t]));
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
+    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
+    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
+    pass.end();
+    enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
+    const pass2 = enc.beginComputePass();
+    for (const { p, g } of bgB) {
+      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+    }
+    pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
+    pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex)); pass2.dispatchWorkgroups(gx(w), gx(h));
+    pass2.end();
+    device.queue.submit([enc.finish()]);
+  }
+
+  return { run, runMulti, prepPair, runT, profile, w, h };
 }
