@@ -76,6 +76,7 @@
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
+  let schedT = 0, rafFloor = 100, uiTick = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '—', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
@@ -594,9 +595,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const d = now - lastPumpT;
       // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) —
       // auto must not re-inflate on every momentary lull
-      if (d > 1 && d < 100) rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
+      if (d > 1 && d < 100) {
+        rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
+        rafFloor = Math.min(rafFloor + 0.02, d); // true vsync: snaps down, creeps up
+      }
     }
     lastPumpT = now;
+    // UI geometry work (rect reads + style writes force reflows on heavy pages)
+    // runs at rAF/4 — presentation below stays per-tick
+    uiTick = (uiTick + 1) & 3;
+    if (uiTick === 0) {
     positionOverlay();
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect();
@@ -630,6 +638,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         if (overlay.style.clipPath) overlay.style.clipPath = '';
       }
     }
+    updateBar();
+    } // end of throttled UI block
     queue.sort((a, b) => a.at - b.at);
     let due = -1;
     for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
@@ -648,6 +658,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // AIMD controller, evaluated EVERY frame: aggressive decrease on pressure,
     // additive recovery after a long clean stretch
     if (cfg.factor === 'auto') {
+      // compositor saturation (frames late by a vsync, not yet dropped) feeds the
+      // same controller: rAF stretching 1.7x past the true vsync = strain
+      if (rafFloor < 90 && rafMs > rafFloor * 1.7) dropPressure += 0.02;
       if (dropPressure > 1.2 && autoPenalty < 3 && now - penaltyT > 500) {
         autoPenalty = Math.min(3, autoPenalty + (dropPressure > 3 ? 2 : 1));
         penaltyT = now;
@@ -666,6 +679,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? (autoPenalty ? ` (авто, −${autoPenalty} за дропы)` : ' (авто)') : ' (фикс)'}\n` +
           `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p · бюджет ${uniqueIntervalMs.toFixed(0)}ms · задержка ${delayMs.toFixed(0)}ms\n` +
           `GPU: ${sys.gpu} · загрузка ~${load.toFixed(0)}%\n` +
+          `raf: ${rafMs.toFixed(1)}ms (vsync ~${rafFloor.toFixed(1)}) · часы ±${(lastArrival - schedT).toFixed(1)}ms\n` +
           `shown ${shown} · drop ${dropped} · давление ${dropPressure.toFixed(1)} · dups ${dups} · cuts ${cuts}\n` +
           `diff: mean ${lastStat ? lastStat.mean.toFixed(1) : '—'} max ${lastStat ? lastStat.max : '—'}` +
           `${lastStat && lastStat.max === 0 ? ' (ЧЁРНОЕ — DRM?)' : ''}`;
@@ -674,7 +688,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
-    updateBar();
     requestAnimationFrame(pump);
   }
 
@@ -725,6 +738,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const dt = arrival - lastArrival;
       if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
       lastArrival = arrival;
+      // PLL-smoothed schedule clock: decode jitter must not shake presentation.
+      // Track the arrival rhythm softly (8%), resync hard on seeks/stalls (>80ms off)
+      const expected = schedT + intervalMs;
+      schedT = (!schedT || Math.abs(arrival - expected) > 80)
+        ? arrival : expected + 0.08 * (arrival - expected);
       const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
       if (!vw || !vh) return;
       ensureFrameTextures(vw, vh);
@@ -748,7 +766,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // lazy submission: a mid only waits for ITS OWN compute, not the whole batch
       const dTarget = Math.min(180, Math.max(60, 2 * (msAvg || 10) + 25));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
-      queue.push({ tex, at: arrival + delayMs, mid: false });
+      queue.push({ tex, at: schedT + delayMs, mid: false });
       const prev = lastTex;
       if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
         effN = 1;
@@ -783,7 +801,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
               rt.prepPair(prev, tex);
               const ts = [];
               for (let k = 1; k < n; k++) ts.push(k / n);
-              curJob = { ts, next: 0, at: arrival - intervalMs + delayMs };
+              curJob = { ts, next: 0, at: schedT - intervalMs + delayMs };
             } catch (e) { log('prep', e); }
           }
         }
@@ -885,7 +903,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
-    queue = []; lastTex = null; curJob = null;
+    queue = []; lastTex = null; curJob = null; schedT = 0;
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
@@ -976,7 +994,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.3</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.4</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
