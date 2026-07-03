@@ -107,7 +107,12 @@ from any movies you have locally.
 
 ## License
 
-Code is MIT (see `LICENSE`). **Model weights** are distributed for
-non-commercial research/personal use — they were trained on open movies
-(Sintel, Tears of Steel, Elephants Dream, Big Buck Bunny) but distilled from a
-RIFE-family teacher and evaluated on research datasets; treat them accordingly.
+Code is **AGPLv3** (see `LICENSE`): free to use, study, modify and
+redistribute — but any distributed or network-served fork must publish its
+source under the same terms. Chosen deliberately so the project can never be
+swallowed into a closed paid product.
+
+**Model weights** are distributed separately for non-commercial
+research/personal use — they were trained on open movies (Sintel, Tears of
+Steel, Elephants Dream) and real footage (xiph.org), but distilled from a
+RIFE-family teacher; a fully-freely-licensed weight set is on the roadmap.
