@@ -15,13 +15,14 @@
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false };
+    fg: true, sr: false, hdr: false, showFps: true };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
+    cfg.showFps = !!cfg.showFps;
   }
   try {
     // async: the panel may already be built with defaults by the time this lands —
@@ -54,6 +55,7 @@
     panel.querySelector('#fcAnime').checked = cfg.anime;
     panel.querySelector('#fcDebug').checked = cfg.debug;
     panel.querySelector('#fcHover').checked = cfg.hoverReveal;
+    panel.querySelector('#fcFps').checked = cfg.showFps;
     panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
@@ -72,7 +74,7 @@
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
   let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
-  let bar = null, barSeeking = false;
+  let bar = null, barSeeking = false, wm = null;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
@@ -287,6 +289,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (splitEl) uiHost.appendChild(splitEl);
       if (warnEl) uiHost.appendChild(warnEl);
       if (flashEl) uiHost.appendChild(flashEl);
+      if (wm) uiHost.appendChild(wm);
     }
     const r = videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
@@ -676,8 +679,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       } else {
         bar.style.display = 'none';
       }
-      hud.style.left = Math.max(0, vr.right - hud.offsetWidth - 10) + 'px';
-      hud.style.top = Math.max(0, vr.top + 10) + 'px';
+      // HUD: single line along the top-left of the video
+      hud.style.display = (cfg.debug || cfg.showFps) ? 'block' : 'none';
+      hud.style.left = (vr.left + 8) + 'px';
+      hud.style.top = (vr.top + 8) + 'px';
+      hud.style.maxWidth = Math.max(120, vr.width - 16) + 'px';
+      // brand mark: bottom-left, always on while running
+      wm.style.display = 'block';
+      wm.style.left = (vr.left + 10) + 'px';
+      wm.style.top = (vr.bottom - 26) + 'px';
       if (btn.style.display !== 'none') placeSideButtons(vr); // stay pinned while running
       updateWarn(now, vr);
       updateAdvise(now, vr);
@@ -729,15 +739,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const srcFps = intervalMs > 1 ? (1000 / intervalMs) : 0;
       if (cfg.debug) {
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
-        hud.textContent =
-          `видео: ${videoEl.videoWidth}x${videoEl.videoHeight} @ ${srcFps.toFixed(1)}fps\n` +
-          `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? (autoPenalty ? ` (авто, −${autoPenalty} за дропы)` : ' (авто)') : ' (фикс)'}\n` +
-          `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p · бюджет ${uniqueIntervalMs.toFixed(0)}ms · задержка ${delayMs.toFixed(0)}ms\n` +
-          `GPU: ${sys.gpu} · загрузка ~${load.toFixed(0)}%\n` +
-          `raf: ${rafMs.toFixed(1)}ms (vsync ~${rafFloor.toFixed(1)}) · часы ±${(lastArrival - schedT).toFixed(1)}ms\n` +
-          `shown ${shown} · drop ${dropped} · давление ${dropPressure.toFixed(1)} · dups ${dups} · cuts ${cuts}\n` +
-          `diff: mean ${lastStat ? lastStat.mean.toFixed(1) : '—'} max ${lastStat ? lastStat.max : '—'}` +
-          `${lastStat && lastStat.max === 0 ? ' (ЧЁРНОЕ — DRM?)' : ''}`;
+        const mode = cfg.factor === 'auto' ? (autoPenalty ? `авто−${autoPenalty}` : 'авто') : 'фикс';
+        hud.textContent = [
+          `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
+          `${msAvg.toFixed(1)}ms@${cfg.res}p`,
+          `буфер ${delayMs.toFixed(0)}`,
+          `GPU ${load.toFixed(0)}%`,
+          `raf ${rafMs.toFixed(1)}/${rafFloor.toFixed(1)}`,
+          `drop ${dropped} (${dropPressure.toFixed(1)})`,
+          `dup ${dups} cut ${cuts}`,
+          `diff ${lastStat ? lastStat.mean.toFixed(1) : '—'}/${lastStat ? lastStat.max : '—'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
+        ].join('  ·  ');
       } else {
         hud.textContent = `FC ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
       }
@@ -978,6 +990,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       setTimeout(() => { if (!running && overlay) overlay.style.display = 'none'; }, 260);
     }
     hud.style.display = 'none';
+    if (wm) wm.style.display = 'none';
     if (bar) bar.style.display = 'none';
     overSince = 0;
     if (warnEl) warnEl.style.opacity = '0';
@@ -1081,6 +1094,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           <input class="fc-sw" type="checkbox" id="fcAnime"></label>
         <label class="fc-row"><span>Контролы при наведении</span>
           <input class="fc-sw" type="checkbox" id="fcHover"></label>
+        <label class="fc-row"><span>Счётчик FPS<small>плашка сверху слева</small></span>
+          <input class="fc-sw" type="checkbox" id="fcFps"></label>
         <label class="fc-row"><span>Сравнение<small>шторка оригинал / FC</small></span>
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
         <label class="fc-row"><span>Debug<small>рамка + телеметрия</small></span>
@@ -1098,6 +1113,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
+    const Fp = panel.querySelector('#fcFps');
+    Fp.onchange = () => { cfg.showFps = Fp.checked; saveCfg(); };
     Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
@@ -1192,10 +1209,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     gear.innerHTML = svgIcon('gear', 17);
     gear.className = 'fc-side';
     hud = document.createElement('div');
-    // anchored to the video's top-right corner every pump tick (inside the player)
+    // single line, pinned to the video's TOP-LEFT; plain dark bar, white text
     hud.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
-      + 'color:#0f0; font:11px/1.5 monospace; background:rgba(0,0,0,.7); padding:4px 8px;'
-      + 'border-radius:6px; white-space:pre; text-align:left; pointer-events:none; display:none;';
+      + 'color:#fff; font:11px/1.5 ui-monospace,monospace; background:rgba(0,0,0,.72);'
+      + 'padding:3px 9px; white-space:normal; pointer-events:none; display:none;';
+    wm = document.createElement('div');
+    // permanent brand mark: bottom-left inside the player, bare white text
+    wm.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483645;'
+      + 'color:#fff; font:600 12px system-ui; opacity:.75; pointer-events:none;'
+      + 'text-shadow:0 1px 3px rgba(0,0,0,.8); display:none;';
+    wm.textContent = 'Framecast';
+    document.body.appendChild(wm);
     buildPanel();
     ensureBar();
     btn.onclick = toggleFC;
@@ -1219,7 +1243,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.7';
+  const VERSION = '0.4.8';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
