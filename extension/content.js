@@ -721,6 +721,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
       if (!vw || !vh) return;
       ensureFrameTextures(vw, vh);
+      // note on importExternalTexture (evaluated, rejected): interpolation needs the
+      // PREVIOUS frame too, and external textures expire with the video frame — the
+      // copy is unavoidable for history and for presenting source frames. Prep/dedup
+      // reads scale with MODEL resolution, not source, so reading the external
+      // texture instead of the copy saves nothing measurable.
       // NEVER overwrite a texture that is still queued for presentation or needed
       // as an interpolation input — reuse of live textures = timeline soup
       const busyTex = new Set(queue.map(q => q.tex));

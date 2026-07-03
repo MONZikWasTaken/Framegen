@@ -1,102 +1,107 @@
-# InterModule — real-time frame interpolation для браузера
+# Framecast
 
-Rust-библиотека + браузерное расширение: берёт видео на сайте (аниме 24 fps) и
-в реальном времени апсэмплит до 60 fps через RIFE на WebGPU. Ниша свободна —
-готовых real-time RIFE-реализаций под браузер (WASM/WebGPU) с anime-режимом нет:
-SVP и `rife-ncnn-vulkan` заточены под десктоп-плеер, не под веб.
+Real-time neural frame interpolation for video **in the browser** — a Chrome
+extension that takes any `<video>` on any page (24 fps anime, 30 fps footage)
+and plays it at 2×–6× the frame rate, entirely on your GPU, with no server and
+no external ML runtime.
 
-## Идея
+Everything in the hot path is ours:
 
-Заходишь на сайт аниме → видео 24 fps → расширение перехватывает кадры через
-**WebCodecs**, гоняет RIFE-Lite на **WebGPU**, рисует интерполированные кадры в
-**Canvas** поверх `<video>`. На выходе 60 fps плавности, локально, без сервера.
+- **The model** — a distilled, slimmed RIFE-family student (IFNet_m, arbitrary
+  timestep) trained by us; 4 MB of weights.
+- **The inference runtime** — hand-written WGSL compute kernels on raw WebGPU
+  (`web/rt/rt.js`), bit-exact against the ONNX reference. No onnxruntime-web,
+  no TensorFlow.js, no WASM BLAS. The same kernels run natively via `wgpu`
+  (`crates/rife-wgpu`).
+- **The pipeline** — fully GPU-resident: video frame → texture → dedup/cut
+  detection → interpolation → (optional 2× super-resolution) → canvas. The CPU
+  only ever sees an 8-byte dedup statistic per frame.
 
-## Почему Rust + RIFE + WebGPU
+## Numbers (RTX 4060 Ti, 720p, one interpolated frame)
 
-| | |
-|---|---|
-| **Rust** | оверхед на обвязке ниже, чем у JS/Python; memory safety; одна кодовая база натив + wasm |
-| **RIFE-Lite (RIFEm)** | direct intermediate-flow estimation, поддерживает произвольный timestep; ~30 fps @ 720p/2x на 2080Ti — реальный кандидат в real-time |
-| **WebGPU** | единственный способ гонять нейросеть на GPU прямо в браузере без плагинов |
-| **WebCodecs** | декод видео в raw-кадры без ffmpeg-in-browser |
+| backend | latency | note |
+|---|---|---|
+| ort-web WebGPU EP, full model (day 0) | 1957 ms | where we started |
+| ort-web WebGPU EP, distilled student | 218 ms | model shrink alone |
+| **our WGSL runtime, slim student** | **9.8 ms** | plain WebGPU, no flags |
+| **our WGSL runtime, potato student** | **6 ms** | 1 MB weights |
+| our kernels on native wgpu (Rust) | 9.5 ms | Vulkan/DX12/Metal, any GPU |
+| TensorRT engine (NVIDIA path) | 5.8 ms | 178 fps end-to-end with audio |
 
-Rust даст плюс в оверхеде и безопасности, но **bottleneck не язык, а backend
-инференса** — скорость определится эффективностью шейдер-пайплайна и квантизацией
-модели, а не обвязкой. «Вдвое быстрее всего существующего» автоматически не
-гарантируется — модель ещё оптимизировать под WebGPU придётся.
+Browser total speed-up: **×390** (1957 → 5 ms). The remaining gap to TensorRT
+is structural — WGSL has no tensor-core access yet (waiting on
+`subgroup-matrix` shipping in Chrome).
 
-## Anime-режим (ключевой дифференциатор)
+## Model ladder (distilled from RIFE-lite, PSNR on held-out clips)
 
-Классический блендинг кадров плохо работает на аниме: контуры слишком резкие,
-блендинг создаёт «смазанные» артефакты на статичных линиях. SVP решает это
-отдельным «Sharp»/«Animation» режимом — **детектирует только крупное движение**
-(панорамирование, зум) и интерполирует именно его, оставляя резкие статичные
-объекты нетронутыми. Без этого аниме выглядит «мыльным».
+| student | BBB dB | Jellyfish dB | weights | 720p mid |
+|---|---|---|---|---|
+| teacher (full) | 41.50 | 37.67 | 16 MB | 21.6 ms (TRT) |
+| 2-block | 40.14 | 37.14 | 8 MB | — |
+| 1-block | 39.68 | 35.25 | 16 MB f32 | 25 ms (WGSL) |
+| **slim c=120 (default)** | **39.31** | **34.83** | **4 MB** | **9.8 ms** |
+| potato c=60 | 39.05 | 34.44 | 1 MB | 6 ms |
 
-В InterModule это будет отдельный pass поверх RIFE: глобальный motion detection →
-interpolate только там, где смещение заметно → статика остаётся пиксель-в-пиксель.
+All students keep **arbitrary timestep** (t = k/n for 2×–6× factors) — trained
+with stride-4 ground-truth samples, not just t=0.5. Plus **TinySR**: a 26 KB
+residual 2× upscaler (+1.1 dB over bilinear) applied to interpolated frames.
 
-## Архитектура
+## The extension (`extension/`)
+
+Chrome MV3, works on YouTube and most video sites (`all_frames` covers
+cross-origin iframe players):
+
+- 2×–6× factor, or **auto** — an AIMD controller driven by a leaky-bucket drop
+  detector picks the highest factor the GPU and compositor actually sustain
+- anime mode: GPU dedup detects frames drawn "on twos" and doubles the budget;
+  scene-cut detection avoids interpolating across cuts
+- quality presets 360p → 1080p inserts, hot-swapped without restart
+- own glass player UI (the canvas covers native controls): play/seek/volume,
+  fullscreen, click-to-pause, compare slider (original | interpolated),
+  optional HDR via inverse tone mapping, debug telemetry HUD
+- just-in-time GPU scheduling: each mid is submitted one compute-time before
+  its display slot; presentation delay is ~2 frame-times, not a whole batch
+
+**Install:** grab `framecast-extension.zip` from Releases (or run
+`tools/build_extension.ps1` with weights in `assets/`), then
+`chrome://extensions` → Developer mode → Load unpacked.
+
+## Repo layout
 
 ```
-┌─ browser extension ──────────────────────────────┐
-│  <video> → WebCodecs decode → raw frames         │
-│            → InterModule (Rust/wasm, WebGPU)     │
-│              RIFE-Lite forward + anime-mode pass │
-│            → Canvas paint (замена video-рендера)  │
-└──────────────────────────────────────────────────┘
-         ↑ одна кодовая база с нативом
-┌─ native CLI (offline) ──────────────────────────┐
-│  mp4 → ffmpeg decode → RIFE forward → encode     │
-│  валидация корректности и замер fps ДО браузера   │
-└──────────────────────────────────────────────────┘
+web/rt/rt.js         WGSL inference runtime (the heart of the project)
+web/rt/sr.js         TinySR 2x upscaler kernels
+web/player.html      standalone real-time player demo (+ worker)
+web/rt_test.html     bit-exactness harness vs ONNX reference
+extension/           Chrome extension (content.js = full pipeline)
+crates/rife-wgpu     same kernels on native wgpu (Rust)
+src/, csrc/          native TensorRT path (engines, video pipeline)
+tools/               training (distill/SR), export, benchmarks, packaging
+docs/                measurements and phase notes
 ```
 
-## Roadmap
+## Training your own weights
 
-1. **CPU offline** — корректный 2x @ 720p, замер fps. *(текущий этап)*
-   - Полный forward-pass RIFE-Lite на candle ✅
-   - mp4-харнес (ffmpeg decode → 2x → encode) *(в работе)*
-   - Валидация против `inference_img.py` paper-RIFE_m
-2. **wasm32 + wasm-pack** — тот же код, что и натив, собирается под wasm.
-3. **candle wgpu backend** — цель: стабильный 60 fps на 2x/720p.
-4. **Браузерное расширение** — WebCodecs decode → lib interpolate → Canvas paint.
-5. **Anime-mode** — global-motion-only интерполяция, статика нетронута.
+`tools/train_student.py` distills from the RIFE-lite teacher (`--slim C` for
+thin channels, `--arbitrary-t` to keep timestep conditioning — without it any
+finetune collapses t≠0.5). `tools/train_sr.py` trains TinySR.
+`tools/export_rt_weights.py` / `export_sr_weights.py` produce the `.bin/.json`
+blobs the runtime loads. Frames are extracted with `tools/extract_frames.py`
+from any movies you have locally.
 
-Принцип roadmap: **сначала «трудная» ML-часть отдельно от «простой» браузерной
-обёртки**. CPU-оффлайн отлаживать в разы проще, чем сразу лезть в WebCodecs/wgpu.
+## Known limitations
 
-## Стек
+- **Chrome only** (WebGPU + shader-f16; the UI also uses base-select).
+- **DRM sites (Netflix, Crunchyroll/EME) cannot work** — the browser hands us
+  black frames by design. YouTube and plain `<video>`/MSE sites are fine.
+- SDR sources only get *simulated* HDR (inverse tone mapping, RTX-Video-HDR
+  style) — the browser never exposes true HDR video data.
+- Interpolation is honest about impossible cases: 5 fps sources have too little
+  information between frames; artifacts on fast motion are expected there.
 
-| Слой | Технология |
-|---|---|
-| ML inference | Rust + [candle](https://github.com/huggingface/candle) 0.11 (далеко — wgpu backend) |
-| Модель | RIFE-Lite / RIFEm (`hzwer/ECCV2022-RIFE`, `model/IFNet_m.py`), fp32 → fp16 |
-| Offline decode/encode | ffmpeg subprocess |
-| Browser decode | WebCodecs API |
-| Browser GPU | WebGPU (через candle `wgpu` feature) |
-| Browser render | Canvas / WebGL compositor |
-| wasm-экспорт | wasm-bindgen + wasm-pack |
+## License
 
-## Что уже работает
-
-- Полный порт `IFNet_m` на candle: IFBlock, Contextnet, Unet, backward warp.
-  Воспроизведение `grid_sample(align_corners=True, border)` вручную через `gather`
-  (в candle 0.11 нет `grid_sample`).
-- `cargo check` / `cargo clippy -D warnings` / `cargo test` / `cargo build --release` — зелёные.
-- CLI `rife-interpolate` (пара PNG → интерполированный PNG) + `rife-smoke` (загрузка весов, один forward).
-- Конвертер весов `scripts/convert_weights.py` (`flownet.pkl` → `rife_lite.safetensors`).
-
-См. `AGENTS.md` для инструкций сборки и `docs/rife_lite_reference.md` для
-PyTorch-референса (ground truth порта).
-
-## Риски (честно)
-
-- **WebGPU ещё не везде стабилен** — в Firefox за флагом, в Safari недавно.
-- **60 fps @ 720p/2x на wgpu** — амбициозно; нативный RIFE-HD это не везде тянет,
-  потому и выбран Lite-вариант. Если не вытяну — целиться в 30→60 для 480p аниме
-  тоже ок для старта.
-- **Anime-режим** — эвристика global-motion detection, потребует тюнинга под
-  разные стили аниме.
-- **Браузерное расширение** — перехват `<video>` + Canvas-composite нетривиален
-  на разных сайтах (DRM-видео вообще не отдаст кадры через WebCodecs).
+Code is MIT (see `LICENSE`). **Model weights** are distributed for
+non-commercial research/personal use — they were trained on open movies
+(Sintel, Tears of Steel, Elephants Dream, Big Buck Bunny) but distilled from a
+RIFE-family teacher and evaluated on research datasets; treat them accordingly.

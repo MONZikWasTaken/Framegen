@@ -1,0 +1,28 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: JS syntax
+        run: |
+          node --check web/rt/rt.js
+          node --check web/rt/sr.js
+          node --check extension/content.js
+          node --check web/player_worker.js
+
+      - name: Python syntax
+        run: python -m py_compile tools/*.py
+
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check (wgpu host only — the TensorRT crate needs CUDA)
+        run: cargo check -p rife-wgpu
