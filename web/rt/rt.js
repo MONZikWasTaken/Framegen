@@ -331,6 +331,50 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
+// t-factored prep: 6 channels, NO timestep — the trunk is t-free, t enters via FiLM
+function wgslPrepQuarterTex6(W, H, f16) {
+  const QW = W / 4, QH = H / 4;
+  const T = f16 ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var tex0: texture_2d<f32>;
+@group(0) @binding(1) var tex1: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read_write> xq: array<${T}>;   // [6,${QH},${QW}]
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${QW} || y >= ${QH}) { return; }
+  let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${QW}.0, ${QH}.0);
+  let c0 = textureSampleLevel(tex0, samp, uv, 0.0).rgb;
+  let c1 = textureSampleLevel(tex1, samp, uv, 0.0).rgb;
+  let o = y * ${QW} + x;
+  let P = ${QH * QW};
+  xq[o] = ${T}(c0.b); xq[P + o] = ${T}(c0.g); xq[2 * P + o] = ${T}(c0.r);
+  xq[3 * P + o] = ${T}(c1.b); xq[4 * P + o] = ${T}(c1.g); xq[5 * P + o] = ${T}(c1.r);
+}`;
+}
+
+// FiLM conditioning: x' = x * (1 + scale[c]) + shift[c]; params are the tiny
+// t-MLP's output, computed on the CPU per timestep (2*C floats)
+function wgslFilm(C, N, f16) {
+  const T = f16 ? 'f16' : 'f32';
+  return /* wgsl */`
+${f16 ? 'enable f16;' : ''}
+@group(0) @binding(0) var<storage, read> src: array<${T}>;   // [C,N] trunk features
+@group(0) @binding(1) var<storage, read> prm: array<f32>;    // [2C] scale, shift
+@group(0) @binding(2) var<storage, read_write> dst: array<${T}>;
+
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = i32(gid.x);
+  if (i >= ${C * N}) { return; }
+  let c = i / ${N};
+  dst[i] = ${T}(f32(src[i]) * (1.0 + prm[c]) + prm[${C} + c]);
+}`;
+}
+
 // flowout variant writing straight into a storage texture (GPU-resident presentation:
 // the mid never leaves the GPU). rgba8unorm store rounds instead of truncating — ±1 LSB
 // vs the buffer path, invisible; the correctness harness keeps using the buffer path.
@@ -494,6 +538,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   const C1 = weightsManifest['block0.conv0.0.0.weight'].shape[0]; // conv0a out (120 full / 60 slim)
   const C2 = weightsManifest['block0.conv0.1.0.weight'].shape[0]; // main width (240 full / 120 slim)
   if (C2 % 4) throw new Error('rt: main width must be /4');
+  // t-factored graph: trunk (conv0 + 6 convblocks) is timestep-free and runs once
+  // per pair; FiLM(t) + convblocks 6,7 + lastconv run per mid. Detected by the
+  // film MLP in the manifest; input prep is 6ch (no t channel).
+  const tfact = 'film.2.weight' in weightsManifest;
+  const CI0 = weightsManifest['block0.conv0.0.0.weight'].shape[1]; // 7 classic, 6 tfact
+  if (tfact && (!textureInput || !textureOutput)) {
+    throw new Error('rt: tfact weights need texture input/output mode');
+  }
   const Z0A = C1 % 4 === 0 ? C1 / 4 : C1; // conv0a kernel packs 4 channels only when C1 is /4
 
   const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
@@ -537,7 +589,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   const rgba0 = textureInput ? null : buf(w * h);
   const rgba1 = textureInput ? null : buf(w * h);
   const imgs = buf(6 * w * h);
-  const xq = abuf(7 * QH * QW);
+  const xq = abuf(CI0 * QH * QW);
   const f8 = abuf(C1 * H8 * W8);
   const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
   const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
@@ -557,8 +609,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
                              addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
     : null;
   const pPrepFull = pipe(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h));
-  const pPrepQ = pipe(textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16));
-  const pConv0a = pipe(wgslConv(7, C1, QW, QH, W8, H8, 2, false, useF16));
+  const pPrepQ = pipe(tfact ? wgslPrepQuarterTex6(w, h, useF16)
+    : (textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16)));
+  const pConv0a = pipe(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16));
   const pConv0b = pipe(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16));
   const pConvB = useF16
     ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, false))
@@ -595,14 +648,44 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
         full: device.createBindGroup({ layout: pPrepFull.getBindGroupLayout(0), entries: [
           { binding: 0, resource: va }, { binding: 1, resource: vb },
           { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: imgs } }] }),
-        q: tbufs.map(tb => device.createBindGroup({ layout: pPrepQ.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: va }, { binding: 1, resource: vb },
-          { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: xq } },
-          { binding: 4, resource: { buffer: tb } }] })),
+        q: tfact
+          ? [device.createBindGroup({ layout: pPrepQ.getBindGroupLayout(0), entries: [
+              { binding: 0, resource: va }, { binding: 1, resource: vb },
+              { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: xq } }] })]
+          : tbufs.map(tb => device.createBindGroup({ layout: pPrepQ.getBindGroupLayout(0), entries: [
+              { binding: 0, resource: va }, { binding: 1, resource: vb },
+              { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: xq } },
+              { binding: 4, resource: { buffer: tb } }] })),
       });
       if (texBgCache.size > 12) texBgCache.clear(); // texture set changed wholesale
     }
     return texBgCache.get(key);
+  }
+
+  // tfact-only state: trunk feature buffer + FiLM params (tiny t-MLP runs in JS)
+  const hbuf = tfact ? bufBytes(C2 * H16 * W16 * (useF16 ? 2 : 4)) : null;
+  const filmBuf = tfact ? buf(2 * C2) : null;
+  const pFilm = tfact ? pipe(wgslFilm(C2, H16 * W16, useF16)) : null;
+  let bgFilm = null, filmW = null;
+  if (tfact) {
+    bgFilm = bg(pFilm, [hbuf, filmBuf, f16a]);
+    const f32 = (name) => {
+      const m = weightsManifest[name];
+      return new Float32Array(weightsBin, m.offset * 4, m.shape.reduce((a, b) => a * b, 1));
+    };
+    filmW = { w0: f32('film.0.weight'), b0: f32('film.0.bias'),
+              w2: f32('film.2.weight'), b2: f32('film.2.bias') };
+  }
+  function filmParams(t) {
+    const HN = filmW.b0.length, out = new Float32Array(2 * C2), h = new Float32Array(HN);
+    for (let j = 0; j < HN; j++) h[j] = Math.max(0, filmW.w0[j] * t + filmW.b0[j]);
+    for (let k = 0; k < 2 * C2; k++) {
+      let s = filmW.b2[k];
+      const row = k * HN;
+      for (let j = 0; j < HN; j++) s += filmW.w2[row + j] * h[j];
+      out[k] = s;
+    }
+    return out;
   }
   const bgConv0a = bg(pConv0a, [xq, convW('block0.conv0.0.0.weight'), wbuf['block0.conv0.0.0.bias'], wbuf['block0.conv0.0.1.weight'], f8]);
   const bgConv0b = bg(pConv0b, [f8, convW('block0.conv0.1.0.weight'), wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16a]);
@@ -665,6 +748,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   }
 
   async function run(rgbaA, rgbaB, t = 0.5) {
+    if (tfact) throw new Error('rt: tfact weights have no buffer-mode run()');
     device.queue.writeBuffer(tbuf, 0, new Float32Array([t]));
     device.queue.writeBuffer(rgba0, 0, rgbaA.buffer, rgbaA.byteOffset, w * h * 4);
     device.queue.writeBuffer(rgba1, 0, rgbaB.buffer, rgbaB.byteOffset, w * h * 4);
@@ -696,6 +780,11 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   // Buffer mode: a/b are RGBA arrays. Texture mode: a/b are GPUTextures (zero CPU pixels).
   // With textureOutput, outTexs[i] receives mid i and NOTHING is read back — returns null.
   async function runMulti(a, b, ts, outTexs) {
+    if (tfact) { // factored graph: trunk once, head per t
+      prepPair(a, b);
+      for (let i = 0; i < ts.length; i++) runT(ts[i], outTexs[i]);
+      return null;
+    }
     if (ts.length > MAXT) throw new Error('too many timesteps');
     for (let i = 0; i < ts.length; i++) {
       device.queue.writeBuffer(tbufs[i], 0, new Float32Array([ts[i]]));
@@ -754,17 +843,48 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     if (!textureInput) throw new Error('prepPair: texture-input mode only');
     curPrep = texPrepBgs(a, b);
     const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
-    pass.end();
+    if (tfact) {
+      // the WHOLE t-free trunk runs here, once per pair
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
+      pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
+      pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
+      pass.end();
+      enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes); // feat0 residual for the head
+      const pass2 = enc.beginComputePass();
+      for (let i = 0; i < 6; i++) {
+        pass2.setPipeline(bgB[i].p); pass2.setBindGroup(0, bgB[i].g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      }
+      pass2.end();
+      enc.copyBufferToBuffer(f16a, 0, hbuf, 0, actBytes); // trunk features, reused per t
+    } else {
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.end();
+    }
     device.queue.submit([enc.finish()]);
   }
   function runT(t, outTex) {
     if (!curPrep) throw new Error('runT before prepPair');
     if (!textureOutput) throw new Error('runT: texture-output mode only');
+    const enc = device.createCommandEncoder();
+    if (tfact) {
+      // per-mid: FiLM(t) + convblocks 6,7 (+feat0 residual) + deconv + flow
+      device.queue.writeBuffer(filmBuf, 0, filmParams(t));
+      const pass = enc.beginComputePass();
+      pass.setPipeline(pFilm); pass.setBindGroup(0, bgFilm);
+      pass.dispatchWorkgroups(Math.ceil((C2 * H16 * W16) / 256));
+      pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8), 5);
+      pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex)); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.end();
+      device.queue.submit([enc.finish()]);
+      return;
+    }
     // single tbuf is safe: writeBuffer and submits are queue-ordered
     device.queue.writeBuffer(tbufs[0], 0, new Float32Array([t]));
-    const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
     pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
