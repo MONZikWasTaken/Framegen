@@ -281,11 +281,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     blitBg.clear(); // bind groups belong to the old pipeline layout
     sys.hdrOn = hdr;
   }
-  function positionOverlay() {
-    if (overlay.parentElement !== videoEl.parentElement) {
-      videoEl.parentElement.insertBefore(overlay, videoEl.nextSibling);
-    }
+  // fullscreen renders in the browser's TOP LAYER: anything not inside the
+  // fullscreen element is invisible there. Move the whole UI in (and back out) —
+  // fired from the fullscreenchange event too, so it works with the SITE's own
+  // fullscreen button and while FC is off.
+  function reparentUI() {
     const uiHost = document.fullscreenElement || document.body;
+    if (uiHost.tagName === 'VIDEO') return; // bare-video fullscreen: nothing can overlay it
     if (btn && btn.parentElement !== uiHost) {
       uiHost.appendChild(btn); uiHost.appendChild(gear); uiHost.appendChild(hud); uiHost.appendChild(panel);
       if (bar) uiHost.appendChild(bar);
@@ -294,6 +296,27 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (flashEl) uiHost.appendChild(flashEl);
       if (wm) uiHost.appendChild(wm);
     }
+  }
+  document.addEventListener('fullscreenchange', () => {
+    reparentUI();
+    sbLeft = -1; // force button re-place at the new geometry
+    // coords from the OLD geometry are garbage for a moment: hide, let the page
+    // reflow (two frames), then re-place against the fresh video rect
+    if (btn) { btn.style.display = 'none'; gear.style.display = 'none'; }
+    uiScan = 0; // the biggest-video answer may change across fullscreen too
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const v = running ? videoEl : uiVideo;
+      if (v && btn && performance.now() < revealUntil) {
+        placeSideButtons(v.getBoundingClientRect());
+      }
+    }));
+  });
+
+  function positionOverlay() {
+    if (overlay.parentElement !== videoEl.parentElement) {
+      videoEl.parentElement.insertBefore(overlay, videoEl.nextSibling);
+    }
+    reparentUI();
     const r = videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
     // self-calibrating placement: measure where the overlay actually landed and nudge
@@ -1281,7 +1304,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.12';
+  const VERSION = '0.4.14';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
