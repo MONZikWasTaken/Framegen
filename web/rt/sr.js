@@ -163,13 +163,18 @@ export async function createSR(device, { weightsBin, weightsManifest, channels =
   }
 
   const gx = (n) => Math.ceil(n / WG);
-  const bgCache = new Map();
+  // keyed by texture OBJECT, not label: the host rebuilds its texture pools on
+  // settings changes reusing the same labels - a label-keyed cache then binds
+  // views of DESTROYED textures and every SR'd frame comes out corrupted until
+  // page reload. WeakMaps also let dead textures drop their bind groups with GC.
+  const bgCache = new WeakMap();
 
   // srcTex (w x h) -> dstTex (2w x 2h, rgba8unorm STORAGE_BINDING)
   function process(srcTex, dstTex, w, h) {
     const S = stateFor(w, h);
-    const ck = srcTex.label + '>' + dstTex.label;
-    let bgs = bgCache.get(ck);
+    let perSrc = bgCache.get(srcTex);
+    if (!perSrc) { perSrc = new WeakMap(); bgCache.set(srcTex, perSrc); }
+    let bgs = perSrc.get(dstTex);
     if (!bgs) {
       const srcView = srcTex.createView();
       bgs = {
@@ -202,8 +207,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels =
           { binding: 5, resource: dstTex.createView() },
           { binding: 6, resource: { buffer: S.dims } }] }),
       };
-      bgCache.set(ck, bgs);
-      if (bgCache.size > 48) bgCache.clear();
+      perSrc.set(dstTex, bgs);
     }
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();

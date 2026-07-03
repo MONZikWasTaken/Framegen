@@ -10,7 +10,7 @@
   const DELAY_MS = 60;
   // runtime tiles are 16x16 - model dims must be /16 (1088, not 1080; the ~0.7%
   // vertical stretch at present time is invisible)
-  const SIZES = { 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
+  const SIZES = { 288: [512, 288], 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
@@ -154,11 +154,56 @@
     if (texW === w && texH === h && frameTex.length === 12) return;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
+    queue = []; curJob = null; // queued entries reference the destroyed pool
     for (let i = 0; i < 12; i++) {
       frameTex.push(device.createTexture({ label: 'fcfr' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
     texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
+  }
+
+  // pool dimensions for a source: fit inside FHD, keep the aspect ratio
+  function poolDims() {
+    const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
+    const s = Math.min(1, 1920 / fw, 1080 / fh);
+    return [Math.round(fw * s), Math.round(fh * s)];
+  }
+  // copyExternalImageToTexture copies 1:1 and NEVER scales - for >FHD sources a
+  // plain copy grabs the top-left FHD crop of the frame. Capture the full frame
+  // into a scratch texture and downscale-blit it into the pool instead.
+  let capTex = null, downPipe = null;
+  function captureFrame(dst, vw, vh) {
+    const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
+    if (fw <= 1920 && fh <= 1080) {
+      device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: dst }, [vw, vh]);
+      return;
+    }
+    if (!capTex || capTex.width !== fw || capTex.height !== fh) {
+      if (capTex) capTex.destroy();
+      capTex = device.createTexture({ label: 'fccap', size: [fw, fh], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+          | GPUTextureUsage.RENDER_ATTACHMENT });
+    }
+    device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: capTex }, [fw, fh]);
+    if (!downPipe) {
+      const mod = device.createShaderModule({ code: BLIT_VS + `
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  return textureSampleLevel(tex, samp, v.uv, 0.0);
+}` });
+      downPipe = device.createRenderPipeline({ layout: 'auto',
+        vertex: { module: mod, entryPoint: 'vs' },
+        fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });
+    }
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: dst.createView(),
+      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+    pass.setPipeline(downPipe);
+    pass.setBindGroup(0, device.createBindGroup({ layout: downPipe.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: capTex.createView() },
+        { binding: 1, resource: blitSampler }] }));
+    pass.draw(3);
+    pass.end();
+    device.queue.submit([enc.finish()]);
   }
 
   // ---------- dedup / cut (GPU, 8-byte readback) ----------
@@ -423,6 +468,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (!rt && !rtBuilding && now - preloadFailT > 5000) {
         ensureRuntime().catch((err) => { preloadFailT = performance.now(); log('preload', err); });
       }
+    } else if (revealUntil > now + 250) {
+      revealUntil = now + 250; // pointer left the player: fade soon, not in 2s
     }
   }, { passive: true });
 
@@ -437,7 +484,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     btn.style.top = (cy - 42) + 'px';
     gear.style.top = (cy + 4) + 'px';
   }
+  let pageHref = location.href;
   setInterval(() => {
+    // SPA navigation (YouTube next video, etc): the old stream is dead - showing
+    // its frames on the new page is nonsense. Hard-off; the user re-enables.
+    if (location.href !== pageHref) {
+      pageHref = location.href;
+      if (running) stop();
+    }
     if (!btn) return;
     if (panel && panel.style.display === 'block') { revealUntil = performance.now() + 2000; return; }
     if (performance.now() > revealUntil) {
@@ -679,6 +733,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function pump(now) {
     if (!running) return;
+    // SPA navigation can replace the <video> element entirely: rVFC dies with it
+    // and the canvas would keep showing the dead stream's frames forever
+    if (videoEl && !videoEl.isConnected) { stop(); return; }
+    try { pumpBody(now); } catch (e) { log('pump', e); }
+    requestAnimationFrame(pump);
+  }
+  function pumpBody(now) {
     driveJob(now); // just-in-time mid submission
     if (lastPumpT) {
       const d = now - lastPumpT;
@@ -795,7 +856,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
-    requestAnimationFrame(pump);
   }
 
   // ---------- interpolation (lazy per-mid submission) ----------
@@ -850,8 +910,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const expected = schedT + intervalMs;
       schedT = (!schedT || Math.abs(arrival - expected) > 80)
         ? arrival : expected + 0.08 * (arrival - expected);
-      const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
-      if (!vw || !vh) return;
+      if (!videoEl.videoWidth || !videoEl.videoHeight) return;
+      const [vw, vh] = poolDims();
       ensureFrameTextures(vw, vh);
       // note on importExternalTexture (evaluated, rejected): interpolation needs the
       // PREVIOUS frame too, and external textures expire with the video frame - the
@@ -866,7 +926,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       while (guard-- > 0 && busyTex.has(frameTex[frameIdx])) frameIdx = (frameIdx + 1) % frameTex.length;
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
-      device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: tex }, [vw, vh]);
+      captureFrame(tex, vw, vh);
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // Slewed ±2ms/frame so pacing never jumps.
@@ -979,8 +1039,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     log('video reloaded with CORS - pixels readable now');
   }
 
+  function onSrcChange() {
+    queue = []; curJob = null; lastTex = null; schedT = 0; lastUniqueTs = 0;
+    if (overlay) overlay.style.opacity = '0'; // present() reveals on the next real frame
+  }
+  let srcWatchEl = null;
   async function start(v) {
     videoEl = v;
+    if (srcWatchEl !== v) {
+      if (srcWatchEl) srcWatchEl.removeEventListener('emptied', onSrcChange);
+      srcWatchEl = v;
+      v.addEventListener('emptied', onSrcChange);
+    }
     await ensureRuntime();
     ensureOverlay();
     positionOverlay();
@@ -991,13 +1061,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.pointerEvents = videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
-    const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
+    const [vw, vh] = videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
     if (vw && vh) {
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       try {
-        device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
+        captureFrame(seed, vw, vh);
         present(seed, false);
       } catch (e) {
         if (e.name === 'SecurityError' || String(e).includes('cross-origin')) {
@@ -1007,7 +1077,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           // seed is cosmetic (seamless fade-in): if the decoder still has no frame,
           // skip it - the rVFC pipeline below presents the first real frame anyway
           try {
-            device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
+            captureFrame(seed, vw, vh);
             present(seed, false);
           } catch (e2) { log('seed skipped', e2.name); }
         } else if (e.name === 'OperationError') {
@@ -1122,7 +1192,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
       <label class="fc-row"><span>Quality<small>GPU load</small></span>
         <select class="fc-sel" id="fcRes">
-          <option value="360">eco</option>
+          <option value="288">super eco</option><option value="360">eco</option>
           <option value="480">balanced</option>
           <option value="720">max</option>
           <option value="1080">ultra</option>
@@ -1229,8 +1299,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       .fc-title{font:600 14px system-ui;color:#fff;display:flex;align-items:center;gap:7px;margin-bottom:8px}
       .fc-title::before{content:'';width:8px;height:8px;border-radius:50%;background:#19c37d}
       .fc-row{display:flex;justify-content:space-between;align-items:center;gap:18px;
-        padding:7px 0;cursor:pointer;font:12px system-ui;color:#e8e8e8}
-      .fc-row small{display:block;color:#8a8f98;font-size:10px;margin-top:1px}
+        padding:7px 0;margin:0;border:0;width:auto;cursor:pointer;
+        font:12px/1.4 system-ui;color:#e8e8e8;text-align:left}
+      .fc-row>span{display:block;flex:1 1 auto;min-width:0;margin:0;padding:0;
+        font:12px/1.4 system-ui;color:#e8e8e8;text-align:left;
+        letter-spacing:normal;text-transform:none;white-space:normal}
+      .fc-row small{display:block;color:#8a8f98;font:400 10px/1.3 system-ui;
+        margin:1px 0 0;padding:0;letter-spacing:normal;text-transform:none}
       .fc-sw{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:20px;
         background:#3d4148;position:relative;cursor:pointer;outline:none;margin:0;
         transition:background .2s;flex:none}
@@ -1304,7 +1379,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.5.0';
+  const VERSION = '0.5.3';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
