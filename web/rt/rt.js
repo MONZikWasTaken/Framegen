@@ -191,8 +191,9 @@ ${stride === 1 ? `
 // register-blocked conv3x3 s1 (f16 storage): each thread computes a 2x2 pixel patch x
 // 4 output channels (16 accumulators) - every shared read now feeds 4 FMAs instead of ~1.
 // Workgroup = 8x8 threads = 16x16 output tile; input tiles 18x18 per ci staged per slab.
-export function wgslConvRB(CI, CO, IW, IH, OW, OH, residual) {
-  const COC = 4, SLAB = 20;
+export function wgslConvRB(CI, CO, IW, IH, OW, OH, residual, tune) {
+  // tune: {coc, slab} - shared memory must fit slab*324*2 + coc*slab*9*2 <= 16384
+  const COC = (tune && tune.coc) || 4, SLAB = (tune && tune.slab) || 20;
   const slabW = COC * SLAB * 9;      // f16 weights in shared
   const slabT = SLAB * 324;          // 18x18 tiles
   return /* wgsl */`
@@ -673,7 +674,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-export async function createRT(device, { w, h, weightsBin, weightsManifest,
+export async function createRT(device, { w, h, weightsBin, weightsManifest, convTune,
                                           textureInput = false, textureOutput = false,
                                           staticGuard = false }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
@@ -760,10 +761,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   const pConv0a = pipe(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16));
   const pConv0b = pipe(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16));
   const pConvB = useF16
-    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, false))
+    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, false, convTune))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, false, false));
   const pConvBR = useF16
-    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true))
+    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true, convTune))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h));
@@ -880,6 +881,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   // register-blocked convblock kernel covers 16x16 output per workgroup
   const cbX = useF16 ? Math.ceil(W16 / 16) : gx(W16);
   const cbY = useF16 ? Math.ceil(H16 / 16) : gx(H16);
+  const cbZ = useF16 ? C2 / ((convTune && convTune.coc) || 4) : C2 / 4;
 
   // per-stage GPU times via timestamp queries (needs 'timestamp-query' on the device)
   async function profile(rgbaA, rgbaB) {
@@ -889,7 +891,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
       ['prepQ', pPrepQ, bgPrepQ, [gx(QW), gx(QH), 1]],
       ['conv0a', pConv0a, bgConv0a, [gx(W8), gx(H8), Z0A]],
       ['conv0b', pConv0b, bgConv0b, [gx(W16), gx(H16), C2 / 4]],
-      ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, C2 / 4]]),
+      ...bgB.map(({ p, g }, i) => [`convB${i}`, p, g, [cbX, cbY, cbZ]]),
       ['deconv', pDeconv, bgDeconv, [gx(W8), gx(H8), 5]],
       ['flow', pFlow, bgFlow, [gx(w), gx(h), 1]],
     ];
@@ -934,7 +936,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
     const pass2 = enc.beginComputePass();
     for (const { p, g } of bgB) {
-      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
     }
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
     pass2.setPipeline(pFlow); pass2.setBindGroup(0, bgFlow); pass2.dispatchWorkgroups(gx(w), gx(h));
@@ -982,7 +984,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
       enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
       const pass2 = enc.beginComputePass();
       for (const { p, g } of bgB) {
-        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
       }
       pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
       pass2.setPipeline(pFlow);
@@ -1025,7 +1027,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
       enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes); // feat0 residual for the head
       const pass2 = enc.beginComputePass();
       for (let i = 0; i < 6; i++) {
-        pass2.setPipeline(bgB[i].p); pass2.setBindGroup(0, bgB[i].g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+        pass2.setPipeline(bgB[i].p); pass2.setBindGroup(0, bgB[i].g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
       }
       pass2.end();
       enc.copyBufferToBuffer(f16a, 0, hbuf, 0, actBytes); // trunk features, reused per t
@@ -1046,8 +1048,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
       const pass = enc.beginComputePass();
       pass.setPipeline(pFilm); pass.setBindGroup(0, bgFilm);
       pass.dispatchWorkgroups(Math.ceil((C2 * H16 * W16) / 256));
-      pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
-      pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
+      pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
       pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8), 5);
       if (refi) { // quarter-res refine chain; the flowout below folds the residual in
         pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
@@ -1071,7 +1073,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     enc.copyBufferToBuffer(f16a, 0, f16r, 0, actBytes);
     const pass2 = enc.beginComputePass();
     for (const { p, g } of bgB) {
-      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, C2 / 4);
+      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
     }
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
     pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex)); pass2.dispatchWorkgroups(gx(w), gx(h));
@@ -1080,4 +1082,43 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   }
 
   return { run, runMulti, prepPair, runT, profile, w, h };
+}
+
+
+// ---- one-shot conv autotune: bench wgslConvRB variants on this device ----
+// Returns the fastest {coc, slab, ms}. ~200-400ms of GPU time; call it once per
+// (adapter, model width, resolution) and persist the answer - relative ranking
+// is what matters, so light background load is tolerable.
+export async function tuneConvRB(device, { ci, co, w16, h16 }) {
+  const variants = [{ coc: 4, slab: 20 }, { coc: 8, slab: 20 }, { coc: 8, slab: 12 }, { coc: 4, slab: 12 }]
+    .filter(v => co % v.coc === 0 && (v.slab * 324 + v.coc * v.slab * 9) * 2 <= 16384);
+  const buf = (bytes) => device.createBuffer({ size: Math.ceil(bytes / 4) * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const src = buf(ci * w16 * h16 * 2), dst = buf(co * w16 * h16 * 2);
+  const wgt = buf(co * ci * 9 * 2), bias = buf(co * 4), alpha = buf(co * 4);
+  let best = null;
+  for (const v of variants) {
+    const p = device.createComputePipeline({ layout: 'auto', compute: {
+      module: device.createShaderModule({ code: wgslConvRB(ci, co, w16, h16, w16, h16, false, v) }),
+      entryPoint: 'main' } });
+    const bg = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: { buffer: src } }, { binding: 1, resource: { buffer: wgt } },
+      { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
+      { binding: 4, resource: { buffer: dst } }] });
+    const run = (k) => {
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(p); pass.setBindGroup(0, bg);
+      for (let i = 0; i < k; i++) pass.dispatchWorkgroups(Math.ceil(w16 / 16), Math.ceil(h16 / 16), co / v.coc);
+      pass.end();
+      device.queue.submit([enc.finish()]);
+    };
+    run(3); await device.queue.onSubmittedWorkDone(); // warm (incl pipeline compile)
+    const t0 = performance.now();
+    run(30); await device.queue.onSubmittedWorkDone();
+    const ms = (performance.now() - t0) / 30;
+    if (!best || ms < best.ms) best = { ...v, ms };
+  }
+  [src, dst, wgt, bias, alpha].forEach(b => b.destroy());
+  return best;
 }

@@ -118,6 +118,29 @@
     rtBuilding = buildRuntime();
     try { await rtBuilding; } finally { rtBuilding = null; }
   }
+  async function loadConvTune() {
+    try {
+      const key = 'fcTune|' + sys.gpu + '|' + cfg.res;
+      const st = await chrome.storage.local.get('fcTune');
+      return (st.fcTune && st.fcTune[key]) || null;
+    } catch { return null; }
+  }
+  async function calibrateConvTune(rtMod) {
+    // one-shot per (GPU, quality): bench kernel variants on the real conv shape,
+    // persist the winner - picked up on the next runtime build
+    try {
+      const key = 'fcTune|' + sys.gpu + '|' + cfg.res;
+      const st = await chrome.storage.local.get('fcTune');
+      const all = st.fcTune || {};
+      if (all[key]) return;
+      const [mw, mh] = SIZES[cfg.res];
+      const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16 });
+      all[key] = { coc: best.coc, slab: best.slab };
+      await chrome.storage.local.set({ fcTune: all });
+      log('conv tune', cfg.res, JSON.stringify(best));
+    } catch (e) { log('tune skipped', e); }
+  }
+  let rtC2 = 0;
   async function buildRuntime() {
     if (!device) {
       if (!navigator.gpu) throw new Error('WebGPU unavailable');
@@ -134,11 +157,14 @@
     const [bin, man] = await Promise.all([
       fetch(url('assets/rt_tfact2.bin')).then(r => r.arrayBuffer()),
       fetch(url('assets/rt_tfact2.json')).then(r => r.json())]);
-    const { createRT } = await import(url('rt/rt.js'));
+    const rtMod = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
-    rt = await createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
-      staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man });
+    rtC2 = man['block0.conv0.1.0.weight'].shape[0];
+    const convTune = await loadConvTune();
+    rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
+      staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
     rtRes = cfg.res;
+    if (!convTune) setTimeout(() => calibrateConvTune(rtMod), 4000);
     midTexs.forEach(t => t.destroy());
     midTexs = [];
     for (let i = 0; i < 24; i++) {
