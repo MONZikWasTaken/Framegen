@@ -11,6 +11,9 @@
 
 ---
 
+> Path note: after this report was written the native crate moved - src/, csrc/ and
+> tests/ now live under crates/framecast-native/. File names below are otherwise accurate.
+
 ## 1. Chronology
 
 ### Stage 1: Port RIFE-Lite (RIFEm) to Rust/candle

@@ -81,15 +81,15 @@ extracted `framecast-extension` folder.
 ## Repo layout
 
 ```
-web/rt/rt.js         WGSL inference runtime (the heart of the project)
-web/rt/sr.js         TinySR 2x upscaler kernels
-web/player.html      standalone real-time player demo (+ worker)
-web/rt_test.html     parity harness vs the ONNX reference (+built-in bench)
-extension/           Chrome extension (content.js = full pipeline)
-crates/rife-wgpu     same kernels on native wgpu (Rust)
-src/, csrc/          native TensorRT path (engines, video pipeline)
-tools/               training (distill/SR), export, benchmarks, packaging
-docs/                measurements and phase notes
+extension/               Chrome extension (content.js = full pipeline)
+web/rt/rt.js             WGSL inference runtime (the heart of the project)
+web/rt/sr.js             TinySR 2x upscaler kernels
+web/player.html          standalone real-time player demo (+ worker)
+web/rt_test.html         parity harness vs the ONNX reference (+built-in bench)
+crates/rife-wgpu         same kernels on native wgpu (Rust)
+crates/framecast-native  native TensorRT path + candle correctness oracle
+tools/                   training (distill/SR), export, benchmarks, packaging
+docs/                    measurements and phase notes
 ```
 
 ## Training your own weights

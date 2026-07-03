@@ -16,32 +16,32 @@ cargo check                                  # typecheck (default = CPU/candle)
 cargo build --release                        # candle CLIs
 cargo clippy --all-targets -- -D warnings    # lint
 cargo test                                   # unit tests
-cargo build --release --features trt --bin rife-trt   # native TensorRT (needs MSVC + CUDA)
+cargo build --release -p framecast --features "bin trt" --bin rife-trt   # native TensorRT (needs MSVC + CUDA)
 ```
 
 ## Layout
 
 ```
+extension/          Chrome MV3 extension (content.js = full pipeline)
+web/                WGSL runtime (rt/), player demo, parity harness (rt_test.html)
 crates/rife-core/   Frame, FrameInterpolator trait, prepost (to_input/from_output) - no candle/cuda deps
-src/lib.rs          RifeCandle (interpolate_scaled tensor API) + impl FrameInterpolator
-src/model.rs        IFNet_m reimplementation on candle
-src/warp.rs         backward warp (fused CUDA CustomOp2 + CPU fallback)
-src/trt.rs          RifeTrt - native TensorRT FFI + impl FrameInterpolator (feature `trt`)
-src/imgutil.rs      candle<->prepost glue: image/tensor conversion (feature `bin`)
-src/io/ffmpeg.rs    shared ffmpeg reader + decoder/encoder spawn
-src/io/video.rs     candle ffmpeg pipeline
-src/io/video_trt.rs native TensorRT ffmpeg pipeline (feature `trt`)
-src/bin/*           CLIs: rife-interpolate, rife-smoke, rife-profile, rife-trt, rife-trt-bench
-tests/parity.rs     gated candle-vs-trt agreement test (--features trt -- --ignored)
-csrc/trt_shim.cpp   extern "C" shim over nvinfer 10
-build.rs            compiles the shim when feature `trt` is on
-third_party/tensorrt/  public TRT headers + generated nvinfer_10.lib (SDK bootstrap)
+crates/rife-wgpu/   the WGSL kernels hosted on native wgpu (Vulkan/DX12/Metal)
+crates/framecast-native/  candle oracle + native TensorRT backend (package name: framecast)
+  src/lib.rs        RifeCandle (interpolate_scaled tensor API) + impl FrameInterpolator
+  src/model.rs      IFNet_m reimplementation on candle
+  src/warp.rs       backward warp (fused CUDA CustomOp2 + CPU fallback)
+  src/trt.rs        RifeTrt - native TensorRT FFI + impl FrameInterpolator (feature `trt`)
+  src/imgutil.rs    candle<->prepost glue: image/tensor conversion (feature `bin`)
+  src/io/           shared ffmpeg reader; candle and TRT video pipelines
+  src/bin/*         CLIs: rife-interpolate, rife-smoke, rife-profile, rife-trt, rife-trt-bench
+  tests/parity.rs   gated candle-vs-trt agreement test (--features trt -- --ignored)
+  csrc/trt_shim.cpp extern "C" shim over nvinfer 10 (built by build.rs when `trt` is on)
+third_party/tensorrt/  public TRT headers + generated nvinfer_10.lib (SDK bootstrap, gitignored)
 models/             rife_lite.safetensors + manifest (source-of-truth weights)
 assets/  (gitignored)  engines, onnx, caches - large / regenerable
-tools/              python build-time tooling (export, convert, build-engine, bench)
+tools/              training (distill/SR), export, benchmarks, packaging
 demo/               small test fixtures (I0_*.png, test_720p.mp4, parity .rgb refs)
 docs/               rife_lite_reference.md (ground truth), result.md (journal)
-web/                WGSL runtime (rt/), player demo, parity harness (rt_test.html)
 ```
 
 ## Weight conversion (one-time, Python + torch)

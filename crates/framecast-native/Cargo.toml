@@ -1,0 +1,55 @@
+[package]
+name = "framecast"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "RIFE-Lite (RIFEm) frame interpolation - candle reference oracle + native TensorRT backend"
+
+[lib]
+name = "framecast"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rife-interpolate"
+path = "src/bin/interpolate.rs"
+required-features = ["bin"]
+
+[[bin]]
+name = "rife-smoke"
+path = "src/bin/smoke.rs"
+required-features = ["bin"]
+
+[[bin]]
+name = "rife-profile"
+path = "src/bin/profile.rs"
+required-features = ["bin"]
+
+[[bin]]
+name = "rife-trt-bench"
+path = "src/bin/trt_bench.rs"
+required-features = ["bin", "trt"]
+
+[[bin]]
+name = "rife-trt"
+path = "src/bin/trt_video.rs"
+required-features = ["bin", "trt"]
+
+[features]
+default = ["bin"]
+bin = ["dep:clap", "dep:image"]
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
+cudnn = ["cuda", "candle-core/cudnn", "candle-nn/cuda"]
+# Native in-process TensorRT inference via C++ shim (requires nvinfer_10 + CUDA, MSVC).
+trt = []
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+rife-core = { path = "../rife-core" }
+candle-core = "0.11"
+candle-nn = "0.11"
+anyhow = "1"
+half = "2"
+clap = { version = "4", features = ["derive"], optional = true }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }

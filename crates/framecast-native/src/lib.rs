@@ -143,7 +143,7 @@ mod trait_tests {
     #[ignore] // needs models/rife_lite.safetensors
     fn candle_interpolate_returns_same_size_frame() {
         let dev = Device::Cpu;
-        let rife = RifeCandle::load("models/rife_lite.safetensors", DType::F32, &dev).unwrap();
+        let rife = RifeCandle::load(concat!(env!("CARGO_MANIFEST_DIR"), "/../../models/rife_lite.safetensors"), DType::F32, &dev).unwrap();
         let f0 = Frame { w: 64, h: 64, rgb: vec![128u8; 64 * 64 * 3] };
         let f1 = Frame { w: 64, h: 64, rgb: vec![130u8; 64 * 64 * 3] };
         let out = rife.interpolate(&f0, &f1, 0.5).unwrap();

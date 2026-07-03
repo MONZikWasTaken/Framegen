@@ -8,6 +8,9 @@ use framecast::trt::RifeTrt;
 use framecast::{FrameInterpolator, RifeCandle};
 use rife_core::Frame;
 
+/// Repo root (this crate lives at crates/framecast-native/).
+const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
 /// Decode the first two frames of `demo/test_720p.mp4` as RGB24 at native size.
 /// Real frames are the meaningful oracle input (the ramp of a synthetic pattern
 /// produces sharp discontinuities that fp16 warp exaggerates at isolated pixels).
@@ -16,7 +19,7 @@ fn real_pair() -> (Frame, Frame) {
     let fb = (w * h * 3) as usize;
     let raw = std::process::Command::new("ffmpeg")
         .args([
-            "-v", "error", "-i", "demo/test_720p.mp4",
+            "-v", "error", "-i", &format!("{ROOT}/demo/test_720p.mp4"),
             "-frames:v", "2", "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
         ])
         .output()
@@ -32,9 +35,14 @@ fn real_pair() -> (Frame, Frame) {
 #[ignore]
 fn candle_and_trt_agree() {
     let dev = candle_core::Device::Cpu;
-    let candle =
-        RifeCandle::load("models/rife_lite.safetensors", candle_core::DType::F32, &dev).unwrap();
-    let trt = RifeTrt::load(std::path::Path::new("assets/rife_lite_trt_fp16.engine")).unwrap();
+    let candle = RifeCandle::load(
+        &format!("{ROOT}/models/rife_lite.safetensors"),
+        candle_core::DType::F32,
+        &dev,
+    )
+    .unwrap();
+    let trt =
+        RifeTrt::load(&std::path::Path::new(ROOT).join("assets/rife_lite_trt_fp16.engine")).unwrap();
 
     // Native 720p; both backends pad internally to /32 (736) - exercises the pad path.
     let (f0, f1) = real_pair();
