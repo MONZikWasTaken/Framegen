@@ -70,6 +70,8 @@
   let bar = null, barSeeking = false;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
+  let delayMs = DELAY_MS, dropWin = [];
+  let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '—', f16: false };
 
   const log = (...a) => console.log('[framecast]', ...a);
@@ -106,7 +108,7 @@
     rtRes = cfg.res;
     midTexs.forEach(t => t.destroy());
     midTexs = [];
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < 24; i++) {
       midTexs.push(device.createTexture({ label: 'fcmid' + i, size: [mw, mh],
         format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
@@ -509,13 +511,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function updateWarn(now, vr) {
     ensureWarn();
     const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
-    // fixed factor: over budget. auto: even 2x is being skipped — nothing left to shed
-    const fixedOver = cfg.fg && cfg.factor !== 'auto' && load > 1.08;
+    // fixed factor: over budget OR visibly dropping. auto: even 2x is being skipped
+    const dropRate = fpsWin.length ? (dropWin.length / 2) / fpsWin.length : 0; // drops vs shown, per sec
+    const dropping = cfg.fg && dropRate > 0.12;
+    const fixedOver = cfg.fg && cfg.factor !== 'auto' && (load > 1.02 || dropping);
     const autoOver = cfg.fg && cfg.factor === 'auto' && autoSkipT && now - autoSkipT < 1200;
     if ((fixedOver || autoOver) && !overSince) {
       overSince = now;
       warnEl.textContent = fixedOver
-        ? '⚠ Нагрузка слишком высокая — понизьте множитель или включите «авто»'
+        ? '⚠ Кадры дропаются — понизьте множитель/качество или включите «авто»'
         : '⚠ GPU не успевает даже 2× — поставьте качество «экономное»';
     }
     if (!fixedOver && !autoOver && load < 0.92) overSince = 0;
@@ -530,7 +534,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!running) return;
     if (lastPumpT) {
       const d = now - lastPumpT;
-      if (d > 1 && d < 100) rafMs = rafMs ? rafMs * 0.9 + d * 0.1 : d;
+      // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) —
+      // auto must not re-inflate on every momentary lull
+      if (d > 1 && d < 100) rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
     }
     lastPumpT = now;
     positionOverlay();
@@ -569,10 +575,28 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     queue.sort((a, b) => a.at - b.at);
     let due = -1;
     for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
+    // drop pressure: leaky integrator (tau 300ms) — a burst of drops is visible in
+    // milliseconds instead of averaging out over seconds
+    dropPressure *= Math.exp((lastPressureT - now) / 300);
+    lastPressureT = now;
     if (due >= 0) {
       dropped += due;
+      dropPressure += due;
+      for (let i = 0; i < due; i++) dropWin.push(now);
       present(queue[due].tex, queue[due].mid);
       queue = queue.slice(due + 1);
+    }
+    while (dropWin.length && dropWin[0] < now - 2000) dropWin.shift();
+    // AIMD controller, evaluated EVERY frame: aggressive decrease on pressure,
+    // additive recovery after a long clean stretch
+    if (cfg.factor === 'auto') {
+      if (dropPressure > 1.2 && autoPenalty < 3 && now - penaltyT > 500) {
+        autoPenalty = Math.min(3, autoPenalty + (dropPressure > 3 ? 2 : 1));
+        penaltyT = now;
+        dropPressure = 0; // consumed by the step
+      } else if (autoPenalty > 0 && dropPressure < 0.15 && now - penaltyT > 6000) {
+        autoPenalty--; penaltyT = now;
+      }
     }
     if (now - statsTimer > 400) {
       statsTimer = now;
@@ -581,10 +605,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
         hud.textContent =
           `видео: ${videoEl.videoWidth}x${videoEl.videoHeight} @ ${srcFps.toFixed(1)}fps\n` +
-          `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? ' (авто)' : ' (фикс)'}\n` +
-          `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p · бюджет ${uniqueIntervalMs.toFixed(0)}ms\n` +
+          `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? (autoPenalty ? ` (авто, −${autoPenalty} за дропы)` : ' (авто)') : ' (фикс)'}\n` +
+          `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p · бюджет ${uniqueIntervalMs.toFixed(0)}ms · задержка ${delayMs.toFixed(0)}ms\n` +
           `GPU: ${sys.gpu} · загрузка ~${load.toFixed(0)}%\n` +
-          `shown ${shown} · drop ${dropped} · dups ${dups} · cuts ${cuts}\n` +
+          `shown ${shown} · drop ${dropped} · давление ${dropPressure.toFixed(1)} · dups ${dups} · cuts ${cuts}\n` +
           `diff: mean ${lastStat ? lastStat.mean.toFixed(1) : '—'} max ${lastStat ? lastStat.max : '—'}` +
           `${lastStat && lastStat.max === 0 ? ' (ЧЁРНОЕ — DRM?)' : ''}`;
       } else {
@@ -639,7 +663,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: tex }, [vw, vh]);
-      queue.push({ tex, at: arrival + DELAY_MS, mid: false });
+      // presentation delay must cover the batch compute time (own + the previous
+      // batch draining), or high factors drop their early mids as already-stale.
+      // Slewed ±2ms/frame so pacing never jumps.
+      const dTarget = Math.min(300, Math.max(60, 2 * Math.max(0, effN - 1) * (msAvg || 10) + 15));
+      delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
+      queue.push({ tex, at: arrival + delayMs, mid: false });
       const prev = lastTex;
       if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
         effN = 1;
@@ -659,15 +688,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             // but never past the display refresh (extra frames would be thrown away)
             n = 6;
             while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.85) n--;
+            // cap by what the compositor actually presents, no optimism margin
             const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
-            while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz * 1.15) n--;
+            while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz) n--;
+            n = Math.max(2, n - autoPenalty); // drop-rate feedback (see pump)
             if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
           } else {
             n = cfg.factor; // fixed by the user — NEVER lowered
           }
           effN = n;
           if (run) {
-            const job = { a: prev, b: tex, at: arrival - intervalMs + DELAY_MS, n };
+            const job = { a: prev, b: tex, at: arrival - intervalMs + delayMs, n };
             if (!busy) runPair(job);
             else pending = job;
           }
