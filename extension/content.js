@@ -1,14 +1,14 @@
 // Framecast content script: real-time frame interpolation for any <video> on the page.
 // GPU-resident pipeline (own WebGPU runtime, weights bundled): video -> texture ->
 // interpolation -> overlay canvas (sibling of the video; site controls stay on top).
-// DRM (EME) video produces black frames — nothing any extension can do about that.
+// DRM (EME) video produces black frames - nothing any extension can do about that.
 (() => {
   'use strict';
   if (window.__framecast) return;
   window.__framecast = true;
 
   const DELAY_MS = 60;
-  // runtime tiles are 16x16 — model dims must be /16 (1088, not 1080; the ~0.7%
+  // runtime tiles are 16x16 - model dims must be /16 (1088, not 1080; the ~0.7%
   // vertical stretch at present time is invisible)
   const SIZES = { 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
 
@@ -25,7 +25,7 @@
     cfg.showFps = !!cfg.showFps; cfg.guard = !!cfg.guard;
   }
   try {
-    // async: the panel may already be built with defaults by the time this lands —
+    // async: the panel may already be built with defaults by the time this lands -
     // ALWAYS resync the UI, otherwise checkboxes show one thing and cfg does another
     chrome.storage.local.get(cfg, v => { Object.assign(cfg, v); sanitizeCfg(); syncPanel(); });
     // settings changed in another tab/frame apply here live
@@ -81,7 +81,7 @@
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
-  const sys = { gpu: '—', f16: false, hdrOk: false, hdrOn: false };
+  const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
 
   const log = (...a) => console.log('[framecast]', ...a);
@@ -92,14 +92,14 @@
   function classifyAdapter(adapter) {
     sys.f16 = adapter.features.has('shader-f16');
     const inf = adapter.info || {};
-    sys.gpu = inf.description || [inf.vendor, inf.architecture].filter(Boolean).join(' ') || 'неизвестный GPU';
+    sys.gpu = inf.description || [inf.vendor, inf.architecture].filter(Boolean).join(' ') || 'unknown GPU';
     sys.integrated = /intel|iris|uhd|graphics 6|vega|radeon\(tm\) graphics|apu/i.test(sys.gpu)
       && !/nvidia|geforce|rtx|gtx|radeon rx|arc a|arc b/i.test(sys.gpu);
   }
   // lightweight probe for the popup: adapter info only, no device, no weights
   let probing = null;
   async function probeAdapter() {
-    if (sys.gpu !== '—' || !navigator.gpu) return;
+    if (sys.gpu !== '-' || !navigator.gpu) return;
     if (!probing) probing = (async () => {
       try {
         const a = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
@@ -110,7 +110,7 @@
   }
 
   // ---------- device / runtime ----------
-  // memoized: the hover-preload and the FC click may race — only one build runs
+  // memoized: the hover-preload and the FC click may race - only one build runs
   let rtBuilding = null;
   async function ensureRuntime() {
     while (rtBuilding) await rtBuilding;
@@ -120,9 +120,9 @@
   }
   async function buildRuntime() {
     if (!device) {
-      if (!navigator.gpu) throw new Error('WebGPU недоступен');
+      if (!navigator.gpu) throw new Error('WebGPU unavailable');
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) throw new Error('нет GPU-адаптера');
+      if (!adapter) throw new Error('no GPU adapter');
       const f16 = adapter.features.has('shader-f16');
       device = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
       classifyAdapter(adapter);
@@ -130,7 +130,7 @@
     if (rt && rtRes === cfg.res) return;
     const url = (p) => chrome.runtime.getURL(p);
     // rt_tfact2: t-factored student + quarter-res refine head (occlusion repair),
-    // trained on movies + real footage — better on BOTH at +0.25-0.55ms/mid
+    // trained on movies + real footage - better on BOTH at +0.25-0.55ms/mid
     const [bin, man] = await Promise.all([
       fetch(url('assets/rt_tfact2.bin')).then(r => r.arrayBuffer()),
       fetch(url('assets/rt_tfact2.json')).then(r => r.json())]);
@@ -247,7 +247,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   o.uv = vec2(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5);
   return o;
 }`;
-  // (re)build the present path: SDR passthrough, or HDR via inverse tone mapping —
+  // (re)build the present path: SDR passthrough, or HDR via inverse tone mapping -
   // highlights expand past SDR white on an fp16 canvas in extended tone-mapping mode
   // (same idea as RTX Video HDR; the browser only ever hands us tonemapped SDR)
   function configureOverlay() {
@@ -282,7 +282,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     sys.hdrOn = hdr;
   }
   // fullscreen renders in the browser's TOP LAYER: anything not inside the
-  // fullscreen element is invisible there. Move the whole UI in (and back out) —
+  // fullscreen element is invisible there. Move the whole UI in (and back out) -
   // fired from the fullscreenchange event too, so it works with the SITE's own
   // fullscreen button and while FC is off.
   function reparentUI() {
@@ -320,7 +320,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const r = videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
     // self-calibrating placement: measure where the overlay actually landed and nudge
-    // by the delta — immune to whatever containing block/margins the site uses
+    // by the delta - immune to whatever containing block/margins the site uses
     const cur = overlay.getBoundingClientRect();
     const dx = r.left - cur.left, dy = r.top - cur.top;
     if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
@@ -397,9 +397,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   // our own control bar ON TOP of the overlay: native controls render INSIDE the
   // video element and can never show above the canvas, so instead of ever revealing
-  // the raw video we drive the <video> ourselves — play/seek/volume/fullscreen as
+  // the raw video we drive the <video> ourselves - play/seek/volume/fullscreen as
   // regular DOM above everything. Interpolation is never interrupted.
-  // sites whose own DOM controls are KNOWN to render above our overlay — there we
+  // sites whose own DOM controls are KNOWN to render above our overlay - there we
   // don't double up with our bar. Everywhere else (jut.su-style players put their
   // bar BELOW the canvas) our controls are the only usable ones.
   const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv)$/
@@ -408,7 +408,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   document.addEventListener('mousemove', (e) => {
     const now = performance.now();
     // gaming mice fire mousemove at up to 1000Hz; the rect read below forces
-    // layout — unthrottled that alone janks the main thread while the mouse moves
+    // layout - unthrottled that alone janks the main thread while the mouse moves
     if (now - mmLast < 33) return;
     mmLast = now;
     if (!running && now - uiScan > 300) { uiScan = now; uiVideo = biggestVideo(); }
@@ -444,7 +444,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       btn.style.display = gear.style.display = 'none';
     }
   }, 300);
-  // scrolling moves the video but not our fixed-position buttons — re-pin them
+  // scrolling moves the video but not our fixed-position buttons - re-pin them
   // (capture: catches scrolling containers, not just the window)
   document.addEventListener('scroll', () => {
     if (!btn || btn.style.display === 'none') return;
@@ -452,7 +452,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (v) placeSideButtons(v.getBoundingClientRect());
   }, { passive: true, capture: true });
 
-  // crisp monochrome SVG icons (Feather-style) — no emoji
+  // crisp monochrome SVG icons (Feather-style) - no emoji
   const ICONS = {
     play: '<path d="M8 5.5v13a.5.5 0 0 0 .77.42l10.2-6.5a.5.5 0 0 0 0-.84L8.77 5.08A.5.5 0 0 0 8 5.5z" fill="currentColor"/>',
     pause: '<rect x="7" y="5" width="3.4" height="14" rx="1" fill="currentColor"/><rect x="13.6" y="5" width="3.4" height="14" rx="1" fill="currentColor"/>',
@@ -511,7 +511,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     q('#fcSeek').oninput = (e) => {
       if (videoEl && videoEl.duration) videoEl.currentTime = e.target.value / 1000 * videoEl.duration;
     };
-    q('#fcFull').onclick = () => { if (gFull()) toggleFullscreen(); }; // async transition — no double-fire
+    q('#fcFull').onclick = () => { if (gFull()) toggleFullscreen(); }; // async transition - no double-fire
     // keep the bar alive while the mouse is on it (cheap write, no throttle needed)
     bar.addEventListener('mousemove', () => { revealUntil = performance.now() + 2000; }, { passive: true });
   }
@@ -543,7 +543,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   // fullscreen the PARENT (so the overlay comes along) and stretch the video to
-  // fill the screen — fullscreening just the container leaves the video at its
+  // fill the screen - fullscreening just the container leaves the video at its
   // layout size, which looks like fullscreen "not working"
   let fsByUs = false, fsSaved = '';
   function toggleFullscreen() {
@@ -585,7 +585,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     rangeFill(seek, p, '#19c37d');
   }
 
-  // compare mode: a draggable divider — raw video shows LEFT of it (the overlay is
+  // compare mode: a draggable divider - raw video shows LEFT of it (the overlay is
   // clipped away), interpolated frames play on the right
   function ensureSplit() {
     if (splitEl) return;
@@ -600,7 +600,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         border:1px solid rgba(255,255,255,.3); color:#fff; font:12px system-ui;
         display:flex; align-items:center; justify-content:center">⇄</div>
       <div style="position:absolute; right:14px; top:10px; color:#fff; font:10px system-ui;
-        background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">ориг.</div>
+        background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">orig.</div>
       <div style="position:absolute; left:14px; top:10px; color:#fff; font:10px system-ui;
         background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FC</div>`;
     splitEl.addEventListener('pointerdown', (e) => {
@@ -652,7 +652,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'border:1px solid rgba(255,120,100,.35); border-radius:12px; padding:8px 14px;'
       + 'font:12px system-ui; box-shadow:0 4px 20px rgba(0,0,0,.4);'
       + 'opacity:0; transform:translateY(-6px); transition:opacity .25s, transform .25s;';
-    warnEl.textContent = '⚠ Нагрузка слишком высокая — понизьте множитель или включите «авто»';
+    warnEl.textContent = '⚠ Load too high - lower the factor or switch to auto';
     document.body.appendChild(warnEl);
   }
   function updateWarn(now, vr) {
@@ -666,8 +666,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if ((fixedOver || autoOver) && !overSince) {
       overSince = now;
       warnEl.textContent = fixedOver
-        ? '⚠ Кадры дропаются — понизьте множитель/качество или включите «авто»'
-        : '⚠ GPU не успевает даже 2× — поставьте качество «экономное»';
+        ? '⚠ Frames are dropping - lower the factor/quality or switch to auto'
+        : '⚠ GPU cannot keep up even at 2x - set quality to eco';
     }
     if (!fixedOver && !autoOver && load < 0.92) overSince = 0;
     const show = overSince && now - overSince > 1500; // sustained, not a warmup blip
@@ -682,7 +682,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     driveJob(now); // just-in-time mid submission
     if (lastPumpT) {
       const d = now - lastPumpT;
-      // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) —
+      // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) -
       // auto must not re-inflate on every momentary lull
       if (d > 1 && d < 100) {
         rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
@@ -691,7 +691,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     lastPumpT = now;
     // UI geometry work (rect reads + style writes force reflows on heavy pages)
-    // runs at rAF/4 — presentation below stays per-tick
+    // runs at rAF/4 - presentation below stays per-tick
     uiTick = (uiTick + 1) & 3;
     if (uiTick === 0) {
     positionOverlay();
@@ -741,7 +741,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     queue.sort((a, b) => a.at - b.at);
     let due = -1;
     for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
-    // drop pressure: leaky integrator (tau 300ms) — a burst of drops is visible in
+    // drop pressure: leaky integrator (tau 300ms) - a burst of drops is visible in
     // milliseconds instead of averaging out over seconds
     dropPressure *= Math.exp((lastPressureT - now) / 300);
     lastPressureT = now;
@@ -749,7 +749,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       dropped += due;
       dropPressure += due;
       for (let i = 0; i < due; i++) dropWin.push(now);
-      // presentation lateness (frames arriving PAST their slot without dropping —
+      // presentation lateness (frames arriving PAST their slot without dropping -
       // external GPU bursts look exactly like this): learn fast, forget slowly,
       // feeds back into the delay target so the buffer grows to absorb bursts
       const late = now - queue[due].at;
@@ -777,18 +777,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const srcFps = intervalMs > 1 ? (1000 / intervalMs) : 0;
       if (cfg.debug) {
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
-        const mode = cfg.factor === 'auto' ? (autoPenalty ? `авто−${autoPenalty}` : 'авто') : 'фикс';
+        const mode = cfg.factor === 'auto' ? (autoPenalty ? `auto-${autoPenalty}` : 'auto') : 'fixed';
         hud.textContent = [
           `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
           `${msAvg.toFixed(1)}ms@${cfg.res}p`,
-          `буфер ${delayMs.toFixed(0)}`,
+          `buf ${delayMs.toFixed(0)}`,
           `GPU ${load.toFixed(0)}%`,
           `raf ${rafMs.toFixed(1)}/${rafFloor.toFixed(1)}`,
-          `опозд ${lateAvg.toFixed(1)}`,
+          `late ${lateAvg.toFixed(1)}`,
           `drop ${dropped} (${dropPressure.toFixed(1)})`,
           `dup ${dups} cut ${cuts}`,
-          `движ ${motionAvg.toFixed(0)}`,
-          `diff ${lastStat ? lastStat.mean.toFixed(1) : '—'}/${lastStat ? lastStat.max : '—'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
+          `motion ${motionAvg.toFixed(0)}`,
+          `diff ${lastStat ? lastStat.mean.toFixed(1) : '-'}/${lastStat ? lastStat.max : '-'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
         ].join('  ·  ');
       } else {
         hud.textContent = `FC ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
@@ -854,12 +854,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (!vw || !vh) return;
       ensureFrameTextures(vw, vh);
       // note on importExternalTexture (evaluated, rejected): interpolation needs the
-      // PREVIOUS frame too, and external textures expire with the video frame — the
+      // PREVIOUS frame too, and external textures expire with the video frame - the
       // copy is unavoidable for history and for presenting source frames. Prep/dedup
       // reads scale with MODEL resolution, not source, so reading the external
       // texture instead of the copy saves nothing measurable.
       // NEVER overwrite a texture that is still queued for presentation or needed
-      // as an interpolation input — reuse of live textures = timeline soup
+      // as an interpolation input - reuse of live textures = timeline soup
       const busyTex = new Set(queue.map(q => q.tex));
       if (lastTex) busyTex.add(lastTex);
       let guard = frameTex.length;
@@ -900,12 +900,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz) n--;
             n = Math.max(2, n - autoPenalty); // drop-rate feedback (see pump)
             // fast scenes: interpolation artifacts scale with motion while the eye
-            // can't rate smoothness anyway — cap the factor by measured motion
+            // can't rate smoothness anyway - cap the factor by measured motion
             const mcap = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
             if (n > mcap) n = mcap;
             if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
           } else {
-            n = cfg.factor; // fixed by the user — NEVER lowered
+            n = cfg.factor; // fixed by the user - NEVER lowered
           }
           effN = n;
           if (run && !switching) {
@@ -929,7 +929,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         log('frame error', e);
         stop();
         hud.style.display = 'block';
-        hud.textContent = 'FC ошибка: ' + (e.message || e);
+        hud.textContent = 'FC error: ' + (e.message || e);
       }
     } finally {
       processingFrame = false;
@@ -939,16 +939,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // ---------- lifecycle / UI ----------
   // cross-origin video taints the pixel path (SecurityError on copy). Our DNR rule
   // injects ACAO:* on media responses, so reloading the element in CORS mode makes
-  // it readable — one reload, playback position preserved, reverted on failure.
+  // it readable - one reload, playback position preserved, reverted on failure.
   async function makeReadable(v) {
-    if (v.crossOrigin === 'anonymous') throw new Error('видео недоступно даже с CORS');
+    if (v.crossOrigin === 'anonymous') throw new Error('video unreadable even with CORS');
     const t = v.currentTime, playing = !v.paused;
     v.crossOrigin = 'anonymous';
     v.load();
     try {
       await new Promise((res, rej) => {
         const ok = () => { cleanup(); res(); };
-        const bad = () => { cleanup(); rej(new Error('CDN не отдаёт видео с CORS')); };
+        const bad = () => { cleanup(); rej(new Error('CDN refuses CORS for this video')); };
         const timer = setTimeout(bad, 8000);
         const cleanup = () => {
           clearTimeout(timer);
@@ -976,7 +976,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       v.requestVideoFrameCallback(() => fin());
       setTimeout(fin, 1500);
     });
-    log('video reloaded with CORS — pixels readable now');
+    log('video reloaded with CORS - pixels readable now');
   }
 
   async function start(v) {
@@ -989,7 +989,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // native players: we own clicks (play/pause + our fullscreen). Sites with DOM
     // controls (YouTube etc.) keep the overlay transparent to the pointer.
     overlay.style.pointerEvents = videoEl.controls ? 'auto' : 'none';
-    // seed the canvas with the current video frame so the reveal is seamless —
+    // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
     const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
     if (vw && vh) {
@@ -1002,16 +1002,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       } catch (e) {
         if (e.name === 'SecurityError' || String(e).includes('cross-origin')) {
           hud.style.display = 'block';
-          hud.textContent = 'FC: видео без CORS — перезагружаю…';
+          hud.textContent = 'FC: video lacks CORS - reloading…';
           await makeReadable(videoEl); // throws a friendly error if the CDN refuses
           // seed is cosmetic (seamless fade-in): if the decoder still has no frame,
-          // skip it — the rVFC pipeline below presents the first real frame anyway
+          // skip it - the rVFC pipeline below presents the first real frame anyway
           try {
             device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: seed }, [vw, vh]);
             present(seed, false);
           } catch (e2) { log('seed skipped', e2.name); }
         } else if (e.name === 'OperationError') {
-          log('seed skipped', e.name); // no decoded frame yet — rVFC will deliver
+          log('seed skipped', e.name); // no decoded frame yet - rVFC will deliver
         } else throw e;
       }
     }
@@ -1021,9 +1021,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     running = true;
     hud.style.display = 'block';
     if (sys.integrated) {
-      advise('⚠ Chrome работает на встроенной графике (' + sys.gpu + '). Для полной скорости: '
-        + 'Параметры Windows → Дисплей → Графика → Chrome → «Высокая производительность», '
-        + 'затем перезапустить Chrome.', 14000);
+      advise('⚠ Chrome is running on the integrated GPU (' + sys.gpu + '). For full speed: '
+        + 'Windows Settings → Display → Graphics → Chrome → High performance, '
+        + 'then restart Chrome.', 14000);
     }
     videoEl.requestVideoFrameCallback(onFrame);
     requestAnimationFrame(pump);
@@ -1031,7 +1031,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function stop() {
     running = false;
-    if (overlay) { // fade out, then release — the raw video underneath is identical
+    if (overlay) { // fade out, then release - the raw video underneath is identical
       overlay.style.opacity = '0';
       setTimeout(() => { if (!running && overlay) overlay.style.display = 'none'; }, 260);
     }
@@ -1059,45 +1059,45 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function updateStatus() {
     const st = panel && panel.querySelector('#fcStatus');
     if (!st) return;
-    const srState = cfg.sr ? (!sys.f16 ? 'недоступен (нет f16)' : (sr ? 'вкл ×2' : 'загрузка…')) : 'выкл';
-    const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ ВСТРОЙКА' : ''}`,
-      `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_tfact2`,
-      `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
-      `HDR: ${!sys.hdrOk ? 'дисплей не HDR' : (cfg.hdr ? (sys.hdrOn ? 'вкл (ITM)' : 'ошибка, SDR') : 'выкл')}`,
-      `статус: ${running ? 'работает' : 'остановлен'}`];
+    const srState = cfg.sr ? (!sys.f16 ? 'unavailable (no f16)' : (sr ? 'on x2' : 'loading…')) : 'off';
+    const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
+      `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: rt_tfact2`,
+      `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
+      `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
+      `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
       const [mw, mh] = SIZES[cfg.res];
       const vramMB = (texW * texH * 4 * frameTex.length + mw * mh * 4 * midTexs.length) / 1048576;
       const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
       lines.push(
-        `выход: ${fpsWin.length}fps · множитель ×${effN}${cfg.factor === 'auto' ? ' (авто)' : ' (фикс)'}`,
-        `дисплей: ~${rafMs > 1 ? (1000 / rafMs).toFixed(0) : '—'}Гц`,
-        `вставка: ${msAvg.toFixed(1)}ms @ ${cfg.res}p`,
-        `нагрузка GPU (наша, оценка): ~${load.toFixed(0)}%`,
-        `VRAM текстуры: ~${vramMB.toFixed(0)}MB · очередь ${queue.length}`);
+        `out: ${fpsWin.length}fps · factor x${effN}${cfg.factor === 'auto' ? ' (auto)' : ' (fixed)'}`,
+        `display: ~${rafMs > 1 ? (1000 / rafMs).toFixed(0) : '-'}Hz`,
+        `mid: ${msAvg.toFixed(1)}ms @ ${cfg.res}p`,
+        `GPU load (ours, est.): ~${load.toFixed(0)}%`,
+        `VRAM textures: ~${vramMB.toFixed(0)}MB · queue ${queue.length}`);
     }
     st.textContent = lines.join('\n');
   }
 
   // hot-swap the runtime on quality change: stop/start reseeded the canvas with a
-  // LIVE frame while the pipeline serves ~delayMs-old ones — time visibly jumped
+  // LIVE frame while the pipeline serves ~delayMs-old ones - time visibly jumped
   // forward and snapped back. Instead: drain the in-flight batch, drop queued mids
   // (source frames keep presenting), rebuild rt at the new size, relearn timing.
   async function switchRes() {
     switching = true; // gates onFrame/runPair: NO new mids while textures are being replaced
     try {
-      // loop: the user may flip the select again mid-rebuild — converge on the latest
+      // loop: the user may flip the select again mid-rebuild - converge on the latest
       while (rtRes !== cfg.res) {
         curJob = null; // abandon un-submitted mids of the old pair
         queue = queue.filter((it) => !it.mid);
-        msAvg = 0; // cost at the new size is different — relearn
+        msAvg = 0; // cost at the new size is different - relearn
         await ensureRuntime();
         queue = queue.filter((it) => !it.mid); // stragglers that slipped in mid-rebuild
       }
     } finally { switching = false; }
   }
 
-  // keep the whole panel on screen — it grows when "advanced" unfolds
+  // keep the whole panel on screen - it grows when "advanced" unfolds
   function clampPanel() {
     if (!panel || panel.style.display !== 'block') return;
     const r = panel.getBoundingClientRect();
@@ -1114,42 +1114,42 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
       <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
-      <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
+      <label class="fc-row"><span>Smoothness<small>neural frame generation</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
+      <label class="fc-row"><span>Sharpness<small>2x upscale of inserted frames</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
-      <label class="fc-row"><span>HDR<small>расширение яркости (нужен HDR-экран)</small></span>
+      <label class="fc-row"><span>HDR<small>brightness expansion (needs an HDR display)</small></span>
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
-      <label class="fc-row"><span>Качество<small>нагрузка на видеокарту</small></span>
+      <label class="fc-row"><span>Quality<small>GPU load</small></span>
         <select class="fc-sel" id="fcRes">
-          <option value="360">экономное</option>
-          <option value="480">баланс</option>
-          <option value="720">максимум</option>
-          <option value="1080">ультра</option>
+          <option value="360">eco</option>
+          <option value="480">balanced</option>
+          <option value="720">max</option>
+          <option value="1080">ultra</option>
         </select></label>
       <details class="fc-details">
-        <summary>продвинутые настройки</summary>
-        <label class="fc-row"><span>Множитель кадров</span>
+        <summary>advanced</summary>
+        <label class="fc-row"><span>Frame factor</span>
           <select class="fc-sel" id="fcFactor">
-            <option value="auto">авто</option>
+            <option value="auto">auto</option>
             <option value="2">2×</option><option value="3">3×</option>
             <option value="4">4×</option><option value="5">5×</option>
             <option value="6">6×</option>
           </select></label>
-        <label class="fc-row"><span>Аниме-дедуп<small>распознавать «двойки» кадров</small></span>
+        <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
           <input class="fc-sw" type="checkbox" id="fcAnime"></label>
-        <label class="fc-row"><span>Контролы при наведении</span>
+        <label class="fc-row"><span>Hover controls</span>
           <input class="fc-sw" type="checkbox" id="fcHover"></label>
-        <label class="fc-row"><span>Счётчик FPS<small>плашка сверху слева</small></span>
+        <label class="fc-row"><span>FPS counter<small>badge in the top-left</small></span>
           <input class="fc-sw" type="checkbox" id="fcFps"></label>
-        <label class="fc-row"><span>Защита субтитров<small>статика не варпится</small></span>
+        <label class="fc-row"><span>Subtitle guard<small>static regions are not warped</small></span>
           <input class="fc-sw" type="checkbox" id="fcGuard"></label>
-        <label class="fc-row"><span>Сравнение<small>шторка оригинал / FC</small></span>
+        <label class="fc-row"><span>Compare<small>original / FC split slider</small></span>
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
-        <label class="fc-row"><span>Debug<small>рамка + телеметрия</small></span>
+        <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
           <input class="fc-sw" type="checkbox" id="fcDebug"></label>
         <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
-        <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">—</div>
+        <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">-</div>
       </details>`;
     document.body.appendChild(panel);
     panel.querySelector('.fc-details').addEventListener('toggle', () => requestAnimationFrame(clampPanel));
@@ -1164,7 +1164,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const Fp = panel.querySelector('#fcFps');
     Fp.onchange = () => { cfg.showFps = Fp.checked; saveCfg(); };
     const Gd = panel.querySelector('#fcGuard');
-    Gd.onchange = async () => { // the guard is baked into the flow kernel — rebuild
+    Gd.onchange = async () => { // the guard is baked into the flow kernel - rebuild
       cfg.guard = Gd.checked; saveCfg();
       if (running && !toggling) {
         toggling = true;
@@ -1194,14 +1194,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   async function toggleFC() {
-    if (toggling) return; // start/stop in flight — spam-proof
+    if (toggling) return; // start/stop in flight - spam-proof
     if (!btn) injectUI(); // popup can toggle before the in-page UI ever booted
     toggling = true;
     try {
       if (running) { stop(); return; }
       const v = biggestVideo();
-      if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: видео не найдено'; return; }
-      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC ошибка: ' + (e.message || e); log(e); }
+      if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: no video found'; return; }
+      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC error: ' + (e.message || e); log(e); }
     } finally { toggling = false; }
   }
 
@@ -1219,7 +1219,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         border-radius:50%;background:#fff;transition:transform .15s}
       .fc-range:hover::-webkit-slider-thumb{transform:scale(1.35);background:#19c37d}
       /* NO backdrop-filter on anything hovering over the RUNNING video: the
-         compositor re-blurs the region every frame of a 100+fps canvas — that
+         compositor re-blurs the region every frame of a 100+fps canvas - that
          alone janks playback exactly while the cursor summons the UI */
       .fc-side{position:fixed;z-index:2147483647;width:38px;height:38px;border-radius:50%;
         border:none;background:rgba(18,18,20,.88);color:#fff;cursor:pointer;display:none;
@@ -1302,7 +1302,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   // toolbar popup protocol: status snapshot + remote toggle. With all_frames every
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
-  // has a video answers after 120ms, video-less frames after 250ms — first response
+  // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
   const VERSION = '0.5.0';
   try {

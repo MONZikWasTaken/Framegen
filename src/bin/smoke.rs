@@ -46,7 +46,7 @@ fn main() -> Result<()> {
     println!("img0 {:?} img1 {:?}", img0.shape(), img1.shape());
     println!("out  {:?} ({:?})", out.shape(), dt);
 
-    // second pass — is it faster after CUDA warmup?
+    // second pass - is it faster after CUDA warmup?
     let t2 = Instant::now();
     let _out2 = rife.interpolate_scaled(&img0, &img1, 0.5, 1.0)?;
     println!("2nd pass: {:?}", t2.elapsed());

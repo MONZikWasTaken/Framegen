@@ -27,8 +27,8 @@ print(f"mean |diff|: {mean_abs:.4f}")
 print(f"identical pixels: {np.sum(np.abs(rust - py) == 0)}/{rust.size} ({100*np.sum(np.abs(rust-py)==0)/rust.size:.1f}%)")
 
 if psnr >= 35:
-    print("\nPASS: PSNR >= 35 dB — port is numerically correct.")
+    print("\nPASS: PSNR >= 35 dB - port is numerically correct.")
 elif psnr >= 30:
-    print("\nCLOSE: PSNR >= 30 dB — minor numerical differences, likely OK.")
+    print("\nCLOSE: PSNR >= 30 dB - minor numerical differences, likely OK.")
 else:
-    print("\nFAIL: PSNR < 30 dB — port has a bug.")
+    print("\nFAIL: PSNR < 30 dB - port has a bug.")

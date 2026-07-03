@@ -14,7 +14,6 @@
 *.mp4
 *.mkv
 !demo/test_720p.mp4
-!demo/test_10s.mp4
 
 # Caches / envs
 **/__pycache__/
@@ -22,13 +21,13 @@
 .venv/
 .playwright-mcp/
 
-# Local / machine-specific config & secrets — DO NOT COMMIT
+# Local / machine-specific config & secrets - DO NOT COMMIT
 opencode.json
 /.claude/
 /.cargo/
 
 # Vendored TensorRT SDK (NVIDIA headers + import lib generated from the DLL).
-# Not redistributed; regenerate locally — see AGENTS.md "Bootstrap third_party".
+# Not redistributed; regenerate locally - see AGENTS.md "Bootstrap third_party".
 /third_party/
 
 # Scratch
@@ -37,5 +36,6 @@ opencode.json
 
 extension/rt/
 extension/assets/
+extension/_metadata/
 
 framecast-extension.zip

@@ -1,13 +1,13 @@
 """tfact2 = t-factored student + a tiny REFINE head (occlusion repair).
 
 The coarse student warps-and-blends; everything it cannot know (disocclusions,
-halo at motion edges) stays broken. Full RIFE fixes this with contextnet+unet —
+halo at motion edges) stays broken. Full RIFE fixes this with contextnet+unet -
 far too heavy. Here: a 4-conv c=24 net at HALF resolution eats [warped0,
 warped1, mask, normalized flow] (11ch) and emits a bounded residual that is
 upsampled and added to the blend. Last conv is zero-init and the residual goes
 through sigmoid*2-1, so step 0 is EXACTLY the tfact checkpoint.
 
-Teacher = full RIFE incl. ITS refinement — precisely the signal the head must
+Teacher = full RIFE incl. ITS refinement - precisely the signal the head must
 learn. Real-footage dirs (frames/real_*) are oversampled 6x: the base set is
 three Blender movies and real video was underrepresented.
 
@@ -77,7 +77,7 @@ class TFact2(nn.Module):
         w1 = warp(img1, flow[:, 2:4])
         m = torch.sigmoid(mask)
         merged = w0 * m + w1 * (1 - m)
-        # QUARTER res: half-res refine measured +7ms@720p in WGSL — 16x fewer pixels
+        # QUARTER res: half-res refine measured +7ms@720p in WGSL - 16x fewer pixels
         # brings it to ~1ms; occlusion halos are mid-frequency, quarter carries them
         q = lambda z: F.interpolate(z, scale_factor=0.25, mode="bilinear", align_corners=False)
         rin = torch.cat((q(w0), q(w1), q(m), q(flow) * (0.25 / FLOW_NORM)), 1)
@@ -144,9 +144,9 @@ def main():
     ck = torch.load(args.tfact_ckpt, map_location="cpu")
     net = TFact2(slim.block0, ck["c"]).to(device)
     if any(k.startswith("core.") for k in ck["sd"]):
-        net.load_state_dict(ck["sd"])  # full tfact2 checkpoint — resume everything
+        net.load_state_dict(ck["sd"])  # full tfact2 checkpoint - resume everything
     else:
-        net.core.load_state_dict(ck["sd"])  # plain tfact — refine starts at zero
+        net.core.load_state_dict(ck["sd"])  # plain tfact - refine starts at zero
     del slim
 
     data = TripletData(args.data, args.crop, arbitrary_t=True)

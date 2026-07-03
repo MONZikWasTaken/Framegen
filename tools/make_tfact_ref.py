@@ -27,7 +27,7 @@ H = int(sys.argv[3]) if len(sys.argv) > 3 else 256
 
 
 def lcg_frame(shift):
-    # numpy RNG, saved to a file the browser fetches — a JS LCG re-implementation
+    # numpy RNG, saved to a file the browser fetches - a JS LCG re-implementation
     # silently diverges (s*1103515245 exceeds float64's exact-integer range)
     rng = np.random.default_rng(20260703)
     px = rng.integers(0, 256, W * H * 4, dtype=np.uint8)

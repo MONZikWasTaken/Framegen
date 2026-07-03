@@ -25,7 +25,7 @@ extern "C" {
 
 /// A loaded TensorRT engine.
 /// f32 engines: I/O is engine-sized (padded /32) CHW float32, prepost on the CPU.
-/// u8 engines (tools/export_u8.py): I/O is raw RGB frame bytes, prepost fused in-graph —
+/// u8 engines (tools/export_u8.py): I/O is raw RGB frame bytes, prepost fused in-graph -
 /// `eh`/`ew` are then the exact (unpadded) frame dims.
 pub struct RifeTrt {
     handle: *mut c_void,

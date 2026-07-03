@@ -1,7 +1,7 @@
 """Extract movie frames to JPEGs + build a filtered triplet index for distillation training.
 
 Keeps native resolution (crops are taken at train time). A triplet (i-1, i, i+1) is kept when
-PSNR(f[i-1], f[i+1]) is between CUT_DB (scene cut / chaos) and STATIC_DB (nothing moves) —
+PSNR(f[i-1], f[i+1]) is between CUT_DB (scene cut / chaos) and STATIC_DB (nothing moves) -
 both computed on a 1/4-scale grayscale for speed.
 
 Usage (training venv):

@@ -43,7 +43,7 @@ fn is_static_pair(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// Interpolate `input` by `times` (2 = midpoint; >2 needs a variable-timestep engine,
-/// see tools/export_u8.py — each pair then gets mids at t = k/times).
+/// see tools/export_u8.py - each pair then gets mids at t = k/times).
 /// `skip_static`: duplicate the previous frame instead of inferring on near-identical pairs.
 pub fn interpolate_video_trt(
     rife: &RifeTrt,
@@ -95,7 +95,7 @@ pub fn interpolate_video_trt(
             match read_exact_or_eof(&mut dec_out, &mut buf)? {
                 Some(_) => {
                     if frame_tx.send(buf).is_err() {
-                        break; // main loop gone (error path) — stop reading
+                        break; // main loop gone (error path) - stop reading
                     }
                 }
                 None => break, // EOF
@@ -138,7 +138,7 @@ pub fn interpolate_video_trt(
 
         if skip_static && is_static_pair(&prev, &cur) {
             // near-identical pair: duplicate instead of inferring. On the f32 path the
-            // skipped swap breaks the "in0 holds prev's input" invariant — restore it.
+            // skipped swap breaks the "in0 holds prev's input" invariant - restore it.
             for _ in 1..times {
                 out_tx.send(prev.clone())?;
                 out_frames += 1;
@@ -164,7 +164,7 @@ pub fn interpolate_video_trt(
             let mut mid = vec![0u8; frame_bytes];
             let t = Instant::now();
             if rife.is_u8 {
-                // raw frame bytes in, raw frame bytes out — prepost fused into the engine
+                // raw frame bytes in, raw frame bytes out - prepost fused into the engine
                 rife.infer_u8_t(&prev, &cur, &mut mid, timestep)?;
             } else {
                 rife.infer_t(&in0, &in1, &mut out, timestep)?;

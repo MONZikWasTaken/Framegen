@@ -38,38 +38,38 @@
 <div class="wrap">
   <div class="title"><span class="dot" id="dot"></span>Framecast <span class="ver" id="ver"></span></div>
   <div class="tabs">
-    <button id="tabStatus" class="act">Статус</button>
-    <button id="tabHelp">Инструкции</button>
+    <button id="tabStatus" class="act">Status</button>
+    <button id="tabHelp">Help</button>
   </div>
 
   <div id="status">
-    <div id="state">—</div>
+    <div id="state">-</div>
     <div id="stat"></div>
     <hr>
     <div id="sys"></div>
-    <div class="hint">Управление и настройки — внутри плеера: наведи на видео,
-      слева кнопки FC и ⚙.</div>
+    <div class="hint">Controls and settings live inside the player: hover a video,
+      the FC and ⚙ buttons appear on the left.</div>
   </div>
 
   <div id="help" style="display:none">
-    <h4>Две видеокарты (ноутбук)</h4>
-    <p>Chrome на Windows часто садится на встройку — fps почти не растёт.</p>
+    <h4>Two GPUs (laptop)</h4>
+    <p>Chrome on Windows often lands on the integrated GPU - fps barely improves.</p>
     <ol>
-      <li>Параметры Windows → Система → Дисплей → Графика</li>
-      <li>Добавь Chrome → «Высокая производительность»</li>
-      <li>Полностью перезапусти Chrome</li>
+      <li>Windows Settings → System → Display → Graphics</li>
+      <li>Add Chrome → High performance</li>
+      <li>Fully restart Chrome</li>
     </ol>
-    <p>Проверка: на вкладке «Статус» в строке GPU должна быть дискретная карта.</p>
-    <h4>Требования</h4>
-    <p>Десктопный Chrome/Edge свежей версии, видеокарта примерно 2016+.
-       Firefox, Safari и телефоны — нет.</p>
-    <h4>Как пользоваться</h4>
-    <p>Наведи мышь на любое видео → слева кнопки FC (вкл/выкл) и ⚙ (настройки).
-       В настройках есть «Сравнение» — шторка оригинал/обработка.</p>
-    <h4>Что не работает</h4>
-    <p>Netflix, Crunchyroll и другие DRM-сайты — браузер не отдаёт им пиксели,
-       это ограничение платформы. На аниме-сайтах при первом включении видео
-       может перезагрузиться на пару секунд (CORS) — это норма.</p>
+    <p>Check: the GPU line on the Status tab should show the discrete card.</p>
+    <h4>Requirements</h4>
+    <p>Recent desktop Chrome/Edge and a GPU from roughly 2016 or newer.
+       Firefox, Safari and phones - no.</p>
+    <h4>How to use</h4>
+    <p>Hover any video → the FC (on/off) and ⚙ (settings) buttons appear on the left.
+       Settings include Compare - an original/processed split slider.</p>
+    <h4>What does not work</h4>
+    <p>Netflix, Crunchyroll and other DRM sites - the browser never hands us their
+       pixels, a platform limitation. On some sites the video may reload for a couple
+       of seconds the first time you enable FC (CORS) - that is normal.</p>
   </div>
 
   <div class="foot">

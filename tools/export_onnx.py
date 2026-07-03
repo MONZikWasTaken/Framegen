@@ -53,7 +53,7 @@ pw = ((W - 1) // 32 + 1) * 32
 dummy0 = torch.randn(1, 3, ph, pw)
 dummy1 = torch.randn(1, 3, ph, pw)
 
-# Export directly (no jit.trace — warplayer has dynamic grid_sample)
+# Export directly (no jit.trace - warplayer has dynamic grid_sample)
 os.makedirs(os.path.dirname(OUT_ONNX), exist_ok=True)
 torch.onnx.export(
     wrapper,
@@ -74,4 +74,4 @@ import onnx as _onnx
 m = _onnx.load(OUT_ONNX, load_external_data=True)
 _onnx.save_model(m, OUT_ONNX, save_as_external_data=False)
 print(f"exported ONNX: {OUT_ONNX} ({os.path.getsize(OUT_ONNX) // 1024 // 1024} MB)")
-print(f"shape: ({ph}, {pw}) — {'padded' if ph != H or pw != W else 'exact'}")
+print(f"shape: ({ph}, {pw}) - {'padded' if ph != H or pw != W else 'exact'}")

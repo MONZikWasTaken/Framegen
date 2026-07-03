@@ -1,7 +1,7 @@
 """Export RIFE variants with pre/post embedded in the graph and uint8 HWC RGB I/O.
 
 Inputs:  img0, img1  [1,H,W,3] uint8 RGB (raw decoded frame bytes, exact video size)
-         t           [1] float32 timestep in (0,1) — RIFEm is natively arbitrary-t
+         t           [1] float32 timestep in (0,1) - RIFEm is natively arbitrary-t
 Output:  mid         [1,H,W,3] uint8 RGB (raw encodable frame bytes)
 
 The graph itself does: cast/255 -> HWC->CHW -> RGB->BGR -> zero-pad to /32 -> net ->

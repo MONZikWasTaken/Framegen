@@ -1,13 +1,13 @@
 ﻿<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Framecast — custom RT test</title>
+<head><meta charset="utf-8"><title>Framecast - custom RT test</title>
 <style>body{font:14px/1.6 monospace;margin:20px;background:#181818;color:#ddd}
 canvas{border:1px solid #444;margin-right:8px}</style></head>
 <body>
-<h3>Custom WebGPU runtime — correctness vs ONNX + bench</h3>
+<h3>Custom WebGPU runtime - correctness vs ONNX + bench</h3>
 <div id="log">loading...</div>
 <div><canvas id="c0" width="448" height="256"></canvas><canvas id="c1" width="448" height="256"></canvas></div>
-<p>слева — наш рантайм, справа — эталон ONNX</p>
+<p>left - our runtime, right - the ONNX reference</p>
 <script type="module">
 import { createRT } from './rt/rt.js?v=3';
 const log = m => { document.getElementById('log').innerHTML += '<br>' + m; };
@@ -24,7 +24,7 @@ async function imgRGBA(url, w, h) {
 (async () => {
   try {
     const W = 448, H = 256;
-    if (!navigator.gpu) { log('НЕТ WebGPU'); return; }
+    if (!navigator.gpu) { log('NO WebGPU'); return; }
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     const feats = ['shader-f16', 'timestamp-query'].filter(f => adapter.features.has(f));
     const device = await adapter.requestDevice({ requiredFeatures: feats });

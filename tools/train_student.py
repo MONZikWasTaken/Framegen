@@ -1,6 +1,6 @@
 """Distill a 2-block RIFE student from the full 3-block+refine teacher.
 
-Student = block0 + block1 of IFNet_m (init from teacher), scales [4,2], no refinement —
+Student = block0 + block1 of IFNet_m (init from teacher), scales [4,2], no refinement -
 same graph as the `2blk_noref` ablation (docs/phase5_ablation.md), which measured
 4x on browser webgpu / 1.9x on TensorRT at -2.6..-0.8 dB. Training tries to win that
 PSNR back at identical inference cost.
@@ -10,7 +10,7 @@ Loss: LapLoss(student, gt) + LAMBDA_TEA * LapLoss(student, teacher_out)
 
 Data: JPEG frame dirs + triplets.txt from tools/extract_frames.py (random 256 crops,
 flips, temporal swap). Eval: fixed triplets from the two held-out clips (BBB, Jellyfish),
-full 720p, uint8 PSNR — directly comparable to tools/quality_bench.py numbers.
+full 720p, uint8 PSNR - directly comparable to tools/quality_bench.py numbers.
 
 Usage (training venv):
     python train_student.py --data E:\\data\\framecast\\frames --out E:\\data\\framecast\\ckpt
@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 import torch
 
-# dataloader workers each spawn OpenCV's internal thread pool — N workers x M cores
+# dataloader workers each spawn OpenCV's internal thread pool - N workers x M cores
 # thrash each other into single-digit GPU utilization on many-core boxes
 cv2.setNumThreads(0)
 import torch.nn.functional as F
@@ -59,7 +59,7 @@ def load_ifnet(weights_pkl, device):
     sd = {k.replace("module.", ""): v for k, v in sd.items() if "module." in k}
     net = IFNet_m()
     c0 = sd["block0.conv0.1.0.weight"].shape[0]
-    if c0 != 240:  # checkpoint carries a slim block0 — rebuild before loading
+    if c0 != 240:  # checkpoint carries a slim block0 - rebuild before loading
         from model.IFNet_m import IFBlock
         net.block0 = IFBlock(7, c=c0)
     net.load_state_dict(sd)
@@ -101,7 +101,7 @@ def teacher_forward(net, img0, img1, t=0.5):
 class TripletData(Dataset):
     """arbitrary_t=False: (i-1, i, i+1) pairs, t=0.5 (classic).
     arbitrary_t=True: half the samples additionally use stride-4 pairs (i-2, i+2)
-    with GT at i-2+k, t=k/4 — real ground truth at t=0.25/0.5/0.75, which keeps
+    with GT at i-2+k, t=k/4 - real ground truth at t=0.25/0.5/0.75, which keeps
     the student's timestep conditioning alive (a t=0.5-only fine-tune destroys it)."""
 
     def __init__(self, data_root, crop, arbitrary_t=False):
@@ -250,7 +250,7 @@ def main():
 
     student = load_ifnet(args.resume if args.resume else args.weights, device)
     if args.slim:
-        # thin-channel block0: slice the first C channels of the loaded weights as init —
+        # thin-channel block0: slice the first C channels of the loaded weights as init -
         # crude, but distillation recovers; the slim block is what gets trained/exported
         from model.IFNet_m import IFBlock
         C = args.slim

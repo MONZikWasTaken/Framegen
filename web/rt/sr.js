@@ -44,7 +44,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // NOTE: torch Conv2d weight is [CO,CI,3,3]; the wgslIn indexing above expects
-// [CO][CI][k] flattened as co*27 + ci*9 + k — matches torch layout directly.
+// [CO][CI][k] flattened as co*27 + ci*9 + k - matches torch layout directly.
 function wgslMid(C) {
   return /* wgsl */`
 enable f16;

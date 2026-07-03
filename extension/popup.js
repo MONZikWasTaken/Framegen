@@ -15,7 +15,7 @@ function render(s) {
   const dot = $('dot'), state = $('state'), stat = $('stat'), sys = $('sys');
   if (!s) {
     dot.classList.remove('on');
-    state.textContent = 'выключено';
+    state.textContent = 'off';
     state.className = '';
     stat.textContent = '';
     sys.textContent = '';
@@ -23,14 +23,14 @@ function render(s) {
   }
   $('ver').textContent = 'v' + s.version;
   dot.classList.toggle('on', s.running);
-  state.textContent = s.running ? 'работает' : 'выключено';
+  state.textContent = s.running ? 'running' : 'off';
   state.className = s.running ? 'on' : '';
   stat.textContent = s.running
-    ? `выход: ${s.fps} fps · множитель ×${s.effN}${s.factor === 'auto' ? ' (авто)' : ''}\n`
-      + `вставка: ${s.ms} ms @ ${s.res}p\n`
-      + `дропы: ${s.drops} · модель: ${s.model}`
+    ? `out: ${s.fps} fps · factor x${s.effN}${s.factor === 'auto' ? ' (auto)' : ''}\n`
+      + `mid: ${s.ms} ms @ ${s.res}p\n`
+      + `drops: ${s.drops} · model: ${s.model}`
     : '';
-  sys.textContent = `GPU: ${s.gpu || '—'}${s.integrated ? '\n⚠ ВСТРОЙКА — назначь Chrome дискретную видеокарту\n(Параметры → Дисплей → Графика)' : ''}\nf16: ${s.f16 ? 'да' : 'нет'}`;
+  sys.textContent = `GPU: ${s.gpu || '-'}${s.integrated ? '\n⚠ INTEGRATED - assign Chrome to the discrete GPU\n(Settings → Display → Graphics)' : ''}\nf16: ${s.f16 ? 'yes' : 'no'}`;
   sys.className = s.integrated ? 'warn' : '';
 }
 

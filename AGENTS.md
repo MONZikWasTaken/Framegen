@@ -1,13 +1,13 @@
-# AGENTS.md — Framecast
+# AGENTS.md - Framecast
 
 Real-time RIFE-Lite (RIFEm) frame interpolation. Two backends behind one `FrameInterpolator` trait:
-- **candle** (`RifeCandle`) — pixel-accurate Rust/candle port, used as the correctness reference/oracle.
-- **TensorRT** (`RifeTrt`, feature `trt`) — native in-process FFI, the real-time path (no Python).
+- **candle** (`RifeCandle`) - pixel-accurate Rust/candle port, used as the correctness reference/oracle.
+- **TensorRT** (`RifeTrt`, feature `trt`) - native in-process FFI, the real-time path (no Python).
 
 The neutral `rife-core` crate owns `Frame`, the `FrameInterpolator` trait, and the single-source
 pre/post (`to_input`/`from_output`: BGR, /255, pad-to-32, crop). Both backends route through it.
 
-See `ROADMAP.md` for direction and `docs/result.md` for the full engineering journal.
+See `docs/result.md` for the full engineering journal.
 
 ## Build / typecheck / lint
 
@@ -22,11 +22,11 @@ cargo build --release --features trt --bin rife-trt   # native TensorRT (needs M
 ## Layout
 
 ```
-crates/rife-core/   Frame, FrameInterpolator trait, prepost (to_input/from_output) — no candle/cuda deps
+crates/rife-core/   Frame, FrameInterpolator trait, prepost (to_input/from_output) - no candle/cuda deps
 src/lib.rs          RifeCandle (interpolate_scaled tensor API) + impl FrameInterpolator
 src/model.rs        IFNet_m reimplementation on candle
 src/warp.rs         backward warp (fused CUDA CustomOp2 + CPU fallback)
-src/trt.rs          RifeTrt — native TensorRT FFI + impl FrameInterpolator (feature `trt`)
+src/trt.rs          RifeTrt - native TensorRT FFI + impl FrameInterpolator (feature `trt`)
 src/imgutil.rs      candle<->prepost glue: image/tensor conversion (feature `bin`)
 src/io/ffmpeg.rs    shared ffmpeg reader + decoder/encoder spawn
 src/io/video.rs     candle ffmpeg pipeline
@@ -37,11 +37,11 @@ csrc/trt_shim.cpp   extern "C" shim over nvinfer 10
 build.rs            compiles the shim when feature `trt` is on
 third_party/tensorrt/  public TRT headers + generated nvinfer_10.lib (SDK bootstrap)
 models/             rife_lite.safetensors + manifest (source-of-truth weights)
-assets/  (gitignored)  engines, onnx, caches — large / regenerable
+assets/  (gitignored)  engines, onnx, caches - large / regenerable
 tools/              python build-time tooling (export, convert, build-engine, bench)
-demo/               small test fixtures (I0_*.png, test_720p.mp4, test_10s.mp4)
+demo/               small test fixtures (I0_*.png, test_720p.mp4, parity .rgb refs)
 docs/               rife_lite_reference.md (ground truth), result.md (journal)
-web/                browser spike (ort-web + WebGPU)
+web/                WGSL runtime (rt/), player demo, parity harness (rt_test.html)
 ```
 
 ## Weight conversion (one-time, Python + torch)
@@ -50,7 +50,7 @@ web/                browser spike (ort-web + WebGPU)
 python tools\convert_weights.py <flownet.pkl> models\rife_lite.safetensors --manifest models\rife_lite_manifest.json
 ```
 Source checkpoint (RIFE_m / lite, `IFNet_m`):
-https://drive.google.com/file/d/147XVsDXBfJPlyct2jfo9kpbL944mNeZr/view — unzip, convert `train_log/flownet.pkl`.
+https://drive.google.com/file/d/147XVsDXBfJPlyct2jfo9kpbL944mNeZr/view - unzip, convert `train_log/flownet.pkl`.
 
 ## Bootstrap third_party (feature `trt`, one-time, not committed)
 
@@ -71,11 +71,11 @@ rife-trt --engine assets\rife_lite_trt_fp16.engine --input demo\test_720p.mp4 --
 rife-trt-bench assets\rife_lite_trt_fp16.engine          # in-process latency
 ```
 Build engines: `python tools\build_trt_engine.py assets\rife_lite_inlined.onnx assets\rife_lite_trt_fp16.engine`
-INT8: `python tools\build_trt_int8.py assets\rife_lite_inlined.onnx assets\rife_lite_int8.engine demo\test_10s.mp4 1280 720 200`
+(INT8 was measured and is a dead end - only ~1.1x on a bandwidth-bound model.)
 
 ## Conventions
 
-- candle 0.11; match PyTorch semantics exactly (align_corners, padding, PReLU, BGR) — validated
+- candle 0.11; match PyTorch semantics exactly (align_corners, padding, PReLU, BGR) - validated
   against `inference_img.py`, not eyeballed.
 - No comments in source unless marking a genuine port deviation/TODO.
 - `assets/` is gitignored (regenerable). Weights of record live in `models/`.

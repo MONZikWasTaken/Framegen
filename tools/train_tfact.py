@@ -5,7 +5,7 @@ Why: the shipped 1-block slim student re-runs the ENTIRE network for every t
 (x6 factor = 5 full passes). Here the trunk (conv0 + 6 of the 8 convblocks,
 ~72% of compute) is t-independent; only the head (FiLM + 2 convblocks +
 residual + lastconv, ~28%) depends on t. At x6 that is 0.72 + 5*0.28 = 2.1
-network-equivalents instead of 5 — a ~2.4x throughput win at high factors.
+network-equivalents instead of 5 - a ~2.4x throughput win at high factors.
 
 Init trick: the timestep input channel is folded into the first conv's bias at
 t=0.5 (bias += 0.5 * W_t summed over the kernel), so the untrained factored

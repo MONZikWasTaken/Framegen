@@ -1,7 +1,7 @@
 """Ground-truth reference: one RIFE_m interpolation at timestep=0.5, save raw RGB bytes + float .npy.
 
 Mirrors inference_img.py single-step path. Output saved as both:
-  - mid_pytorch.png   (uint8 BGR, cv2.imwrite — matches original)
+  - mid_pytorch.png   (uint8 BGR, cv2.imwrite - matches original)
   - mid_pytorch.rgb    (raw uint8 RGB, row-major, for byte-exact PSNR vs Rust)
 """
 import sys

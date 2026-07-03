@@ -1,10 +1,10 @@
-// Framecast player worker — fully GPU-resident and fully OURS: video frames arrive
+// Framecast player worker - fully GPU-resident and fully OURS: video frames arrive
 // as ImageBitmaps, go straight into textures, mids are computed INTO textures by the
 // hand-written WGSL runtime (rt.js), and this worker presents everything itself on a
 // transferred OffscreenCanvas with its own rAF loop. Nothing pixel-shaped ever
 // crosses to the CPU (the sole readback is the 8-byte dedup stat).
 //
-// ort-web is GONE: WebGPU is a hard requirement now — no wasm/onnx fallback, no CDN.
+// ort-web is GONE: WebGPU is a hard requirement now - no wasm/onnx fallback, no CDN.
 //
 // AUTO mode: a quality ladder for the mids (originals never change). The controller
 // watches the real inference cost vs the real scene budget and walks the ladder.
@@ -36,7 +36,7 @@ let rtDevice = null;
 const rtWeights = new Map();
 async function ensureRtDevice() {
   if (rtDevice) return;
-  if (!navigator.gpu) throw new Error('нет WebGPU — плеер работает только на WebGPU-браузерах');
+  if (!navigator.gpu) throw new Error('no WebGPU - the player only runs on WebGPU browsers');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const f16 = adapter.features.has('shader-f16');
   rtDevice = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
@@ -51,10 +51,10 @@ async function ensureWeights(stem) {
   };
   let w = null;
   for (const s of [stem, 'rt_tfact', 'rt_slim', 'rt_1blk']) {
-    try { w = await tryFetch(s); if (s !== stem) postMessage({ type: 'log', msg: stem + ' нет — беру ' + s }); break; }
+    try { w = await tryFetch(s); if (s !== stem) postMessage({ type: 'log', msg: stem + ' missing - falling back to ' + s }); break; }
     catch { /* next */ }
   }
-  if (!w) throw new Error('веса не найдены (' + stem + ')');
+  if (!w) throw new Error('weights not found (' + stem + ')');
   rtWeights.set(stem, w);
   return w;
 }
@@ -75,7 +75,7 @@ async function ensureSR() {
     fetch('/assets/rt_sr.bin').then(r => { if (!r.ok) throw new Error('rt_sr.bin missing'); return r.arrayBuffer(); }),
     fetch('/assets/rt_sr.json').then(r => r.json())]);
   sr = await createSR(rtDevice, { weightsBin: bin, weightsManifest: man });
-  postMessage({ type: 'log', msg: 'SR-апскейлер загружен (' + (bin.byteLength >> 10) + 'КБ)' });
+  postMessage({ type: 'log', msg: 'SR upscaler loaded (' + (bin.byteLength >> 10) + 'KB)' });
 }
 function srDstFor(w, h) {
   const k = w + 'x' + h;
@@ -248,9 +248,9 @@ async function ensureRung(key) {
   const rung = LADDER.find(r => r.key === key);
   try {
     sessions.set(key, await buildSession(rung));
-    postMessage({ type: 'log', msg: 'ступень ' + key + ' готова' });
+    postMessage({ type: 'log', msg: 'rung ' + key + ' ready' });
   } catch (e) {
-    postMessage({ type: 'log', msg: 'ступень ' + key + ' недоступна: ' + String(e.message || e).slice(0, 120) });
+    postMessage({ type: 'log', msg: 'rung ' + key + ' unavailable: ' + String(e.message || e).slice(0, 120) });
     rung.est = 1e9;
   }
   buildingKey = null;
@@ -271,7 +271,7 @@ function controllerTick() {
     const cachedFit = fit.find(r => sessions.has(r.key));
     if (cachedFit && cachedFit.key !== activeKey) {
       activeKey = cachedFit.key; goodSince = now;
-      postMessage({ type: 'log', msg: 'авто: вниз на ' + activeKey });
+      postMessage({ type: 'log', msg: 'auto: down to ' + activeKey });
     }
     if (fit[0] && !sessions.has(fit[0].key)) ensureRung(fit[0].key);
   } else {
@@ -282,7 +282,7 @@ function controllerTick() {
         if (!sessions.has(up.key)) { ensureRung(up.key); return; }
         if (now - goodSince > 3000) {
           activeKey = up.key; goodSince = now;
-          postMessage({ type: 'log', msg: 'авто: вверх на ' + activeKey });
+          postMessage({ type: 'log', msg: 'auto: up to ' + activeKey });
         }
       } else goodSince = now;
     }
@@ -303,7 +303,7 @@ async function runPair(job) {
       S.midIdx = (S.midIdx + 1) % S.midTexs.length;
     }
     const t0 = performance.now();
-    await S.rt.runMulti(job.a, job.b, ts, outs); // submit only — mids stay on the GPU
+    await S.rt.runMulti(job.a, job.b, ts, outs); // submit only - mids stay on the GPU
     rtDevice.queue.onSubmittedWorkDone().then(() => {
       const ms = (performance.now() - t0) / ts.length;
       S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
@@ -378,21 +378,21 @@ onmessage = async (ev) => {
     canvas = m.canvas || null;
     lastTex = null; busy = false; pending = null; queue = [];
     try {
-      if (!canvas) throw new Error('нужен OffscreenCanvas (present:worker)');
+      if (!canvas) throw new Error('OffscreenCanvas required (present:worker)');
       const rmap = { 360: 352, 352: 352, 480: 480, 720: 720, 1080: 1080 };
       const startKey = auto ? 'rt@480' : ('rt@' + (rmap[+m.res] || 480));
-      if (!LADDER.find(r => r.key === startKey)) throw new Error('нет ступени ' + startKey);
+      if (!LADDER.find(r => r.key === startKey)) throw new Error('no rung ' + startKey);
       await ensureRung(startKey);
-      if (!sessions.has(startKey)) throw new Error('стартовая ступень не собралась');
+      if (!sessions.has(startKey)) throw new Error('starting rung failed to build');
       activeKey = startKey; goodSince = performance.now();
       srOn = !!m.sr;
       if (srOn) {
         try { await ensureSR(); } catch (e) {
           srOn = false;
-          postMessage({ type: 'log', msg: 'SR недоступен: ' + (e.message || e) });
+          postMessage({ type: 'log', msg: 'SR unavailable: ' + (e.message || e) });
         }
       }
-      // with SR the canvas backing store is 2x — real pixels instead of browser upscale
+      // with SR the canvas backing store is 2x - real pixels instead of browser upscale
       const mul = srOn ? 2 : 1;
       canvas.width = m.dispW * mul; canvas.height = m.dispH * mul;
       ensurePresent();

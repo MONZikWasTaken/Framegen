@@ -1,6 +1,6 @@
 ﻿<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Framecast — real-time 2× player</title>
+<head><meta charset="utf-8"><title>Framecast - real-time 2× player</title>
 <style>
   body { font:14px/1.5 system-ui, sans-serif; margin:20px; max-width:1100px; background:#181818; color:#ddd; }
   button,select { font-size:15px; padding:5px 10px; margin-right:8px; }
@@ -16,27 +16,27 @@
 </style>
 </head>
 <body>
-<h3>Framecast — real-time 2× player (worker edition)</h3>
-<p>Полностью GPU-резидентный конвейер на собственном WebGPU-рантайме: видео → текстура →
-интерполяция (2–6×) → SR-апскейл → экран. Флаги браузера не нужны.</p>
+<h3>Framecast - real-time 2× player (worker edition)</h3>
+<p>Fully GPU-resident pipeline on our own WebGPU runtime: video → texture →
+interpolation (2-6×) → SR upscale → screen. No browser flags needed.</p>
 
 <div>
   <input type="file" id="file" accept="video/*">
-  <select id="res"><option value="auto">авто (макс качество+фпс)</option><option value="1080">1080p (вставки 480p)</option><option value="720">720p (вставки 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p честный (медленно)</option></select>
-  <select id="factor"><option value="6">авто (макс плавность)</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option></select>
+  <select id="res"><option value="auto">auto (max quality+fps)</option><option value="1080">1080p (mids at 480p)</option><option value="720">720p (mids at 480p)</option><option value="480">480p</option><option value="360">360p</option><option value="720f">720p honest (slow)</option></select>
+  <select id="factor"><option value="6">auto (max smoothness)</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option><option value="5">5×</option></select>
 </div>
 <div style="margin-top:8px">
   <button id="playBtn" disabled>Play</button>
   <button id="pauseBtn" disabled>Pause</button>
-  <label><input type="checkbox" id="interpOn" checked> интерполяция 2×</label>
-  <label><input type="checkbox" id="animeMode" checked> аниме-режим (дедуп «двоек»)</label>
-  <label><input type="checkbox" id="srOn"> SR 2× (аниме-апскейл)</label>
-  <label><input type="checkbox" id="mute"> без звука</label>
+  <label><input type="checkbox" id="interpOn" checked> interpolation 2×</label>
+  <label><input type="checkbox" id="animeMode" checked> anime mode (dedup twos)</label>
+  <label><input type="checkbox" id="srOn"> SR 2× (anime upscale)</label>
+  <label><input type="checkbox" id="mute"> mute</label>
 </div>
 
-<div id="stage"><canvas id="out"></canvas><div id="hud">—</div></div>
+<div id="stage"><canvas id="out"></canvas><div id="hud">-</div></div>
 <div id="bar" style="margin-top:6px; max-width:1024px; display:flex; align-items:center; gap:10px;">
-  <button id="fsBtn" title="полноэкранный (или двойной клик)">⛶</button>
+  <button id="fsBtn" title="fullscreen (or double-click)">⛶</button>
   <span id="clock" style="font:13px monospace; min-width:110px;">0:00 / 0:00</span>
   <input type="range" id="seek" min="0" max="1000" value="0" style="flex:1;">
 </div>
@@ -45,7 +45,7 @@
 
 <script>
 // disp = display/original size; comp = model size for the mids; f32res = fallback-map key.
-// '720' shows sharp 720p originals but computes mids at 480p (upscaled on display) —
+// '720' shows sharp 720p originals but computes mids at 480p (upscaled on display) -
 // a mid flashes for ~21ms between two sharp frames, the softness is invisible, and the
 // 480p model fits the real-time budget where the honest 720p one does not.
 const MODES = {
@@ -107,7 +107,7 @@ function pump(now) {
     hudTimer = now;
     $('hud').textContent =
       `out ${shownWindow.length} fps · interp ${interpMs.toFixed(0)} ms` +
-      `${halfRate ? ' · ½-rate' : ''} · mids: ${midCfg || '—'}\n` +
+      `${halfRate ? ' · ½-rate' : ''} · mids: ${midCfg || '-'}\n` +
       `shown ${shown} · dropped ${dropped} · dups ${dups} · cuts ${cuts} · ${workerKey ?? ''}`;
   }
   requestAnimationFrame(pump);
@@ -116,7 +116,7 @@ function pump(now) {
 async function onFrame() {
   if (!running) return;
   const ts = performance.now();
-  // letterbox the frame — a GPU draw, no pixel readback on this thread
+  // letterbox the frame - a GPU draw, no pixel readback on this thread
   const s = Math.min(W / vid.videoWidth, H / vid.videoHeight);
   const dw = vid.videoWidth * s, dh = vid.videoHeight * s;
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W, H);
@@ -153,7 +153,7 @@ function onWorkerMessage(ev) {
     // worker-present mode: the worker owns the display; we just render its HUD
     $('hud').textContent =
       `out ${m.fps} fps · interp ${m.interpMs.toFixed(0)} ms` +
-      `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '—'}\n` +
+      `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '-'}\n` +
       `shown ${m.shown} · dropped ${m.dropped} · dups ${m.dups} · cuts ${m.cuts} · ${workerKey ?? ''}`;
   } else if (m.type === 'dup') dups++;
   else if (m.type === 'cut') cuts++;
@@ -166,9 +166,9 @@ function onWorkerMessage(ev) {
     while (errTimes.length && errTimes[0] < performance.now() - 10000) errTimes.shift();
     if (errTimes.length >= 5 && !restarting) {
       restarting = true;
-      st('слишком много ошибок — перезапускаю воркер...');
+      st('too many errors - restarting the worker...');
       workerKey = null;
-      ensureWorker().then(() => { errTimes = []; restarting = false; st('воркер перезапущен'); })
+      ensureWorker().then(() => { errTimes = []; restarting = false; st('worker restarted'); })
         .catch(() => { restarting = false; });
     }
   }
@@ -176,7 +176,7 @@ function onWorkerMessage(ev) {
 let errTimes = [], restarting = false;
 
 function ensureWorker() {
-  // our own runtime, WebGPU only — the ort-web fallback (and its quality tiers) is gone
+  // our own runtime, WebGPU only - the ort-web fallback (and its quality tiers) is gone
   const res = $('res').value;
   const key = res + 'p' + ($('srOn').checked ? '/sr' : '');
   if (worker && workerKey === key) return Promise.resolve();
@@ -195,7 +195,7 @@ function ensureWorker() {
   lctx = letterbox.getContext('2d');
   letterboxC = new OffscreenCanvas(CW, CH);
   lcctx = letterboxC.getContext('2d');
-  // transferControlToOffscreen is one-shot per element — every worker gets a fresh canvas
+  // transferControlToOffscreen is one-shot per element - every worker gets a fresh canvas
   const freshOut = out.cloneNode(false);
   out.replaceWith(freshOut);
   out = freshOut; octx = null;
@@ -203,13 +203,13 @@ function ensureWorker() {
   worker = new Worker('player_worker.js?v=22', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
-  st(`создаю сессию ${key} в воркере... (первый раз собирает конвейеры пару секунд)`);
+  st(`creating session ${key} in the worker... (first run builds pipelines for a few seconds)`);
   return new Promise((resolve, reject) => {
     const orig = onWorkerMessage;
     worker.onmessage = ev => {
       if (ev.data.type === 'ready') {
         presentMode = ev.data.present || 'main';
-        st('сессия готова (режим ' + ev.data.mode + ', показ: ' + presentMode + ')');
+        st('session ready (mode ' + ev.data.mode + ', present: ' + presentMode + ')');
         worker.onmessage = orig;
         resolve();
       }
@@ -233,10 +233,10 @@ $('file').onchange = e => {
   if (!f) return;
   vid.src = URL.createObjectURL(f);
   vid.onloadeddata = () => {
-    st(`видео: ${vid.videoWidth}x${vid.videoHeight}, ${vid.duration.toFixed(1)}с — жми Play`);
+    st(`video: ${vid.videoWidth}x${vid.videoHeight}, ${vid.duration.toFixed(1)}s - press Play`);
     $('playBtn').disabled = false; $('pauseBtn').disabled = false;
   };
-  vid.onerror = () => st('видео не декодируется (кодек?)', true);
+  vid.onerror = () => st('video does not decode (codec?)', true);
 };
 
 // ---- player controls: seek/clock/fullscreen/drag&drop/space/persisted settings ----
@@ -261,7 +261,7 @@ function togglePlay() {
   if (!vid.src) return;
   if (vid.paused) $('playBtn').click(); else $('pauseBtn').click();
 }
-$('stage').onclick = togglePlay; // stage, not canvas — the canvas node is replaced per worker
+$('stage').onclick = togglePlay; // stage, not canvas - the canvas node is replaced per worker
 document.addEventListener('keydown', e => {
   if (e.code === 'Space' && e.target.tagName !== 'INPUT') { e.preventDefault(); togglePlay(); }
 });
@@ -306,7 +306,7 @@ $('playBtn').onclick = async () => {
 };
 $('pauseBtn').onclick = () => { vid.pause(); running = false; };
 $('mute').onchange = () => { vid.muted = $('mute').checked; };
-vid.onended = () => { running = false; st('конец видео'); };
+vid.onended = () => { running = false; st('end of video'); };
 </script>
 </body>
 </html>

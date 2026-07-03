@@ -36,7 +36,7 @@ fn candle_and_trt_agree() {
         RifeCandle::load("models/rife_lite.safetensors", candle_core::DType::F32, &dev).unwrap();
     let trt = RifeTrt::load(std::path::Path::new("assets/rife_lite_trt_fp16.engine")).unwrap();
 
-    // Native 720p; both backends pad internally to /32 (736) — exercises the pad path.
+    // Native 720p; both backends pad internally to /32 (736) - exercises the pad path.
     let (f0, f1) = real_pair();
 
     let c = candle.interpolate(&f0, &f1, 0.5).unwrap();
@@ -56,7 +56,7 @@ fn candle_and_trt_agree() {
     let mean = sum_abs as f64 / n as f64;
     eprintln!("parity: mean|delta|={mean:.3} max|delta|={max_abs} over {n} bytes");
     // Observed on 720p real frames (fp16 engine vs fp32 candle): mean~0.36, max~43.
-    // The mean is the regression signal — a swapped/broken pre/post spikes it into the
+    // The mean is the regression signal - a swapped/broken pre/post spikes it into the
     // tens. `max` is just fp16 rounding amplified at sharp warped edges; keep headroom.
     assert!(mean < 1.0, "mean abs diff too high: {mean} (pre/post regression?)");
     assert!(max_abs < 64, "max abs diff too high: {max_abs}");

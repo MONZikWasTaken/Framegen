@@ -6,7 +6,7 @@ name = "framecast"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
-description = "RIFE-Lite (RIFEm) frame interpolation — Rust/candle inference, offline-first, wasm/webgpu later"
+description = "RIFE-Lite (RIFEm) frame interpolation - Rust/candle inference, offline-first, wasm/webgpu later"
 
 [lib]
 name = "framecast"

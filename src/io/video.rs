@@ -34,7 +34,7 @@ pub fn probe(path: &std::path::Path) -> Result<VideoMeta> {
             path.to_str().unwrap(),
         ])
         .output()
-        .context("ffprobe не запустился — проверь, что ffmpeg/ffprobe в PATH")?;
+        .context("ffprobe failed to start - check that ffmpeg/ffprobe are on PATH")?;
     if !out.status.success() {
         return Err(anyhow!(
             "ffprobe failed: {}",
@@ -64,7 +64,7 @@ pub fn probe(path: &std::path::Path) -> Result<VideoMeta> {
         }
     }
     if width == 0 || height == 0 || fps == 0.0 {
-        return Err(anyhow!("ffprobe: не удалось прочитать w/h/fps из [{txt}]"));
+        return Err(anyhow!("ffprobe: could not parse w/h/fps from [{txt}]"));
     }
     Ok(VideoMeta { width, height, fps, frame_count })
 }
@@ -81,7 +81,7 @@ fn parse_fraction(s: &str) -> f64 {
 }
 
 /// Interpolate `input` mp4 by `times` (2 = double fps), writing `output` mp4.
-/// Streams raw RGB24 through pipes — no temp files on disk.
+/// Streams raw RGB24 through pipes - no temp files on disk.
 pub fn interpolate_video(
     rife: &RifeCandle,
     input: &std::path::Path,
@@ -91,7 +91,7 @@ pub fn interpolate_video(
     device: &Device,
 ) -> Result<Stats> {
     if times < 2 {
-        return Err(anyhow!("--times должен быть >= 2 (получили {times})"));
+        return Err(anyhow!("--times must be >= 2 (got {times})"));
     }
     let meta = probe(input)?;
     let w = meta.width as usize;
@@ -119,7 +119,7 @@ pub fn interpolate_video(
     // read first frame
     let mut buf_prev = vec![0u8; frame_bytes];
     if read_exact_or_eof(&mut dec_out, &mut buf_prev)?.is_none() {
-        return Err(anyhow!("пустое видео — ни одного кадра"));
+        return Err(anyhow!("empty video - no frames at all"));
     }
     in_frames += 1;
 
@@ -162,7 +162,7 @@ pub fn interpolate_video(
     let enc_status = enc.wait()?;
     let _ = dec.wait()?;
     if !enc_status.success() {
-        return Err(anyhow!("ffmpeg encode завершился с кодом {}", enc_status));
+        return Err(anyhow!("ffmpeg encode exited with code {}", enc_status));
     }
     let elapsed = start.elapsed();
     let ms_per_intermediate = if inter_count > 0 {

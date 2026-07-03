@@ -1,7 +1,7 @@
-# RIFE-Lite (RIFEm) reference — port ground truth
+# RIFE-Lite (RIFEm) reference - port ground truth
 
 Extracted verbatim from `hzwer/ECCV2022-RIFE` (branch `main`). The Rust port in
-`src/model.rs` must reproduce this numerically. Do not eyeball — match these ops.
+`src/model.rs` must reproduce this numerically. Do not eyeball - match these ops.
 
 ## Variant
 
@@ -14,7 +14,7 @@ returns `merged[2]` (TTA off). Input images are RGB in **[0,1]**, NCHW.
   gated by `gt.shape[1] == 3`). `gt` slice = `x[:, 6:]` -> 0 channels -> teacher block skipped.
 - `timestep` broadcast: `(x[:, :1].clone()*0 + 1) * timestep` -> tensor [B,1,H,W] filled with `timestep`.
 
-## warp — `model/warplayer.py` (backward warp)
+## warp - `model/warplayer.py` (backward warp)
 
 ```
 g = normalized_meshgrid(H,W) + flow_normalized      # flow scaled to [-1,1] pixel coords
@@ -22,7 +22,7 @@ flow[:,0] /= (W-1)/2     flow[:,1] /= (H-1)/2
 grid_sample(input, grid=NHWC(g), mode='bilinear', padding_mode='border', align_corners=True)
 ```
 meshgrid: x = linspace(-1,1,W) (per col), y = linspace(-1,1,H) (per row); cat along C, expand to B.
-align_corners=True on grid_sample; flow normalization uses (W-1)/2 — consistent with align_corners=True.
+align_corners=True on grid_sample; flow normalization uses (W-1)/2 - consistent with align_corners=True.
 
 ## IFBlock
 

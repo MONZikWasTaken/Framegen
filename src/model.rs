@@ -6,7 +6,7 @@ use candle_nn::{
 
 use crate::warp::warp;
 
-// conv(in,out,k,s,p,d) = Conv2d(bias) ; PReLU(out)  — port of model/IFNet_m.py::conv
+// conv(in,out,k,s,p,d) = Conv2d(bias) ; PReLU(out)  - port of model/IFNet_m.py::conv
 struct ConvP {
     conv: Conv2d,
     act: PReLU,
@@ -42,7 +42,7 @@ impl DeconvP {
     }
 }
 
-// Conv2(in,out,stride=2) = conv1: ConvP(in,out,s) ; conv2: ConvP(out,out,1) — port of refine.py::Conv2
+// Conv2(in,out,stride=2) = conv1: ConvP(in,out,s) ; conv2: ConvP(out,out,1) - port of refine.py::Conv2
 struct Conv2b {
     conv1: ConvP,
     conv2: ConvP,

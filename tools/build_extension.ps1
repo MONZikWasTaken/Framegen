@@ -9,19 +9,22 @@ Copy-Item "$root\assets\rt_tfact2.json" "$root\extension\assets\" -Force
 Remove-Item "$root\extension\assets\rt_tfact.bin", "$root\extension\assets\rt_tfact.json" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\assets\rt_sr.bin" "$root\extension\assets\" -Force
 Copy-Item "$root\assets\rt_sr.json" "$root\extension\assets\" -Force
-# slim copies no longer shipped — tfact replaced them
+# slim copies no longer shipped - tfact replaced them
 Remove-Item "$root\extension\assets\rt_slim.bin", "$root\extension\assets\rt_slim.json" -Force -ErrorAction SilentlyContinue
 $size = (Get-ChildItem "$root\extension" -Recurse | Measure-Object Length -Sum).Sum
 Write-Host ("extension ready: {0:N1} MB" -f ($size / 1MB))
-# distributable zip (load-unpacked-able after extraction; also Web-Store-uploadable).
+# distributable zip: extracts into a framecast-extension/ folder ready for Load unpacked.
+# (Web Store upload wants manifest.json at zip ROOT - re-zip $stage\framecast-extension\*
+# without the folder for that.)
 # Chrome writes _metadata/ into the source dir when the unpacked extension has DNR
-# rulesets — shipping it makes Chrome REFUSE to load ("_ names are reserved"): stage
+# rulesets - shipping it makes Chrome REFUSE to load ("_ names are reserved"): stage
 # a filtered copy first.
 $stage = Join-Path $env:TEMP "framecast-zip-stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-New-Item -ItemType Directory -Force $stage | Out-Null
+$stageDir = Join-Path $stage "framecast-extension"
+New-Item -ItemType Directory -Force $stageDir | Out-Null
 Get-ChildItem "$root\extension" | Where-Object { $_.Name -notlike '_*' } |
-    ForEach-Object { Copy-Item $_.FullName (Join-Path $stage $_.Name) -Recurse -Force }
+    ForEach-Object { Copy-Item $_.FullName (Join-Path $stageDir $_.Name) -Recurse -Force }
 $zip = "$root\framecast-extension.zip"
-Compress-Archive -Path "$stage\*" -DestinationPath $zip -Force
+Compress-Archive -Path $stageDir -DestinationPath $zip -Force
 Write-Host ("zip: {0} ({1:N1} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))

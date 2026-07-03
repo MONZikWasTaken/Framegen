@@ -1,7 +1,7 @@
 """Train a tiny 2x super-resolution net for the player's present path (anime upscale).
 
 Residual-vs-bilinear design: out = bilinear2x(x) + detail(x), so the net only learns
-the missing high frequencies — tiny (3 convs, c channels) and stable. Trained on the
+the missing high frequencies - tiny (3 convs, c channels) and stable. Trained on the
 same movie frames as the interpolation students: GT = random full-res crop, input =
 2x box-downscale. BGR /255 domain, matching the rest of the pipeline.
 

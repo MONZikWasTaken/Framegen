@@ -30,7 +30,7 @@ pub fn spawn_decoder(input: &Path) -> Result<Child> {
 }
 
 /// ffmpeg: encode raw RGB24 on stdin to h264 mp4 at `out_fps`.
-/// When `audio_from` is set, its audio track (if any) is copied into the output —
+/// When `audio_from` is set, its audio track (if any) is copied into the output -
 /// interpolation keeps the duration, so the original audio stays in sync.
 pub fn spawn_encoder(output: &Path, w: usize, h: usize, out_fps: f64, audio_from: Option<&Path>) -> Result<Child> {
     let mut cmd = Command::new("ffmpeg");

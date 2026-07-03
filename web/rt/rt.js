@@ -1,4 +1,4 @@
-﻿// Framecast custom WebGPU runtime — hand-rolled forward of the 1-block student
+﻿// Framecast custom WebGPU runtime - hand-rolled forward of the 1-block student
 // (block0 of IFNet_m, scale=4, timestep=0.5). The whole frame is ONE command buffer
 // of ~13 dispatches; no per-op JS, no runtime glue. Weights: assets/rt_1blk.{bin,json}
 // (tools/export_rt_weights.py).
@@ -82,7 +82,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // conv3x3 (stride 1/2) + bias + PReLU, optional residual add (post-activation).
 // v3: COC output channels per thread (src reads amortized), weight slab staged through
 // workgroup memory, and optional f16 storage for activations+weights (accumulation
-// stays f32) — halves the traffic on the bandwidth-bound conv stack.
+// stays f32) - halves the traffic on the bandwidth-bound conv stack.
 function wgslConv(CI, CO, IW, IH, OW, OH, stride, residual, f16) {
   const COC = CO % 4 === 0 ? 4 : 1;       // channels per thread
   const SLAB = Math.min(CI, 30);          // ci per staging round (fits 16KB wg memory)
@@ -127,7 +127,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>,
     }
     workgroupBarrier();
 ${stride === 1 ? `
-    // stride-1 path: stage 10x10 input tiles for the WHOLE ci-slab at once — barriers
+    // stride-1 path: stage 10x10 input tiles for the WHOLE ci-slab at once - barriers
     // per slab (16/conv) instead of per channel (480/conv), values reused 9x from shared
     var ti = i32(li);
     let tn = sl * 100;
@@ -189,7 +189,7 @@ ${stride === 1 ? `
 }
 
 // register-blocked conv3x3 s1 (f16 storage): each thread computes a 2x2 pixel patch x
-// 4 output channels (16 accumulators) — every shared read now feeds 4 FMAs instead of ~1.
+// 4 output channels (16 accumulators) - every shared read now feeds 4 FMAs instead of ~1.
 // Workgroup = 8x8 threads = 16x16 output tile; input tiles 18x18 per ci staged per slab.
 function wgslConvRB(CI, CO, IW, IH, OW, OH, residual) {
   const COC = 4, SLAB = 20;
@@ -215,7 +215,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>,
   let ox0 = i32(wid.x) * 16; let oy0 = i32(wid.y) * 16;   // wg output origin
   let x0 = ox0 + lx * 2; let y0 = oy0 + ly * 2;           // this thread's 2x2 patch
   let cb = i32(wid.z) * ${COC};
-  // 16 scalar accumulators (unrolled — arrays may spill out of registers in WGSL)
+  // 16 scalar accumulators (unrolled - arrays may spill out of registers in WGSL)
 ${Array.from({ length: COC }, (_, c) =>
   `  var a${c}0 = bias[cb + ${c}]; var a${c}1 = a${c}0; var a${c}2 = a${c}0; var a${c}3 = a${c}0;`).join('\n')}
 
@@ -331,7 +331,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-// t-factored prep: 6 channels, NO timestep — the trunk is t-free, t enters via FiLM
+// t-factored prep: 6 channels, NO timestep - the trunk is t-free, t enters via FiLM
 function wgslPrepQuarterTex6(W, H, f16) {
   const QW = W / 4, QH = H / 4;
   const T = f16 ? 'f16' : 'f32';
@@ -376,11 +376,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // flowout variant writing straight into a storage texture (GPU-resident presentation:
-// the mid never leaves the GPU). rgba8unorm store rounds instead of truncating — ±1 LSB
+// the mid never leaves the GPU). rgba8unorm store rounds instead of truncating - ±1 LSB
 // vs the buffer path, invisible; the correctness harness keeps using the buffer path.
 function wgslFlowOutTex(W, H, staticGuard = false, withRes = false) {
   const TW = W / 8, TH = H / 8, RW = W / 4, RH = H / 4;
-  // tfact2: the refine residual (quarter res) is folded straight into this pass —
+  // tfact2: the refine residual (quarter res) is folded straight into this pass -
   // bilinear x4 upsample (align_corners=False grid), added BEFORE the clamp
   const RES_DECL = withRes ? /* wgsl */`
 @group(0) @binding(3) var<storage, read> res: array<f32>; // [3,${RH},${RW}]
@@ -399,7 +399,7 @@ fn rup(c: i32, sx: f32, sy: f32) -> f32 {
   bgr = bgr + vec3<f32>(rup(0, rx, ry), rup(1, rx, ry), rup(2, rx, ry));` : '';
   // static-region protection (SVP-style): where A and B are locally identical
   // (subtitles, logos, UI, frozen shots-in-motion) the warp can still DRAG other
-  // content there — blend back to the untouched source instead. Soft ramp so
+  // content there - blend back to the untouched source instead. Soft ramp so
   // moving-edge pixels transition smoothly.
   const GUARD = staticGuard ? /* wgsl */`
   var d = 0.0;
@@ -473,7 +473,7 @@ ${GUARD}
 // ---- refine head (tfact2): occlusion repair at QUARTER resolution ----
 // Gathers [warped0(3), warped1(3), mask(1), flow*(0.25/20)(4)] = 11ch at H/4.
 // F.interpolate(x, 0.25, bilinear, align_corners=False) samples the source at
-// 4x+1.5 — i.e. the mean of the CENTER 2x2 of each 4x4 block; we warp those
+// 4x+1.5 - i.e. the mean of the CENTER 2x2 of each 4x4 block; we warp those
 // four full-res positions and average, matching the trainer exactly.
 function wgslRefinePrep(W, H, f16) {
   const TW = W / 8, TH = H / 8, HW = W / 4, HH = H / 4;
@@ -767,7 +767,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h));
-  // texture-output mode: flow bind groups are per output texture (small ring — cache them)
+  // texture-output mode: flow bind groups are per output texture (small ring - cache them)
   const flowBgCache = new Map();
   function flowBgFor(tex) {
     if (!flowBgCache.has(tex)) {
@@ -949,7 +949,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
 
   // batched: upload/bind the pair once, produce mids for every t in ONE submit.
   // Buffer mode: a/b are RGBA arrays. Texture mode: a/b are GPUTextures (zero CPU pixels).
-  // With textureOutput, outTexs[i] receives mid i and NOTHING is read back — returns null.
+  // With textureOutput, outTexs[i] receives mid i and NOTHING is read back - returns null.
   async function runMulti(a, b, ts, outTexs) {
     if (tfact) { // factored graph: trunk once, head per t
       prepPair(a, b);
@@ -993,7 +993,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
     }
     device.queue.submit([enc.finish()]);
     if (textureOutput) return null; // mids live in outTexs, nothing crosses the bus
-    // map all stagings concurrently — sequential awaits cost ~1ms each
+    // map all stagings concurrently - sequential awaits cost ~1ms each
     await Promise.all(stagings.slice(0, ts.length).map(s => s.mapAsync(GPUMapMode.READ)));
     const outs = [];
     for (let i = 0; i < ts.length; i++) {
@@ -1007,7 +1007,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest,
   // The queue is FIFO: a mid's present blit executes after EVERYTHING submitted
   // before it. Batching all mids upfront therefore makes the FIRST mid wait for
   // the WHOLE batch on the GPU. prepPair + runT let the caller submit each mid
-  // just-in-time so present blits interleave with computes — the required
+  // just-in-time so present blits interleave with computes - the required
   // presentation delay shrinks from ~2x batch time to ~one mid time.
   let curPrep = null;
   function prepPair(a, b) {

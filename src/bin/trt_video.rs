@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(name = "rife-trt", version)]
 struct Args {
-    /// Serialized TensorRT engine (from tools/build_trt_engine.py / build_trt_int8.py)
+    /// Serialized TensorRT engine (from tools/build_trt_engine.py)
     #[arg(long)]
     engine: PathBuf,
     #[arg(long)]
@@ -17,7 +17,7 @@ struct Args {
     /// engine (tools/export_u8.py)
     #[arg(long, default_value = "2")]
     times: u32,
-    /// Skip inference when two frames are (nearly) identical — the previous frame is
+    /// Skip inference when two frames are (nearly) identical - the previous frame is
     /// duplicated instead. Conservative threshold; big win on anime/screencasts.
     #[arg(long)]
     skip_static: bool,

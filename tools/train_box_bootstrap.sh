@@ -31,7 +31,7 @@ for n in crowd_run_1080p50 park_joy_1080p50 in_to_tree_1080p50 old_town_cross_10
   dl "https://media.xiph.org/video/derf/y4m/$n.y4m" "real_$n.y4m"
 done
 
-echo "== ATD-12K (anime) — may fail on GDrive quota, non-fatal =="
+echo "== ATD-12K (anime) - may fail on GDrive quota, non-fatal =="
 gdown 1XBDuiEgdd6c0S4OXLF4QvgSn_XNPwc-g -O movies/atd12k.zip || echo "ATD blocked, continuing without"
 
 echo "== frames =="
