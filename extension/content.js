@@ -381,9 +381,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // bar BELOW the canvas) our controls are the only usable ones.
   const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv)$/
     .test(location.hostname);
-  let revealUntil = 0, uiVideo = null, uiScan = 0;
+  let revealUntil = 0, uiVideo = null, uiScan = 0, mmLast = 0;
   document.addEventListener('mousemove', (e) => {
     const now = performance.now();
+    // gaming mice fire mousemove at up to 1000Hz; the rect read below forces
+    // layout — unthrottled that alone janks the main thread while the mouse moves
+    if (now - mmLast < 33) return;
+    mmLast = now;
     if (!running && now - uiScan > 300) { uiScan = now; uiVideo = biggestVideo(); }
     const v = running ? videoEl : uiVideo;
     if (!v || !btn) return;
@@ -400,10 +404,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }, { passive: true });
 
   // FC + settings live INSIDE the player: centered vertically at the left edge
+  let sbLeft = -1, sbTop = -1;
   function placeSideButtons(r) {
-    const cy = r.top + r.height / 2;
     btn.style.display = gear.style.display = 'block';
-    btn.style.left = gear.style.left = (r.left + 12) + 'px';
+    const left = Math.round(r.left + 12), cy = Math.round(r.top + r.height / 2);
+    if (left === sbLeft && cy === sbTop) return; // no writes when nothing moved
+    sbLeft = left; sbTop = cy;
+    btn.style.left = gear.style.left = left + 'px';
     btn.style.top = (cy - 42) + 'px';
     gear.style.top = (cy + 4) + 'px';
   }
@@ -449,7 +456,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // floating glass pill, same family as the side buttons
     bar = document.createElement('div');
     bar.style.cssText = 'position:fixed; z-index:2147483646; display:none; align-items:center; gap:10px;'
-      + 'background:rgba(15,15,15,.55); backdrop-filter:blur(10px);'
+      + 'background:rgba(16,17,20,.88);'
       + 'border:1px solid rgba(255,255,255,.12); border-radius:14px; padding:8px 14px;'
       + 'color:#fff; font:11px system-ui; box-sizing:border-box; user-select:none;'
       + 'box-shadow:0 4px 20px rgba(0,0,0,.4); opacity:0; transform:translateY(8px);'
@@ -482,7 +489,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (videoEl && videoEl.duration) videoEl.currentTime = e.target.value / 1000 * videoEl.duration;
     };
     q('#fcFull').onclick = () => { if (gFull()) toggleFullscreen(); }; // async transition — no double-fire
-    // keep the bar alive while the mouse is on it
+    // keep the bar alive while the mouse is on it (cheap write, no throttle needed)
     bar.addEventListener('mousemove', () => { revealUntil = performance.now() + 2000; }, { passive: true });
   }
 
@@ -493,8 +500,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!flashEl) {
       flashEl = document.createElement('div');
       flashEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
-        + 'color:#fff; font:600 26px system-ui; background:rgba(15,15,15,.55);'
-        + 'backdrop-filter:blur(6px); border-radius:50%; width:72px; height:72px;'
+        + 'color:#fff; font:600 26px system-ui; background:rgba(16,17,20,.85);'
+        + 'border-radius:50%; width:72px; height:72px;'
         + 'display:flex; align-items:center; justify-content:center; opacity:0;';
       document.body.appendChild(flashEl);
     }
@@ -566,7 +573,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px;
         background:rgba(255,255,255,.85); box-shadow:0 0 10px rgba(0,0,0,.7)"></div>
       <div style="position:absolute; left:50%; top:50%; width:28px; height:28px; margin:-14px 0 0 -14px;
-        border-radius:50%; background:rgba(15,15,15,.62); backdrop-filter:blur(6px);
+        border-radius:50%; background:rgba(18,18,20,.88);
         border:1px solid rgba(255,255,255,.3); color:#fff; font:12px system-ui;
         display:flex; align-items:center; justify-content:center">⇄</div>
       <div style="position:absolute; right:14px; top:10px; color:#fff; font:10px system-ui;
@@ -594,7 +601,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!adviseEl) {
       adviseEl = document.createElement('div');
       adviseEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
-        + 'background:rgba(60,45,10,.82); backdrop-filter:blur(8px); color:#ffd88a;'
+        + 'background:rgba(60,45,10,.92); color:#ffd88a;'
         + 'border:1px solid rgba(255,200,90,.35); border-radius:12px; padding:8px 14px;'
         + 'font:12px system-ui; box-shadow:0 4px 20px rgba(0,0,0,.4); max-width:70vw;'
         + 'opacity:0; transition:opacity .25s;';
@@ -618,7 +625,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (warnEl) return;
     warnEl = document.createElement('div');
     warnEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
-      + 'background:rgba(60,16,16,.78); backdrop-filter:blur(8px); color:#ffb4a8;'
+      + 'background:rgba(60,16,16,.9); color:#ffb4a8;'
       + 'border:1px solid rgba(255,120,100,.35); border-radius:12px; padding:8px 14px;'
       + 'font:12px system-ui; box-shadow:0 4px 20px rgba(0,0,0,.4);'
       + 'opacity:0; transform:translateY(-6px); transition:opacity .25s, transform .25s;';
@@ -1078,8 +1085,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function buildPanel() {
     panel = document.createElement('div');
     panel.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
-      + 'background:rgba(16,16,16,.92); color:#ddd; border:1px solid rgba(255,255,255,.14);'
-      + 'border-radius:14px; backdrop-filter:blur(10px); box-shadow:0 8px 32px rgba(0,0,0,.5);'
+      + 'background:rgba(14,15,17,.96); color:#ddd; border:1px solid rgba(255,255,255,.14);'
+      + 'border-radius:14px; box-shadow:0 8px 32px rgba(0,0,0,.5);'
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
@@ -1188,9 +1195,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       .fc-range::-webkit-slider-thumb{-webkit-appearance:none;width:10px;height:10px;
         border-radius:50%;background:#fff;transition:transform .15s}
       .fc-range:hover::-webkit-slider-thumb{transform:scale(1.35);background:#19c37d}
+      /* NO backdrop-filter on anything hovering over the RUNNING video: the
+         compositor re-blurs the region every frame of a 100+fps canvas — that
+         alone janks playback exactly while the cursor summons the UI */
       .fc-side{position:fixed;z-index:2147483647;width:38px;height:38px;border-radius:50%;
-        border:none;background:rgba(15,15,15,.62);color:#fff;cursor:pointer;display:none;
-        backdrop-filter:blur(6px);font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
+        border:none;background:rgba(18,18,20,.88);color:#fff;cursor:pointer;display:none;
+        font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
         transition:background .15s,transform .15s}
       .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}
       .fc-title{font:600 14px system-ui;color:#fff;display:flex;align-items:center;gap:7px;margin-bottom:8px}
@@ -1271,7 +1281,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.10';
+  const VERSION = '0.4.12';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
