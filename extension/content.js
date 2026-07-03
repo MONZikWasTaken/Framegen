@@ -8,18 +8,20 @@
   window.__framecast = true;
 
   const DELAY_MS = 60;
-  const SIZES = { 360: [640, 352], 480: [848, 480], 720: [1280, 720] };
+  // runtime tiles are 16x16 — model dims must be /16 (1088, not 1080; the ~0.7%
+  // vertical stretch at present time is invisible)
+  const SIZES = { 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false };
+    fg: true, sr: false, hdr: false };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
-    cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr;
+    cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
   }
   try {
     // async: the panel may already be built with defaults by the time this lands —
@@ -35,10 +37,10 @@
         cfg[k] = ch[k].newValue;
       }
       sanitizeCfg(); syncPanel();
+      if ('hdr' in ch) configureOverlay();
       if (resChanged && running && videoEl && !toggling) {
         toggling = true;
-        const v = videoEl; stop();
-        start(v).catch(e => log('res sync', e)).finally(() => { toggling = false; });
+        switchRes().catch(e => log('res sync', e)).finally(() => { toggling = false; });
       }
     });
   } catch { /* storage unavailable in some frames */ }
@@ -55,6 +57,9 @@
     panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
+    const hd = panel.querySelector('#fcHDR');
+    hd.checked = cfg.hdr;
+    if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
   }
 
   let rt = null, rtRes = 0, device = null, videoEl = null;
@@ -70,9 +75,10 @@
   let bar = null, barSeeking = false;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
-  let delayMs = DELAY_MS, dropWin = [];
+  let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
-  const sys = { gpu: '—', f16: false };
+  const sys = { gpu: '—', f16: false, hdrOk: false, hdrOn: false };
+  try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
 
   const log = (...a) => console.log('[framecast]', ...a);
 
@@ -118,10 +124,10 @@
   }
 
   function ensureFrameTextures(w, h) {
-    if (texW === w && texH === h && frameTex.length === 8) return;
+    if (texW === w && texH === h && frameTex.length === 12) return;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 12; i++) {
       frameTex.push(device.createTexture({ label: 'fcfr' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
@@ -184,9 +190,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2;'
       + 'opacity:0; transition:opacity .25s;';
     overlayCtx = overlay.getContext('webgpu');
-    overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
-    const mod = device.createShaderModule({ code: `
+    configureOverlay();
+  }
+
+  const BLIT_VS = `
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -196,13 +204,40 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   o.pos = vec4(p[i], 0.0, 1.0);
   o.uv = vec2(p[i].x * 0.5 + 0.5, 0.5 - p[i].y * 0.5);
   return o;
-}
+}`;
+  // (re)build the present path: SDR passthrough, or HDR via inverse tone mapping —
+  // highlights expand past SDR white on an fp16 canvas in extended tone-mapping mode
+  // (same idea as RTX Video HDR; the browser only ever hands us tonemapped SDR)
+  function configureOverlay() {
+    if (!overlayCtx || !device) return;
+    let hdr = !!(cfg.hdr && sys.hdrOk);
+    const fmt = hdr ? 'rgba16float' : 'rgba8unorm';
+    try {
+      overlayCtx.configure({ device, format: fmt, alphaMode: 'opaque',
+        ...(hdr ? { colorSpace: 'srgb', toneMapping: { mode: 'extended' } } : {}) });
+    } catch (e) {
+      log('hdr configure failed, falling back to SDR', e);
+      hdr = false;
+      overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
+    }
+    const fs = hdr ? `
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  let c = textureSampleLevel(tex, samp, v.uv, 0.0).rgb;
+  let lin = pow(max(c, vec3(0.0)), vec3(2.2));
+  let y = max(lin.r, max(lin.g, lin.b));
+  let t = smoothstep(0.35, 1.0, y);
+  let gain = 1.0 + 2.2 * t * t;          // shadows/midtones untouched, peaks ~3.2x SDR white
+  return vec4(pow(lin * gain, vec3(1.0 / 2.2)), 1.0);
+}` : `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
   return textureSampleLevel(tex, samp, v.uv, 0.0);
-}`});
+}`;
+    const mod = device.createShaderModule({ code: BLIT_VS + fs });
     blitPipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: mod, entryPoint: 'vs' },
-      fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });
+      fragment: { module: mod, entryPoint: 'fs', targets: [{ format: hdr ? 'rgba16float' : 'rgba8unorm' }] } });
+    blitBg.clear(); // bind groups belong to the old pipeline layout
+    sys.hdrOn = hdr;
   }
   function positionOverlay() {
     if (overlay.parentElement !== videoEl.parentElement) {
@@ -310,7 +345,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       placeSideButtons(r);
       // hovering a video signals intent: build the runtime NOW (weights fetch +
       // shader compilation, the expensive part) so the FC click lands instantly
-      if (!rt && !rtBuilding) ensureRuntime().catch((err) => log('preload', err));
+      if (!rt && !rtBuilding && now - preloadFailT > 5000) {
+        ensureRuntime().catch((err) => { preloadFailT = performance.now(); log('preload', err); });
+      }
     }
   }, { passive: true });
 
@@ -622,13 +659,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   // ---------- interpolation ----------
   async function runPair(job) {
+    if (switching) return; // mid textures are being replaced under our feet
     busy = true;
     try {
       const ts = [];
       for (let k = 1; k < job.n; k++) ts.push(k / job.n);
       const outs = [];
+      const busyMid = new Set(queue.map(q => q.tex)); // don't clobber queued mids
       for (let k = 0; k < ts.length; k++) {
+        let guard = midTexs.length;
+        while (guard-- > 0 && busyMid.has(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
         outs.push(midTexs[midIdx]);
+        busyMid.add(midTexs[midIdx]);
         midIdx = (midIdx + 1) % midTexs.length;
       }
       const t0 = performance.now();
@@ -660,13 +702,20 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const vw = Math.min(videoEl.videoWidth, 1920), vh = Math.min(videoEl.videoHeight, 1080);
       if (!vw || !vh) return;
       ensureFrameTextures(vw, vh);
+      // NEVER overwrite a texture that is still queued for presentation or needed
+      // as an interpolation input — reuse of live textures = timeline soup
+      const busyTex = new Set(queue.map(q => q.tex));
+      if (lastTex) busyTex.add(lastTex);
+      if (pending) { busyTex.add(pending.a); busyTex.add(pending.b); }
+      let guard = frameTex.length;
+      while (guard-- > 0 && busyTex.has(frameTex[frameIdx])) frameIdx = (frameIdx + 1) % frameTex.length;
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: tex }, [vw, vh]);
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // Slewed ±2ms/frame so pacing never jumps.
-      const dTarget = Math.min(300, Math.max(60, 2 * Math.max(0, effN - 1) * (msAvg || 10) + 15));
+      const dTarget = Math.min(180, Math.max(60, 2 * Math.max(0, effN - 1) * (msAvg || 10) + 15));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       queue.push({ tex, at: arrival + delayMs, mid: false });
       const prev = lastTex;
@@ -697,7 +746,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             n = cfg.factor; // fixed by the user — NEVER lowered
           }
           effN = n;
-          if (run) {
+          if (run && !switching) {
             const job = { a: prev, b: tex, at: arrival - intervalMs + delayMs, n };
             if (!busy) runPair(job);
             else pending = job;
@@ -777,6 +826,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const lines = [`GPU: ${sys.gpu}`,
       `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_slim`,
       `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
+      `HDR: ${!sys.hdrOk ? 'дисплей не HDR' : (cfg.hdr ? (sys.hdrOn ? 'вкл (ITM)' : 'ошибка, SDR') : 'выкл')}`,
       `статус: ${running ? 'работает' : 'остановлен'}`];
     if (running) {
       const [mw, mh] = SIZES[cfg.res];
@@ -790,6 +840,25 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         `VRAM текстуры: ~${vramMB.toFixed(0)}MB · очередь ${queue.length}`);
     }
     st.textContent = lines.join('\n');
+  }
+
+  // hot-swap the runtime on quality change: stop/start reseeded the canvas with a
+  // LIVE frame while the pipeline serves ~delayMs-old ones — time visibly jumped
+  // forward and snapped back. Instead: drain the in-flight batch, drop queued mids
+  // (source frames keep presenting), rebuild rt at the new size, relearn timing.
+  async function switchRes() {
+    switching = true; // gates onFrame/runPair: NO new mids while textures are being replaced
+    try {
+      // loop: the user may flip the select again mid-rebuild — converge on the latest
+      while (rtRes !== cfg.res) {
+        pending = null;
+        await new Promise((res) => { const w = () => (busy ? setTimeout(w, 8) : res()); w(); });
+        queue = queue.filter((it) => !it.mid);
+        msAvg = 0; // cost at the new size is different — relearn
+        await ensureRuntime();
+        queue = queue.filter((it) => !it.mid); // stragglers that slipped in mid-rebuild
+      }
+    } finally { switching = false; }
   }
 
   // keep the whole panel on screen — it grows when "advanced" unfolds
@@ -808,16 +877,19 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast</div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.3.1</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
+      <label class="fc-row"><span>HDR<small>расширение яркости (нужен HDR-экран)</small></span>
+        <input class="fc-sw" type="checkbox" id="fcHDR"></label>
       <label class="fc-row"><span>Качество<small>нагрузка на видеокарту</small></span>
         <select class="fc-sel" id="fcRes">
           <option value="360">экономное</option>
           <option value="480">баланс</option>
           <option value="720">максимум</option>
+          <option value="1080">ультра</option>
         </select></label>
       <details class="fc-details">
         <summary>продвинутые настройки</summary>
@@ -856,11 +928,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       cfg.sr = Sr.checked; saveCfg();
       if (cfg.sr && device) ensureSR().catch(e => log('sr', e));
     };
+    const Hd = panel.querySelector('#fcHDR');
+    Hd.onchange = () => { cfg.hdr = Hd.checked; saveCfg(); configureOverlay(); };
     R.onchange = async () => {
       cfg.res = +R.value; saveCfg();
-      if (running && !toggling) { // rebuild the runtime, once
+      if (running && !toggling) { // hot-swap, no visible restart
         toggling = true;
-        try { const v = videoEl; stop(); await start(v); }
+        try { await switchRes(); }
         catch (e) { log('res switch', e); }
         finally { toggling = false; }
       }
