@@ -135,7 +135,7 @@
       if (all[key]) return;
       const [mw, mh] = SIZES[cfg.res];
       const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16 });
-      all[key] = { coc: best.coc, slab: best.slab };
+      all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg };
       await chrome.storage.local.set({ fcTune: all });
       log('conv tune', cfg.res, JSON.stringify(best));
     } catch (e) { log('tune skipped', e); }
@@ -147,7 +147,9 @@
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
       if (!adapter) throw new Error('no GPU adapter');
       const f16 = adapter.features.has('shader-f16');
-      device = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
+      const feats = f16 ? ['shader-f16'] : [];
+      if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
+      device = await adapter.requestDevice({ requiredFeatures: feats });
       classifyAdapter(adapter);
     }
     if (rt && rtRes === cfg.res) return;
@@ -1409,7 +1411,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.6.0';
+  const VERSION = '0.6.1';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {

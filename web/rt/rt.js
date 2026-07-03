@@ -281,6 +281,90 @@ ${[0, 1, 2, 3].map(p => `    {
 }`;
 }
 
+// exp/subgroups: like wgslConvRB, but weights are NOT staged through shared
+// memory - every lane computes the same weight index, so the first lane loads it
+// from global (L2) and subgroupBroadcastFirst hands it to the wave. Saves the
+// cooperative staging loop and shrinks the barrier to the input tile only.
+export function wgslConvRBSg(CI, CO, IW, IH, OW, OH, residual, tune) {
+  const COC = (tune && tune.coc) || 4, SLAB = (tune && tune.slab) || 20;
+  const slabT = SLAB * 324;
+  return /* wgsl */`
+enable f16;
+enable subgroups;
+@group(0) @binding(0) var<storage, read> src: array<f16>;
+@group(0) @binding(1) var<storage, read> wgt: array<f16>;
+@group(0) @binding(2) var<storage, read> bias: array<f32>;
+@group(0) @binding(3) var<storage, read> alpha: array<f32>;
+@group(0) @binding(4) var<storage, read_write> dst: array<f16>;
+${residual ? `@group(0) @binding(5) var<storage, read> res: array<f16>;` : ``}
+
+var<workgroup> tile: array<f16, ${slabT}>;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(workgroup_id) wid: vec3<u32>,
+        @builtin(local_invocation_index) li: u32) {
+  let lx = i32(lid.x); let ly = i32(lid.y);
+  let ox0 = i32(wid.x) * 16; let oy0 = i32(wid.y) * 16;
+  let x0 = ox0 + lx * 2; let y0 = oy0 + ly * 2;
+  let cb = i32(wid.z) * ${COC};
+${Array.from({ length: COC }, (_, c) =>
+  `  var a${c}0 = bias[cb + ${c}]; var a${c}1 = a${c}0; var a${c}2 = a${c}0; var a${c}3 = a${c}0;`).join('\n')}
+
+  for (var s = 0; s < ${CI}; s += ${SLAB}) {
+    let sl = min(${SLAB}, ${CI} - s);
+    workgroupBarrier();
+    var ti = i32(li);
+    let tn = sl * 324;
+    while (ti < tn) {
+      let ci = ti / 324;
+      let r = ti % 324;
+      let ty = oy0 + r / 18 - 1;
+      let tx = ox0 + r % 18 - 1;
+      var v = f16(0.0);
+      if (ty >= 0 && ty < ${IH} && tx >= 0 && tx < ${IW}) {
+        v = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
+      }
+      tile[ti] = v;
+      ti += 64;
+    }
+    workgroupBarrier();
+    for (var ci = 0; ci < sl; ci++) {
+      let tb = ci * 324 + (ly * 2) * 18 + lx * 2;
+      let wrow = (s + ci) * 9;
+      for (var ky = 0; ky < 3; ky++) {
+        let rb = tb + ky * 18;
+        for (var kx = 0; kx < 3; kx++) {
+          let t00 = f32(tile[rb + kx]);
+          let t01 = f32(tile[rb + kx + 1]);
+          let t10 = f32(tile[rb + kx + 18]);
+          let t11 = f32(tile[rb + kx + 19]);
+          let wk = wrow + ky * 3 + kx;
+${Array.from({ length: COC }, (_, c) => `          {
+            let wv = subgroupBroadcastFirst(f32(wgt[(cb + ${c}) * ${CI * 9} + wk]));
+            a${c}0 += t00 * wv; a${c}1 += t01 * wv; a${c}2 += t10 * wv; a${c}3 += t11 * wv;
+          }`).join('\n')}
+        }
+      }
+    }
+  }
+${Array.from({ length: COC }, (_, c) => `  {
+    let co = cb + ${c};
+    let al = alpha[co];
+${[0, 1, 2, 3].map(p => `    {
+      let x = x0 + ${p & 1};
+      let y = y0 + ${p >> 1};
+      if (x < ${OW} && y < ${OH}) {
+        let a = a${c}${p};
+        let v = select(al * a, a, a >= 0.0);
+        let o = co * ${OH * OW} + y * ${OW} + x;
+        dst[o] = f16(${residual ? `v + f32(res[o])` : `v`});
+      }
+    }`).join('\n')}
+  }`).join('\n')}
+}`;
+}
+
 // texture-input prep variants: the video frame lives in a GPU texture (uploaded via
 // copyExternalImageToTexture) and never touches the CPU; the sampler also does the
 // display->model resize for free. Sampling at texel centers == exact texel values.
@@ -761,10 +845,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const pConv0a = pipe(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16));
   const pConv0b = pipe(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16));
   const pConvB = useF16
-    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, false, convTune))
+    ? pipe((convTune && convTune.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, false, convTune))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, false, false));
   const pConvBR = useF16
-    ? pipe(wgslConvRB(C2, C2, W16, H16, W16, H16, true, convTune))
+    ? pipe((convTune && convTune.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, true, convTune))
     : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
   const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
   const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h));
@@ -1090,16 +1174,23 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
 // (adapter, model width, resolution) and persist the answer - relative ranking
 // is what matters, so light background load is tolerable.
 export async function tuneConvRB(device, { ci, co, w16, h16 }) {
-  const variants = [{ coc: 4, slab: 20 }, { coc: 8, slab: 20 }, { coc: 8, slab: 12 }, { coc: 4, slab: 12 }]
+  const base = [{ coc: 4, slab: 20 }, { coc: 8, slab: 20 }, { coc: 8, slab: 12 }, { coc: 4, slab: 12 }]
     .filter(v => co % v.coc === 0 && (v.slab * 324 + v.coc * v.slab * 9) * 2 <= 16384);
+  // subgroup variants (weights via subgroupBroadcastFirst, no shared staging):
+  // measured +20% at the 360p grid and -19% at 720p/coc8 on a 4060 Ti - exactly
+  // why they go through the tuner instead of being hardcoded
+  const variants = device.features.has('subgroups')
+    ? [...base, ...base.map(v => ({ ...v, sg: true }))]
+    : base;
   const buf = (bytes) => device.createBuffer({ size: Math.ceil(bytes / 4) * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const src = buf(ci * w16 * h16 * 2), dst = buf(co * w16 * h16 * 2);
   const wgt = buf(co * ci * 9 * 2), bias = buf(co * 4), alpha = buf(co * 4);
   let best = null;
   for (const v of variants) {
+    const gen = v.sg ? wgslConvRBSg : wgslConvRB;
     const p = device.createComputePipeline({ layout: 'auto', compute: {
-      module: device.createShaderModule({ code: wgslConvRB(ci, co, w16, h16, w16, h16, false, v) }),
+      module: device.createShaderModule({ code: gen(ci, co, w16, h16, w16, h16, false, v) }),
       entryPoint: 'main' } });
     const bg = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: src } }, { binding: 1, resource: { buffer: wgt } },
