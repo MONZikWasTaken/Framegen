@@ -102,6 +102,11 @@
       sys.f16 = f16;
       const inf = adapter.info || {};
       sys.gpu = inf.description || [inf.vendor, inf.architecture].filter(Boolean).join(' ') || 'неизвестный GPU';
+      // Chrome on Windows IGNORES powerPreference (crbug.com/369219127): on dual-GPU
+      // machines we get whatever GPU Chrome itself runs on. Detect integrated ones
+      // and tell the user how to move Chrome to the discrete card.
+      sys.integrated = /intel|iris|uhd|graphics 6|vega|radeon\(tm\) graphics|apu/i.test(sys.gpu)
+        && !/nvidia|geforce|rtx|gtx|radeon rx|arc a|arc b/i.test(sys.gpu);
     }
     if (rt && rtRes === cfg.res) return;
     const url = (p) => chrome.runtime.getURL(p);
@@ -554,6 +559,31 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     (document.fullscreenElement || document.body).appendChild(splitEl);
   }
 
+  // one-shot amber advisory plate (integrated-GPU hint etc.), positioned above warn
+  let adviseEl = null, adviseUntil = 0;
+  function advise(text, ms) {
+    if (!adviseEl) {
+      adviseEl = document.createElement('div');
+      adviseEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
+        + 'background:rgba(60,45,10,.82); backdrop-filter:blur(8px); color:#ffd88a;'
+        + 'border:1px solid rgba(255,200,90,.35); border-radius:12px; padding:8px 14px;'
+        + 'font:12px system-ui; box-shadow:0 4px 20px rgba(0,0,0,.4); max-width:70vw;'
+        + 'opacity:0; transition:opacity .25s;';
+      document.body.appendChild(adviseEl);
+    }
+    adviseEl.textContent = text;
+    adviseUntil = performance.now() + ms;
+  }
+  function updateAdvise(now, vr) {
+    if (!adviseEl) return;
+    const show = now < adviseUntil;
+    if (show) {
+      adviseEl.style.left = Math.max(8, vr.left + vr.width / 2 - adviseEl.offsetWidth / 2) + 'px';
+      adviseEl.style.top = (vr.top + 52) + 'px';
+    }
+    adviseEl.style.opacity = show ? '1' : '0';
+  }
+
   // overload plate: fixed factors are never lowered, we just tell the user
   function ensureWarn() {
     if (warnEl) return;
@@ -626,6 +656,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       hud.style.left = Math.max(0, vr.right - hud.offsetWidth - 10) + 'px';
       hud.style.top = Math.max(0, vr.top + 10) + 'px';
       updateWarn(now, vr);
+      updateAdvise(now, vr);
       if (cfg.compare) {
         ensureSplit();
         splitEl.style.display = 'block';
@@ -907,6 +938,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     shown = 0; dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
+    if (sys.integrated) {
+      advise('⚠ Chrome работает на встроенной графике (' + sys.gpu + '). Для полной скорости: '
+        + 'Параметры Windows → Дисплей → Графика → Chrome → «Высокая производительность», '
+        + 'затем перезапустить Chrome.', 14000);
+    }
     videoEl.requestVideoFrameCallback(onFrame);
     requestAnimationFrame(pump);
     btn.style.background = 'rgba(25,195,125,.9)';
@@ -941,7 +977,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const st = panel && panel.querySelector('#fcStatus');
     if (!st) return;
     const srState = cfg.sr ? (!sys.f16 ? 'недоступен (нет f16)' : (sr ? 'вкл ×2' : 'загрузка…')) : 'выкл';
-    const lines = [`GPU: ${sys.gpu}`,
+    const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ ВСТРОЙКА' : ''}`,
       `f16: ${sys.f16 ? 'да' : 'НЕТ (медленный путь)'} · модель: rt_tfact`,
       `FG: ${cfg.fg ? 'вкл' : 'ВЫКЛ'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'дисплей не HDR' : (cfg.hdr ? (sys.hdrOn ? 'вкл (ITM)' : 'ошибка, SDR') : 'выкл')}`,
@@ -994,7 +1030,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.4</span></div>
+      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v0.4.5</span></div>
       <label class="fc-row"><span>Плавность<small>дорисовка кадров нейросетью</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Чёткость<small>апскейл вставок ×2</small></span>

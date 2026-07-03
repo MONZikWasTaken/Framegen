@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Framecast — Frame Interpolation",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "permissions": ["storage", "declarativeNetRequest"],
   "host_permissions": ["<all_urls>"],
   "declarative_net_request": {
