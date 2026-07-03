@@ -79,7 +79,7 @@
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
-  let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0;
+  let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '—', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
@@ -719,6 +719,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       dropped += due;
       dropPressure += due;
       for (let i = 0; i < due; i++) dropWin.push(now);
+      // presentation lateness (frames arriving PAST their slot without dropping —
+      // external GPU bursts look exactly like this): learn fast, forget slowly,
+      // feeds back into the delay target so the buffer grows to absorb bursts
+      const late = now - queue[due].at;
+      lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
       present(queue[due].tex, queue[due].mid);
       queue = queue.slice(due + 1);
     }
@@ -749,6 +754,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `буфер ${delayMs.toFixed(0)}`,
           `GPU ${load.toFixed(0)}%`,
           `raf ${rafMs.toFixed(1)}/${rafFloor.toFixed(1)}`,
+          `опозд ${lateAvg.toFixed(1)}`,
           `drop ${dropped} (${dropPressure.toFixed(1)})`,
           `dup ${dups} cut ${cuts}`,
           `движ ${motionAvg.toFixed(0)}`,
@@ -834,8 +840,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // Slewed ±2ms/frame so pacing never jumps.
-      // lazy submission: a mid only waits for ITS OWN compute, not the whole batch
-      const dTarget = Math.min(180, Math.max(60, 2 * (msAvg || 10) + 25));
+      // lazy submission: a mid only waits for ITS OWN compute, not the whole batch;
+      // sustained lateness (external GPU bursts) buys extra buffer, up to +60ms
+      const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2));
+      const dTarget = Math.min(180, Math.max(60, 2 * (msAvg || 10) + 25 + burstPad));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       queue.push({ tex, at: schedT + delayMs, mid: false });
       const prev = lastTex;
@@ -1263,7 +1271,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms — first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.4.9';
+  const VERSION = '0.4.10';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
