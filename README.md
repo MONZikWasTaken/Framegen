@@ -44,6 +44,7 @@ yet (waiting on `subgroup-matrix` shipping in Chrome).
 | slim c=120 | 39.31 | 34.83 | 4.5 MB | 9.8 ms |
 | t-factored slim | 39.48 | 34.99 | 4.5 MB | 4.9 ms trunk + 2.1 ms/mid |
 | **tfact2 = t-factored + refine (default)** | **39.94** | **35.44** | **4.6 MB** | **+0.3-0.6 ms over t-factored** |
+| **v7 small (c=96)** | **39.83** | **35.60** | **2.9 MB** | **3.75 ms full 2x cycle (default: 5.51)** |
 | potato c=60 | 39.05 | 34.44 | 1.1 MB | 6 ms |
 
 The t-factored student splits the network into a timestep-free trunk (run once
@@ -52,6 +53,13 @@ mid costs ~2 ms instead of a full 8 ms pass (~2.4x), and it scores HIGHER than
 plain slim at every timestep (t=0.25: 37.56 vs 36.86 dB on stride-4 pairs).
 tfact2 adds a quarter-res refine head (occlusion repair) on top and ships as
 the extension default since v0.5.0.
+
+v7 small (v0.7.0) opens the v7 generation: distilled from a stronger teacher
+(EMA-VFI, Apache-2.0) whose outputs were precomputed over the whole dataset.
+It matches-or-beats the tfact2 default (summed PSNR 75.43 vs 75.38) at
+two-thirds the trunk width: the full 2x cycle drops from 3.05 to 2.57 ms at
+480p and from 5.51 to 3.75 ms at 720p on the reference GPU. Switchable in the
+extension's model selector.
 
 All students keep **arbitrary timestep** (t = k/n for 2×-6× factors) - trained
 with stride-4 ground-truth samples, not just t=0.5. Plus **TinySR**: a 26 KB
