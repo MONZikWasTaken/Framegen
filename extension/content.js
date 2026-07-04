@@ -516,6 +516,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     .test(location.hostname);
   let revealUntil = 0, uiVideo = null, uiScan = 0, mmLast = 0;
   document.addEventListener('mousemove', (e) => {
+    if (inFeed()) return;
     const now = performance.now();
     // gaming mice fire mousemove at up to 1000Hz; the rect read below forces
     // layout - unthrottled that alone janks the main thread while the mouse moves
@@ -549,6 +550,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     btn.style.top = (cy - 42) + 'px';
     gear.style.top = (cy + 4) + 'px';
   }
+  // vertical-feed pages are OFF entirely until the feed bug is resolved:
+  // no button, no pipeline - the raw player is left alone
+  const inFeed = () => /youtube\.com\/shorts|tiktok\.com/.test(location.href);
   let pageHref = location.href;
   setInterval(() => {
     // SPA navigation (YouTube next video, etc): the old stream is dead - showing
@@ -558,6 +562,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (running) stop();
     }
     if (!btn) return;
+    if (inFeed()) {
+      if (running) stop();
+      btn.style.display = gear.style.display = 'none';
+      return;
+    }
     if (panel && panel.style.display === 'block') { revealUntil = performance.now() + 2000; return; }
     if (performance.now() > revealUntil) {
       btn.style.display = gear.style.display = 'none';
@@ -970,6 +979,20 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       schedT = (!schedT || Math.abs(arrival - expected) > 80)
         ? arrival : expected + 0.08 * (arrival - expected);
       if (!videoEl.videoWidth || !videoEl.videoHeight) return;
+      // letterboxed content (video aspect != player box, e.g. a landscape clip
+      // inside a vertical shorts player) renders stretched - disengage cleanly
+      // and let the raw player show; resumes by itself when aspects match again
+      {
+        const br = videoEl.getBoundingClientRect();
+        if (br.width > 1 && br.height > 1) {
+          const ea = br.width / br.height;
+          const va = videoEl.videoWidth / videoEl.videoHeight;
+          if (Math.abs(va - ea) / ea > 0.06) {
+            if (overlay && overlay.style.opacity !== '0') overlay.style.opacity = '0';
+            return;
+          }
+        }
+      }
       const [vw, vh] = poolDims();
       ensureFrameTextures(vw, vh);
       // note on importExternalTexture (evaluated, rejected): interpolation needs the
@@ -1324,7 +1347,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         <label class="fc-row"><span>Model<small>interpolation weights</small></span>
           <select class="fc-sel" id="fcModel">
             <option value="v6">v6 (stable)</option>
-            <option value="v7s">v7 small (beta)</option>
+            <option value="v7s">v7 small</option>
           </select></label>
         <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
           <input class="fc-sw" type="checkbox" id="fcAnime"></label>
@@ -1391,6 +1414,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     toggling = true;
     try {
       if (running) { stop(); return; }
+      if (inFeed()) { hud.style.display = 'block'; hud.textContent = 'FC: off on shorts/feeds for now'; return; }
       const v = biggestVideo();
       if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: no video found'; return; }
       try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC error: ' + (e.message || e); log(e); }
@@ -1501,7 +1525,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.6.10';
+  const VERSION = '0.7.1';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
