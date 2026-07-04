@@ -9,6 +9,11 @@ Copy-Item "$root\assets\rt_tfact2.json" "$root\extension\assets\" -Force
 Remove-Item "$root\extension\assets\rt_tfact.bin", "$root\extension\assets\rt_tfact.json" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\assets\rt_sr.bin" "$root\extension\assets\" -Force
 Copy-Item "$root\assets\rt_sr.json" "$root\extension\assets\" -Force
+# V7 Small (beta) - optional until the final weights land
+if (Test-Path "$root\assets\rt_v7s.bin") {
+    Copy-Item "$root\assets\rt_v7s.bin" "$root\extension\assets\" -Force
+    Copy-Item "$root\assets\rt_v7s.json" "$root\extension\assets\" -Force
+}
 # slim copies no longer shipped - tfact replaced them
 Remove-Item "$root\extension\assets\rt_slim.bin", "$root\extension\assets\rt_slim.json" -Force -ErrorAction SilentlyContinue
 $size = (Get-ChildItem "$root\extension" -Recurse | Measure-Object Length -Sum).Sum

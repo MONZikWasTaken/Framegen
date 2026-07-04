@@ -13,11 +13,14 @@
   const SIZES = { 288: [512, 288], 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
-  // factor: 'auto' (smart, self-capped) or a FIXED 2..6 that is never lowered
+  // factor: 'auto' (smart) or a fixed 2..6 treated as a CEILING under GPU overload
+  // model: weight set key from MODELS; unknown/missing files fall back to v6
+  const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, guard: true };
+    fg: true, sr: false, hdr: false, showFps: true, guard: true, model: 'v6' };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
+    if (!MODELS[cfg.model]) cfg.model = 'v6';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
@@ -34,7 +37,7 @@
       let resChanged = false;
       for (const k in ch) {
         if (!(k in cfg)) continue;
-        if (k === 'res' && cfg.res !== ch[k].newValue) resChanged = true;
+        if ((k === 'res' || k === 'model') && cfg[k] !== ch[k].newValue) resChanged = true;
         cfg[k] = ch[k].newValue;
       }
       sanitizeCfg(); syncPanel();
@@ -52,6 +55,7 @@
     if (!panel) return;
     panel.querySelector('#fcFactor').value = String(cfg.factor);
     panel.querySelector('#fcRes').value = String(cfg.res);
+    panel.querySelector('#fcModel').value = cfg.model;
     panel.querySelector('#fcAnime').checked = cfg.anime;
     panel.querySelector('#fcDebug').checked = cfg.debug;
     panel.querySelector('#fcHover').checked = cfg.hoverReveal;
@@ -65,7 +69,7 @@
     if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
   }
 
-  let rt = null, rtRes = 0, device = null, videoEl = null;
+  let rt = null, rtRes = 0, rtModel = '', device = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
   const blitBg = new Map();
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
@@ -115,13 +119,13 @@
   let rtBuilding = null;
   async function ensureRuntime() {
     while (rtBuilding) await rtBuilding;
-    if (device && rt && rtRes === cfg.res) return;
+    if (device && rt && rtRes === cfg.res && rtModel === cfg.model) return;
     rtBuilding = buildRuntime();
     try { await rtBuilding; } finally { rtBuilding = null; }
   }
   async function loadConvTune() {
     try {
-      const key = 'fcTune|' + sys.gpu + '|' + cfg.res;
+      const key = 'fcTune|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
       const st = await chrome.storage.local.get('fcTune');
       return (st.fcTune && st.fcTune[key]) || null;
     } catch { return null; }
@@ -130,7 +134,7 @@
     // one-shot per (GPU, quality): bench kernel variants on the real conv shape,
     // persist the winner - picked up on the next runtime build
     try {
-      const key = 'fcTune|' + sys.gpu + '|' + cfg.res;
+      const key = 'fcTune|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
       const st = await chrome.storage.local.get('fcTune');
       const all = st.fcTune || {};
       if (all[key]) return;
@@ -153,20 +157,32 @@
       device = await adapter.requestDevice({ requiredFeatures: feats });
       classifyAdapter(adapter);
     }
-    if (rt && rtRes === cfg.res) return;
+    if (rt && rtRes === cfg.res && rtModel === cfg.model) return;
     const url = (p) => chrome.runtime.getURL(p);
-    // rt_tfact2: t-factored student + quarter-res refine head (occlusion repair),
-    // trained on movies + real footage - better on BOTH at +0.25-0.55ms/mid
-    const [bin, man] = await Promise.all([
-      fetch(url('assets/rt_tfact2.bin')).then(r => r.arrayBuffer()),
-      fetch(url('assets/rt_tfact2.json')).then(r => r.json())]);
+    // tfact2 family: t-factored student + quarter-res refine head; the runtime
+    // autodetects the trunk width from the manifest, so models are weight swaps
+    const fetchSet = async (stem) => Promise.all([
+      fetch(url('assets/' + stem + '.bin')).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
+      fetch(url('assets/' + stem + '.json')).then(r => { if (!r.ok) throw 0; return r.json(); })]);
+    let bin, man;
+    try {
+      [bin, man] = await fetchSet(MODELS[cfg.model]);
+    } catch (e) {
+      // a dead runtime (extension was reloaded/updated) is not a missing model -
+      // nothing works until the page reloads, so say exactly that and stop
+      if (!chrome.runtime?.id) throw new Error('extension reloaded - refresh the page (F5)');
+      if (cfg.model === 'v6') throw e;
+      log('model ' + cfg.model + ' not bundled - falling back to v6');
+      cfg.model = 'v6';
+      [bin, man] = await fetchSet(MODELS.v6);
+    }
     const rtMod = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
     rtC2 = man['block0.conv0.1.0.weight'].shape[0];
     const convTune = await loadConvTune();
     rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
       staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
-    rtRes = cfg.res;
+    rtRes = cfg.res; rtModel = cfg.model;
     if (!convTune) setTimeout(() => calibrateConvTune(rtMod), 4000);
     midTexs.forEach(t => t.destroy());
     midTexs = [];
@@ -183,7 +199,7 @@
     if (texW === w && texH === h && frameTex.length === 12) return;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
-    queue = []; curJob = null; // queued entries reference the destroyed pool
+    queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
     for (let i = 0; i < 12; i++) {
       frameTex.push(device.createTexture({ label: 'fcfr' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
@@ -426,6 +442,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     try { await srBuilding; } finally { srBuilding = null; }
   }
 
+  let cmpRing = []; // source frames + their due times: compare's left half runs on
+  // the ORIGINAL cadence, independent of what the output side presents (hz mode
+  // rarely presents raw sources - the left half would freeze otherwise)
   function present(tex, isMid) {
     // interpolated frames are model-res and look soft next to native source frames;
     // run them through TinySR (2x) when it actually adds pixels toward the canvas.
@@ -461,6 +480,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     pass.setBindGroup(0, blitBg.get(tex));
     pass.draw(3);
+    // compare: the left half shows the DELAYED source frame (same pipeline clock as
+    // the FC half) - revealing the live <video> instead would be off by the delay
+    let cmpSrcTex = null;
+    if (cfg.compare) {
+      const pnow = performance.now();
+      while (cmpRing.length > 1 && cmpRing[1].at <= pnow) cmpRing.shift();
+      if (cmpRing.length && cmpRing[0].at <= pnow) cmpSrcTex = cmpRing[0].tex;
+    }
+    if (cfg.compare && cmpSrcTex && cmpSrcTex !== tex) {
+      if (!blitBg.has(cmpSrcTex)) {
+        blitBg.set(cmpSrcTex, device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: cmpSrcTex.createView() }, { binding: 1, resource: blitSampler }] }));
+      }
+      pass.setScissorRect(0, 0, Math.max(1, Math.round(splitX * overlay.width)), overlay.height);
+      pass.setBindGroup(0, blitBg.get(cmpSrcTex));
+      pass.draw(3);
+    }
     pass.end();
     device.queue.submit([enc.finish()]);
     if (overlay.style.opacity !== '1') overlay.style.opacity = '1'; // reveal only once pixels exist
@@ -678,13 +714,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     splitEl.innerHTML = `
       <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px;
         background:rgba(255,255,255,.85); box-shadow:0 0 10px rgba(0,0,0,.7)"></div>
-      <div style="position:absolute; left:50%; top:50%; width:28px; height:28px; margin:-14px 0 0 -14px;
-        border-radius:50%; background:rgba(18,18,20,.88);
-        border:1px solid rgba(255,255,255,.3); color:#fff; font:12px system-ui;
-        display:flex; align-items:center; justify-content:center">⇄</div>
-      <div style="position:absolute; right:14px; top:10px; color:#fff; font:10px system-ui;
+      <div style="position:absolute; right:14px; bottom:10px; color:#fff; font:10px system-ui;
         background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">orig.</div>
-      <div style="position:absolute; left:14px; top:10px; color:#fff; font:10px system-ui;
+      <div style="position:absolute; left:14px; bottom:10px; color:#fff; font:10px system-ui;
         background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FC</div>`;
     splitEl.addEventListener('pointerdown', (e) => {
       splitEl.setPointerCapture(e.pointerId);
@@ -820,10 +852,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         splitEl.style.left = (vr.left + splitX * vr.width) + 'px';
         splitEl.style.top = vr.top + 'px';
         splitEl.style.height = vr.height + 'px';
-        overlay.style.clipPath = `inset(0 0 0 ${(splitX * 100).toFixed(2)}%)`;
       } else {
         if (splitEl) splitEl.style.display = 'none';
-        if (overlay.style.clipPath) overlay.style.clipPath = '';
       }
     }
     updateBar();
@@ -969,6 +999,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const dTarget = Math.min(180, Math.max(floorMs, 2 * (msAvg || 10) + 25 + burstPad));
       delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       const srcAt = schedT + delayMs;
+      if (cfg.compare) { cmpRing.push({ tex, at: srcAt }); if (cmpRing.length > 6) cmpRing.shift(); }
       const hzMode = cfg.factor === 'hz' && cfg.fg;
       if (!hzMode) queue.push({ tex, at: srcAt, mid: false });
       const prev = lastTex;
@@ -1038,7 +1069,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             if (n > mcap) n = mcap;
             if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
           } else {
-            n = cfg.factor; // fixed by the user - NEVER lowered
+            // fixed by the user = a CEILING: under sustained overload we step down
+            // to what actually fits the frame budget (the overload plate explains),
+            // because piling up the queue looks far worse than a lower factor
+            n = cfg.factor;
+            while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.9) n--;
+            if ((n - 1) * ms > uniqueIntervalMs * 1.15) run = false; // even 2x won't fit
           }
           effN = n;
           if (run && switching && hzTs) queue.push({ tex, at: srcAt, mid: false });
@@ -1118,7 +1154,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function onSrcChange() {
-    queue = []; curJob = null; lastTex = null; schedT = 0; lastUniqueTs = 0; hzNext = 0;
+    queue = []; curJob = null; lastTex = null; cmpRing = []; schedT = 0; lastUniqueTs = 0; hzNext = 0;
     if (overlay) overlay.style.opacity = '0'; // present() reveals on the next real frame
   }
   let srcWatchEl = null;
@@ -1285,6 +1321,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             <option value="4">4×</option><option value="5">5×</option>
             <option value="6">6×</option>
           </select></label>
+        <label class="fc-row"><span>Model<small>interpolation weights</small></span>
+          <select class="fc-sel" id="fcModel">
+            <option value="v6">v6 (stable)</option>
+            <option value="v7s">v7 small (beta)</option>
+          </select></label>
         <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
           <input class="fc-sw" type="checkbox" id="fcAnime"></label>
         <label class="fc-row"><span>Hover controls</span>
@@ -1307,6 +1348,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
     syncPanel();
     F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
+    const Md = panel.querySelector('#fcModel');
+    Md.onchange = () => { cfg.model = Md.value; saveCfg(); }; // rebuild rides the storage listener, like res
     A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
@@ -1458,7 +1501,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.6.3';
+  const VERSION = '0.6.10';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
