@@ -28,3 +28,7 @@ Get-ChildItem "$root\extension" | Where-Object { $_.Name -notlike '_*' } |
 $zip = "$root\framecast-extension.zip"
 Compress-Archive -Path $stageDir -DestinationPath $zip -Force
 Write-Host ("zip: {0} ({1:N1} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
+# Web Store upload variant: same tree but manifest.json at the archive ROOT.
+$storeZip = "$root\framecast-webstore.zip"
+Compress-Archive -Path "$stageDir\*" -DestinationPath $storeZip -Force
+Write-Host ("store zip: {0} ({1:N1} MB)" -f $storeZip, ((Get-Item $storeZip).Length / 1MB))
