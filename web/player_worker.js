@@ -8,7 +8,7 @@
 //
 // AUTO mode: a quality ladder for the mids (originals never change). The controller
 // watches the real inference cost vs the real scene budget and walks the ladder.
-import { createRT } from './rt/rt.js?v=5';
+import { createRT, tuneConvRB } from './rt/rt.js?v=5';
 import { createSR } from './rt/sr.js?v=1';
 
 const DELAY_MS = 100;
@@ -38,8 +38,23 @@ async function ensureRtDevice() {
   if (rtDevice) return;
   if (!navigator.gpu) throw new Error('no WebGPU - the player only runs on WebGPU browsers');
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  const f16 = adapter.features.has('shader-f16');
-  rtDevice = await adapter.requestDevice({ requiredFeatures: f16 ? ['shader-f16'] : [] });
+  const feats = adapter.features.has('shader-f16') ? ['shader-f16'] : [];
+  if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
+  rtDevice = await adapter.requestDevice({ requiredFeatures: feats });
+}
+let tunes = {}; // res -> {coc, slab, sg}; persisted by the page in localStorage
+async function calibrateTune(rung, man, W, H) {
+  // one-shot per quality rung: bench kernel variants on the real conv shape;
+  // the page saves the winner, it applies on the next session build
+  try {
+    if (tunes[rung.res]) return;
+    const wk = man['block0.conv0.1.0.weight'];
+    if (!wk) return; // fallback weight sets have a different layout - skip
+    const best = await tuneConvRB(rtDevice, { ci: wk.shape[0], co: wk.shape[0], w16: W / 16, h16: H / 16 });
+    tunes[rung.res] = { coc: best.coc, slab: best.slab, sg: !!best.sg };
+    postMessage({ type: 'tune', res: rung.res, tune: tunes[rung.res] });
+    postMessage({ type: 'log', msg: 'conv tune ' + rung.res + 'p: ' + JSON.stringify(tunes[rung.res]) });
+  } catch { /* tuner is best-effort */ }
 }
 async function ensureWeights(stem) {
   if (rtWeights.has(stem)) return rtWeights.get(stem);
@@ -233,7 +248,9 @@ async function buildSession(rung) {
   const wset = await ensureWeights(rung.stem);
   const [W, H] = SIZE_RT[rung.res];
   const rt = await createRT(rtDevice, { w: W, h: H, textureInput: true, textureOutput: true,
-    staticGuard: true, weightsBin: wset.bin, weightsManifest: wset.man });
+    staticGuard: true, weightsBin: wset.bin, weightsManifest: wset.man,
+    convTune: tunes[rung.res] || null });
+  if (!tunes[rung.res]) setTimeout(() => calibrateTune(rung, wset.man, W, H), 4000);
   const midTexs = [];
   for (let i = 0; i < 12; i++) { // ring: up to (factor-1) in flight + ~100ms in the queue
     midTexs.push(rtDevice.createTexture({ label: rung.key + '#' + i, size: [W, H],
@@ -373,6 +390,7 @@ onmessage = async (ev) => {
   const m = ev.data;
   if (m.type === 'init') {
     auto = !!m.auto; animeMode = m.animeMode; interpOn = m.interpOn;
+    if (m.tunes) tunes = m.tunes;
     factor = m.factor || 2;
     maxRes = m.dispH || 720;
     canvas = m.canvas || null;

@@ -155,6 +155,10 @@ function onWorkerMessage(ev) {
       `out ${m.fps} fps · interp ${m.interpMs.toFixed(0)} ms` +
       `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '-'}\n` +
       `shown ${m.shown} · dropped ${m.dropped} · dups ${m.dups} · cuts ${m.cuts} · ${workerKey ?? ''}`;
+  } else if (m.type === 'tune') {
+    const all = JSON.parse(localStorage.getItem('framecastTune') || '{}');
+    all[m.res] = m.tune;
+    localStorage.setItem('framecastTune', JSON.stringify(all));
   } else if (m.type === 'dup') dups++;
   else if (m.type === 'cut') cuts++;
   else if (m.type === 'skipped') dropped++;
@@ -200,7 +204,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut; octx = null;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=22', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=23', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`creating session ${key} in the worker... (first run builds pipelines for a few seconds)`);
@@ -218,7 +222,8 @@ function ensureWorker() {
     };
     worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.f32res,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
-      factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen }, [offscreen]);
+      factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen,
+      tunes: JSON.parse(localStorage.getItem('framecastTune') || '{}') }, [offscreen]);
   });
 }
 
