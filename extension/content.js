@@ -499,7 +499,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     pass.end();
     device.queue.submit([enc.finish()]);
-    if (overlay.style.opacity !== '1') overlay.style.opacity = '1'; // reveal only once pixels exist
+    if (overlay.style.opacity !== '1') {
+      overlay.style.transition = ''; // back to the stylesheet fade (onSrcChange kills it)
+      overlay.style.opacity = '1'; // reveal only once pixels exist
+    }
     shown++;
     const now = performance.now();
     fpsWin.push(now);
@@ -516,7 +519,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     .test(location.hostname);
   let revealUntil = 0, uiVideo = null, uiScan = 0, mmLast = 0;
   document.addEventListener('mousemove', (e) => {
-    if (inFeed()) return;
     const now = performance.now();
     // gaming mice fire mousemove at up to 1000Hz; the rect read below forces
     // layout - unthrottled that alone janks the main thread while the mouse moves
@@ -550,23 +552,38 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     btn.style.top = (cy - 42) + 'px';
     gear.style.top = (cy + 4) + 'px';
   }
-  // vertical-feed pages are OFF entirely until the feed bug is resolved:
-  // no button, no pipeline - the raw player is left alone
+  // vertical feeds: every scroll is an SPA navigation to the next clip. The old
+  // stream still dies with a hard stop(), but the user's FC-on intent carries
+  // over - re-engage on the new player once it can decode a frame.
   const inFeed = () => /youtube\.com\/shorts|tiktok\.com/.test(location.href);
+  let reattachSeq = 0;
+  function reattach() {
+    const seq = ++reattachSeq, t0 = performance.now();
+    const tick = async () => {
+      if (seq !== reattachSeq || running || !inFeed()) return;
+      if (performance.now() - t0 > 6000) return; // closed player / no video: give up
+      const v = biggestVideo();
+      if (!v || !v.videoWidth || toggling) { setTimeout(tick, 150); return; }
+      toggling = true;
+      try { await start(v); }
+      catch (e) { log('feed reattach', e); }
+      finally { toggling = false; }
+    };
+    setTimeout(tick, 120);
+  }
   let pageHref = location.href;
   setInterval(() => {
     // SPA navigation (YouTube next video, etc): the old stream is dead - showing
-    // its frames on the new page is nonsense. Hard-off; the user re-enables.
+    // its frames on the new page is nonsense. Hard-off; the user re-enables -
+    // except inside feeds, where the enable carries to the next clip.
     if (location.href !== pageHref) {
       pageHref = location.href;
-      if (running) stop();
+      if (running) {
+        stop();
+        if (inFeed()) reattach();
+      }
     }
     if (!btn) return;
-    if (inFeed()) {
-      if (running) stop();
-      btn.style.display = gear.style.display = 'none';
-      return;
-    }
     if (panel && panel.style.display === 'block') { revealUntil = performance.now() + 2000; return; }
     if (performance.now() > revealUntil) {
       btn.style.display = gear.style.display = 'none';
@@ -1178,7 +1195,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function onSrcChange() {
     queue = []; curJob = null; lastTex = null; cmpRing = []; schedT = 0; lastUniqueTs = 0; hzNext = 0;
-    if (overlay) overlay.style.opacity = '0'; // present() reveals on the next real frame
+    if (overlay) {
+      // hide INSTANTLY: a fade would blend the dead stream's last frame over the
+      // new one for 250ms. present() restores the transition on the next real frame
+      overlay.style.transition = 'none';
+      overlay.style.opacity = '0';
+    }
   }
   let srcWatchEl = null;
   async function start(v) {
@@ -1414,7 +1436,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     toggling = true;
     try {
       if (running) { stop(); return; }
-      if (inFeed()) { hud.style.display = 'block'; hud.textContent = 'FC: off on shorts/feeds for now'; return; }
       const v = biggestVideo();
       if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: no video found'; return; }
       try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC error: ' + (e.message || e); log(e); }
@@ -1525,7 +1546,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.1';
+  const VERSION = '0.7.2';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
