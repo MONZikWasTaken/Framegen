@@ -151,7 +151,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
           { binding: 4, resource: { buffer: det } }] }),
       });
       if (states.size > 6) { // sizes changed wholesale
-        for (const [kk, s] of states) if (kk !== k) { s.fa.destroy(); s.fb.destroy(); s.dims.destroy(); states.delete(kk); }
+        for (const [kk, s] of states) if (kk !== k) { s.fa.destroy(); s.fb.destroy(); s.det.destroy(); s.dims.destroy(); states.delete(kk); }
       }
     }
     return states.get(k);

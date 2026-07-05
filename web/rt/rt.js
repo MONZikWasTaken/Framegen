@@ -833,14 +833,19 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
   const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
   const tmp8 = buf(5 * H8 * W8);
-  const outp = buf(w * h);
-  const staging = device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  // readback plumbing exists only for the buffer-output path (rt_test harness):
+  // in texture-output mode these were ~7*w*h*4 bytes of dead MAP_READ allocations
+  const outp = textureOutput ? null : buf(w * h);
+  const staging = textureOutput ? null
+    : device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
   // slots for batched multi-t runs (factor N: upload once, N-1 mids in ONE submit)
   const MAXT = 5;
   const tbufs = [], stagings = [];
   for (let i = 0; i < MAXT; i++) {
     tbufs.push(buf(1));
-    stagings.push(device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+    if (!textureOutput) {
+      stagings.push(device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+    }
   }
 
   const sampler = textureInput
@@ -864,13 +869,15 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const flowBgCache = new Map();
   function flowBgFor(tex) {
     if (!flowBgCache.has(tex)) {
+      // evict BEFORE inserting - clearing after would wipe the fresh entry and
+      // hand setBindGroup an undefined (latent until a caller rings >24 textures)
+      if (flowBgCache.size > 24) flowBgCache.clear();
       const entries = [
         { binding: 0, resource: { buffer: tmp8 } },
         { binding: 1, resource: { buffer: imgs } },
         { binding: 2, resource: tex.createView() }];
       if (refi) entries.push({ binding: 3, resource: { buffer: rRes } }); // tfact2 residual
       flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries }));
-      if (flowBgCache.size > 24) flowBgCache.clear();
     }
     return flowBgCache.get(tex);
   }
@@ -930,6 +937,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   let RC = 0, rRes = null;
   if (refi) {
     RC = man['refine.c0.weight'].shape[0];
+    // the refine convs are dispatched with z = RC/4 below, and wgslConv only
+    // packs 4-wide when CO % 4 == 0 - a non-/4 head would silently mis-dispatch
+    if (RC % 4 !== 0) throw new Error('rt: refine channels must be a multiple of 4, got ' + RC);
     const rIn = abuf(11 * RH4 * RW4);
     const rA2 = abuf(RC * RH4 * RW4);
     const rB2 = abuf(RC * RH4 * RW4);
@@ -945,8 +955,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     bgROut = bg(pROut, [rA2, wbuf['refine.c3.weight'], wbuf['refine.c3.bias'], rRes]);
   }
 
+  // scratch reused across calls: these run once per mid (writeBuffer reads the
+  // array synchronously, so reuse is safe) - allocating per call is pure GC churn
+  const tScratch = new Float32Array(1);
+  const filmScratch = tfact ? { out: new Float32Array(2 * C2), h: new Float32Array(filmW.b0.length) } : null;
   function filmParams(t) {
-    const HN = filmW.b0.length, out = new Float32Array(2 * C2), h = new Float32Array(HN);
+    const HN = filmW.b0.length, { out, h } = filmScratch;
     for (let j = 0; j < HN; j++) h[j] = Math.max(0, filmW.w0[j] * t + filmW.b0[j]);
     for (let k = 0; k < 2 * C2; k++) {
       let s = filmW.b2[k];
@@ -1161,7 +1175,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       return;
     }
     // single tbuf is safe: writeBuffer and submits are queue-ordered
-    device.queue.writeBuffer(tbufs[0], 0, new Float32Array([t]));
+    tScratch[0] = t;
+    device.queue.writeBuffer(tbufs[0], 0, tScratch);
     const pass = enc.beginComputePass();
     pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
     pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
