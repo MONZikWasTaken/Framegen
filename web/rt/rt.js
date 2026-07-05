@@ -871,11 +871,19 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const bgPrepFull = textureInput ? null : bg(pPrepFull, [rgba0, rgba1, imgs]);
   const bgPrepQ = textureInput ? null : bg(pPrepQ, [rgba0, rgba1, xq, tbuf]);
   const bgPrepQt = textureInput ? null : tbufs.map(tb => bg(pPrepQ, [rgba0, rgba1, xq, tb]));
-  // texture-mode prep bind groups are built per texture pair and cached (ping-pong -> few combos)
+  // texture-mode prep bind groups are built per texture pair and cached (ping-pong -> few combos).
+  // Keyed by texture IDENTITY, not label: callers recreate pools reusing the same
+  // labels (resolution change), and a label-keyed cache would keep serving bind
+  // groups of destroyed textures - every submit fails async validation and the
+  // mids silently replay stale content.
+  let texBgSeq = 0;
+  const texBgId = (t) => t.__rtBgId || (t.__rtBgId = ++texBgSeq);
   const texBgCache = new Map();
   function texPrepBgs(texA, texB) {
-    const key = texA.label + '|' + texB.label;
+    const key = texBgId(texA) + '|' + texBgId(texB);
     if (!texBgCache.has(key)) {
+      // evict BEFORE inserting - clearing after would wipe the fresh entry too
+      if (texBgCache.size > 12) texBgCache.clear(); // texture set changed wholesale
       const va = texA.createView(), vb = texB.createView();
       texBgCache.set(key, {
         full: device.createBindGroup({ layout: pPrepFull.getBindGroupLayout(0), entries: [
@@ -890,7 +898,6 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
               { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: xq } },
               { binding: 4, resource: { buffer: tb } }] })),
       });
-      if (texBgCache.size > 12) texBgCache.clear(); // texture set changed wholesale
     }
     return texBgCache.get(key);
   }
