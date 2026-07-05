@@ -16,6 +16,14 @@
 
 const WG = 8;
 
+// identity stamps for texture-keyed caches. MODULE scope, not per-createRT:
+// runtimes get rebuilt (res/model/tune switches) while the caller's textures
+// survive with their stamps - a per-instance counter restarting at 1 would
+// re-issue ids already stamped on live textures, and the next pool realloc
+// would hand destroyed-texture bind groups out of the cache again.
+let texBgSeq = 0;
+const texBgId = (t) => t.__rtBgId || (t.__rtBgId = ++texBgSeq);
+
 // NOTE: with layout:'auto' WebGPU strips unused bindings from the layout, so each
 // entry point gets its own shader with exactly the bindings it touches.
 function wgslPrepFull(W, H) {
@@ -875,9 +883,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // Keyed by texture IDENTITY, not label: callers recreate pools reusing the same
   // labels (resolution change), and a label-keyed cache would keep serving bind
   // groups of destroyed textures - every submit fails async validation and the
-  // mids silently replay stale content.
-  let texBgSeq = 0;
-  const texBgId = (t) => t.__rtBgId || (t.__rtBgId = ++texBgSeq);
+  // mids silently replay stale content. (texBgId lives at module scope - see top.)
   const texBgCache = new Map();
   function texPrepBgs(texA, texB) {
     const key = texBgId(texA) + '|' + texBgId(texB);
