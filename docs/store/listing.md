@@ -9,8 +9,8 @@ Real-time neural frame interpolation for any video: 24/30 fps becomes 60-240+ fp
 ## Detailed description
 
 Framegen doubles (or more) the frame rate of any HTML5 video in real time,
-right in the tab. A small neural network - our own WebGPU runtime, ~5 ms per
-frame on a mid-range GPU - synthesizes the frames between the real ones, so
+right in the tab. A small neural network - our own WebGPU runtime, ~3 ms per
+frame on a mid-range GPU (RTX 4060 Ti) - synthesizes the frames between the real ones, so
 24/30 fps footage plays at 60, 120 or up to your display's refresh rate.
 
 Works on any site with a <video> element: YouTube, Twitch, streaming sites,
@@ -27,7 +27,7 @@ Features:
   picks the fastest shader variants
 - HUD with live fps / latency stats
 
-Requirements: a WebGPU-capable browser (Chrome/Edge 113+) and a GPU with
+Requirements: a WebGPU-capable browser (Chrome/Edge 121+) and a GPU with
 shader-f16 support. No WebGPU = the extension politely does nothing.
 
 Privacy: everything runs locally on your GPU. Framegen has no servers, makes
@@ -48,7 +48,7 @@ Photos (or: Fun / Entertainment)
   video frames can be read into GPU textures (rules.json, media only).
 
 ## Assets checklist (manual)
-- [ ] Screenshots 1280x800: player page + HUD, settings panel, before/after
-- [ ] Small promo tile 440x280
-- [ ] Privacy policy URL (docs/store/privacy-policy.md - needs a public URL
-      once the repo is unlocked)
+- [x] Screenshots 1280x800: docs/store/assets/screenshot{1,2,3}.png
+- [x] Small promo tile 440x280: docs/store/assets/promo_tile.png
+- [x] Privacy policy URL:
+      https://github.com/MONZikWasTaken/Framegen/blob/main/docs/store/privacy-policy.md
