@@ -3,7 +3,7 @@ f32 blob + manifest the WGSL runtime loads. Names map back onto the classic
 block0.* layout (trunk[i] -> convblock.i, head[j] -> convblock.6+j) so the
 runtime reuses every conv bind group; the film MLP ships under film.*.
 
-Usage: python export_tfact_weights.py [E:\\data\\framecast\\ckpt_tfact\\tfact_best.pt] [rt_tfact]
+Usage: python export_tfact_weights.py [E:\\data\\framegen\\ckpt_tfact\\tfact_best.pt] [rt_tfact]
 """
 import json
 import os
@@ -12,7 +12,7 @@ import sys
 import numpy as np
 import torch
 
-src = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framecast\ckpt_tfact\tfact_best.pt"
+src = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framegen\ckpt_tfact\tfact_best.pt"
 stem = sys.argv[2] if len(sys.argv) > 2 else "rt_tfact"
 out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
 

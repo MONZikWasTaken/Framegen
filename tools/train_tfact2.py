@@ -107,12 +107,12 @@ def eval_t2(net, eval_sets, device):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=r"E:\data\framecast\frames")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt_tfact2")
+    ap.add_argument("--data", default=r"E:\data\framegen\frames")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt_tfact2")
     ap.add_argument("--teacher", default=os.path.join(
         os.environ.get("TEMP", "/tmp"), "opencode", "rife_m", "RIFE_m_train_log", "flownet.pkl"))
-    ap.add_argument("--slim-ckpt", default=r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl")
-    ap.add_argument("--tfact-ckpt", default=r"E:\data\framecast\ckpt_tfact\tfact_best.pt")
+    ap.add_argument("--slim-ckpt", default=r"E:\data\framegen\ckpt_1blk_slim\student_last.pkl")
+    ap.add_argument("--tfact-ckpt", default=r"E:\data\framegen\ckpt_tfact\tfact_best.pt")
     ap.add_argument("--steps", type=int, default=25000)
     ap.add_argument("--batch", type=int, default=24)
     ap.add_argument("--crop", type=int, default=256)

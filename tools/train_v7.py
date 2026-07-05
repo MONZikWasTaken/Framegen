@@ -1,4 +1,4 @@
-"""Framecast V7 trainer: distill from PRECOMPUTED EMA-VFI targets (tea_v7).
+"""Framegen V7 trainer: distill from PRECOMPUTED EMA-VFI targets (tea_v7).
 
 The teacher was run over the dataset once (make_teacher_v7.py, 4 targets per
 triplet: s2 t=0.5 + s4 t=0.25/0.5/0.75, JPEG q97) - no teacher forward in the
@@ -8,7 +8,7 @@ losses carry the signal).
 
 Student = the shipped tfact2 family (trunk 1/16 + FiLM t-head + 1/4-res
 refine) at an arbitrary trunk width c:
-  c=120 - the current model (Framecast v0.6.x)
+  c=120 - the current model (Framegen v0.6.x)
   c<120 - "V7 Small" candidates (96, 80): same quality bar, fewer ms
   c>120 - "V7 Large" candidates: beat full RIFE within the ~12 ms budget
 Warm start: channel-sliced from the v0.6.0 checkpoint (--init); film layers
@@ -151,10 +151,10 @@ class V7Data(Dataset):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=r"E:\data\framecast\frames_v060\frames")
-    ap.add_argument("--tea-root", default=r"A:\framecast_dataset\tea_v7")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt_v7")
-    ap.add_argument("--init", default=r"E:\data\framecast\ckpt_big_v060\tfact2_best.pt")
+    ap.add_argument("--data", default=r"E:\data\framegen\frames_v060\frames")
+    ap.add_argument("--tea-root", default=r"A:\framegen_dataset\tea_v7")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt_v7")
+    ap.add_argument("--init", default=r"E:\data\framegen\ckpt_big_v060\tfact2_best.pt")
     ap.add_argument("--channels", type=int, default=96)
     ap.add_argument("--steps", type=int, default=100000)
     ap.add_argument("--batch", type=int, default=24)

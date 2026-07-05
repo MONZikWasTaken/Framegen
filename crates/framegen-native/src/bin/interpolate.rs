@@ -73,7 +73,7 @@ fn main() -> Result<()> {
         candle_core::Device::Cuda(_) => candle_core::DType::F16,
         _ => candle_core::DType::F32,
     };
-    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
+    let rife = framegen::RifeCandle::load(&args.weights, dtype, &dev)?;
 
     match args.cmd {
         Cmd::Img { img0, img1, out, timestep, scale } => {
@@ -82,18 +82,18 @@ fn main() -> Result<()> {
             if i0.dimensions() != i1.dimensions() {
                 return Err(anyhow!("img0 and img1 must have identical dimensions"));
             }
-            let t0 = framecast::imgutil::image_to_tensor(&i0, &dev)?;
-            let t1 = framecast::imgutil::image_to_tensor(&i1, &dev)?;
+            let t0 = framegen::imgutil::image_to_tensor(&i0, &dev)?;
+            let t1 = framegen::imgutil::image_to_tensor(&i1, &dev)?;
             let start = Instant::now();
             let out_t = rife.interpolate_scaled(&t0, &t1, timestep, scale)?;
             println!("interpolate {:?} -> {:?} scale={} ({:?})", t0.shape(), out_t.shape(), scale, start.elapsed());
-            let img = framecast::imgutil::tensor_to_image(&out_t)?;
+            let img = framegen::imgutil::tensor_to_image(&out_t)?;
             img.save(&out).map_err(|e| anyhow!("save {}: {e}", out.display()))?;
             println!("wrote {}", out.display());
             Ok(())
         }
         Cmd::Video { input, output, times, scale } => {
-            framecast::io::video::interpolate_video(&rife, &input, &output, times, scale, &dev)
+            framegen::io::video::interpolate_video(&rife, &input, &output, times, scale, &dev)
                 .map(|_| ())
                 .map_err(|e| anyhow!("video: {e}"))
         }

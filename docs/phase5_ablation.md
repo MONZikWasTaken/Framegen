@@ -67,8 +67,8 @@ student - DirectML has less dispatch overhead to erase), so the stacked total is
 runs at 10 interp/s.
 The `fastest` tier in the web app now points at the student ONNX
 (`assets/rife_lite_{720,480,360}p_2blk_noref_student.onnx`; regenerate with
-`FRAMECAST_WEIGHTS=<dir with flownet.pkl from models/…safetensors + tools/restore_pkl.py>`
-`FRAMECAST_SUFFIX=_student python tools/export_ablation.py <H> <W> 2blk_noref`).
+`FRAMEGEN_WEIGHTS=<dir with flownet.pkl from models/…safetensors + tools/restore_pkl.py>`
+`FRAMEGEN_SUFFIX=_student python tools/export_ablation.py <H> <W> 2blk_noref`).
 
 Training gotcha (Windows): the system CUDA dir on PATH poisons torch-cu130's bundled cuDNN
 (`CUDNN_STATUS_SUBLIBRARY_VERSION_MISMATCH`) - train_student.py strips it in-process.

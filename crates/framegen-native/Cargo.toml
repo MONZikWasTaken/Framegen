@@ -1,12 +1,12 @@
 [package]
-name = "framecast"
+name = "framegen"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.80"
 description = "RIFE-Lite (RIFEm) frame interpolation - candle reference oracle + native TensorRT backend"
 
 [lib]
-name = "framecast"
+name = "framegen"
 path = "src/lib.rs"
 
 [[bin]]

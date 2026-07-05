@@ -133,12 +133,12 @@ def load_atd_eval(test_root, n=100):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--atd", default=r"E:\data\framecast\atd12k\datasets")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt_anime")
+    ap.add_argument("--atd", default=r"E:\data\framegen\atd12k\datasets")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt_anime")
     ap.add_argument("--teacher", default=os.path.join(
         os.environ.get("TEMP", "/tmp"), "opencode", "rife_m", "RIFE_m_train_log", "flownet.pkl"))
-    ap.add_argument("--slim-ckpt", default=r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl")
-    ap.add_argument("--tfact-ckpt", default=r"E:\data\framecast\ckpt_big_v060\tfact2_best.pt")
+    ap.add_argument("--slim-ckpt", default=r"E:\data\framegen\ckpt_1blk_slim\student_last.pkl")
+    ap.add_argument("--tfact-ckpt", default=r"E:\data\framegen\ckpt_big_v060\tfact2_best.pt")
     ap.add_argument("--steps", type=int, default=20000)
     ap.add_argument("--batch", type=int, default=24)
     ap.add_argument("--crop", type=int, default=256)

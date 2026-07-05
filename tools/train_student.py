@@ -13,10 +13,10 @@ flips, temporal swap). Eval: fixed triplets from the two held-out clips (BBB, Je
 full 720p, uint8 PSNR - directly comparable to tools/quality_bench.py numbers.
 
 Usage (training venv):
-    python train_student.py --data E:\\data\\framecast\\frames --out E:\\data\\framecast\\ckpt
+    python train_student.py --data E:\\data\\framegen\\frames --out E:\\data\\framegen\\ckpt
 Checkpoints: student_last.pkl / student_best.pkl in --out, saved as a FULL IFNet_m
 state_dict with "module." prefixes -> drop-in for restore-dir/flownet.pkl consumers
-(export via tools/export_ablation.py with FRAMECAST_WEIGHTS pointing at --out).
+(export via tools/export_ablation.py with FRAMEGEN_WEIGHTS pointing at --out).
 """
 import argparse
 import math
@@ -208,8 +208,8 @@ def save_full_state(student, teacher_sd, path, prefixes):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=r"E:\data\framecast\frames")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt")
+    ap.add_argument("--data", default=r"E:\data\framegen\frames")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt")
     ap.add_argument("--weights", default=os.path.join(
         os.environ["TEMP"], "opencode", "rife_m", "RIFE_m_train_log", "flownet.pkl"))
     ap.add_argument("--steps", type=int, default=20000)

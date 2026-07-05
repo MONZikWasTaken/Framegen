@@ -15,7 +15,7 @@ extension (same 3.68ms@480p). --channels 24 --mid-convs 1 is the alt candidate
 (needs a small sr.js tweak; bench before shipping).
 
 Usage (training venv):
-    python train_restorer.py --out E:\\data\\framecast\\ckpt_restorer
+    python train_restorer.py --out E:\\data\\framegen\\ckpt_restorer
 """
 import argparse
 import math
@@ -136,8 +136,8 @@ def evaluate(net, pairs):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pairs", default=r"E:\data\framecast\restorer_pairs")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt_restorer")
+    ap.add_argument("--pairs", default=r"E:\data\framegen\restorer_pairs")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt_restorer")
     ap.add_argument("--steps", type=int, default=16000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-4)
@@ -146,7 +146,7 @@ def main():
     ap.add_argument("--clean-frac", type=float, default=0.3)
     ap.add_argument("--eval-every", type=int, default=1000)
     ap.add_argument("--workers", type=int, default=6)
-    ap.add_argument("--baseline", default=r"E:\data\framecast\ckpt_sr\sr_best.pt")
+    ap.add_argument("--baseline", default=r"E:\data\framegen\ckpt_sr\sr_best.pt")
     args = ap.parse_args()
 
     device = torch.device("cuda")

@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Framecast - Frame Interpolation",
+  "name": "Framegen - Frame Interpolation",
   "version": "1.0.0",
   "action": {
-    "default_title": "Framecast",
+    "default_title": "Framegen",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",

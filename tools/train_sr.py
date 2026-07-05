@@ -6,7 +6,7 @@ same movie frames as the interpolation students: GT = random full-res crop, inpu
 2x box-downscale. BGR /255 domain, matching the rest of the pipeline.
 
 Usage (training venv):
-    python train_sr.py --data E:\\data\\framecast\\frames --out E:\\data\\framecast\\ckpt_sr
+    python train_sr.py --data E:\\data\\framegen\\frames --out E:\\data\\framegen\\ckpt_sr
 Checkpoint: sr_last.pt / sr_best.pt (plain state_dict).
 """
 import argparse
@@ -104,8 +104,8 @@ def evaluate(net, frames, device):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=r"E:\data\framecast\frames")
-    ap.add_argument("--out", default=r"E:\data\framecast\ckpt_sr")
+    ap.add_argument("--data", default=r"E:\data\framegen\frames")
+    ap.add_argument("--out", default=r"E:\data\framegen\ckpt_sr")
     ap.add_argument("--steps", type=int, default=8000)
     ap.add_argument("--batch", type=int, default=32)
     ap.add_argument("--lr", type=float, default=2e-4)

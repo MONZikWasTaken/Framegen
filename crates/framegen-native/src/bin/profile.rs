@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     };
     println!("dtype: {:?}", dtype);
 
-    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
+    let rife = framegen::RifeCandle::load(&args.weights, dtype, &dev)?;
 
     let img0 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
     let img1 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;
@@ -57,7 +57,7 @@ fn main() -> Result<()> {
     let mut upload_times = Vec::new();
     for _ in 0..args.iters {
         let t = Instant::now();
-        let _t = framecast::imgutil::raw_rgb24_to_tensor(&raw, args.w, args.h, &dev)?;
+        let _t = framegen::imgutil::raw_rgb24_to_tensor(&raw, args.w, args.h, &dev)?;
         dev.synchronize()?;
         upload_times.push(t.elapsed().as_secs_f64() * 1000.0);
     }
@@ -70,7 +70,7 @@ fn main() -> Result<()> {
     let mut dl_times = Vec::new();
     for _ in 0..args.iters {
         let t = Instant::now();
-        let _bytes = framecast::imgutil::tensor_to_rgb24(&out)?;
+        let _bytes = framegen::imgutil::tensor_to_rgb24(&out)?;
         dev.synchronize()?;
         dl_times.push(t.elapsed().as_secs_f64() * 1000.0);
     }

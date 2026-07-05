@@ -8,7 +8,7 @@ The graph itself does: cast/255 -> HWC->CHW -> RGB->BGR -> zero-pad to /32 -> ne
 crop -> BGR->RGB -> CHW->HWC -> *255 -> truncate-cast (same semantics as
 rife-core prepost). Kills the CPU prepost AND shrinks PCIe traffic 4x (u8 vs f32).
 
-Env: FRAMECAST_WEIGHTS (dir with flownet.pkl), FRAMECAST_SUFFIX (output name suffix).
+Env: FRAMEGEN_WEIGHTS (dir with flownet.pkl), FRAMEGEN_SUFFIX (output name suffix).
 Usage: python export_u8.py <H> <W> <variant>     # variant from export_ablation CONFIGS + 'full'
 """
 import os
@@ -24,9 +24,9 @@ from model.warplayer import warp
 H, W = int(sys.argv[1]), int(sys.argv[2])
 VARIANT = sys.argv[3] if len(sys.argv) > 3 else "full"
 
-WEIGHTS = os.environ.get("FRAMECAST_WEIGHTS") or os.path.join(
+WEIGHTS = os.environ.get("FRAMEGEN_WEIGHTS") or os.path.join(
     os.environ["TEMP"], "opencode", "rife_m", "RIFE_m_train_log")
-SUFFIX = os.environ.get("FRAMECAST_SUFFIX", "")
+SUFFIX = os.environ.get("FRAMEGEN_SUFFIX", "")
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 
 CONFIGS = {

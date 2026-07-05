@@ -2,7 +2,7 @@
 name = "rife-wgpu"
 version = "0.1.0"
 edition = "2021"
-description = "Framecast custom runtime on wgpu - same WGSL kernels as the browser, native on any GPU (no TensorRT/CUDA)"
+description = "Framegen custom runtime on wgpu - same WGSL kernels as the browser, native on any GPU (no TensorRT/CUDA)"
 
 [dependencies]
 wgpu = "30"

@@ -1,15 +1,15 @@
-# Framecast Privacy Policy
+# Framegen Privacy Policy
 
 Effective date: 2026-07-04
 
-Framecast is a browser extension that performs neural frame interpolation of
+Framegen is a browser extension that performs neural frame interpolation of
 videos locally, on your GPU.
 
 ## What we collect
 
 Nothing.
 
-Framecast has no servers and no analytics. It does not collect, transmit,
+Framegen has no servers and no analytics. It does not collect, transmit,
 sell, or share any data - no browsing history, no video content, no
 identifiers, no telemetry of any kind.
 
@@ -43,4 +43,4 @@ collect nothing" is the expected content of any future version.
 
 ## Contact
 
-Questions: open an issue at https://github.com/MONZikWasTaken/Framecast
+Questions: open an issue at https://github.com/MONZikWasTaken/Framegen

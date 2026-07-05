@@ -26,7 +26,7 @@ from train_student import load_ifnet, two_block_forward
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLIPS = [os.path.join(REPO, "assets", "bbb_720_10s.mp4"),
          os.path.join(REPO, "assets", "jellyfish_720_10s.mp4")]
-SLIM = r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl"
+SLIM = r"E:\data\framegen\ckpt_1blk_slim\student_last.pkl"
 
 
 def psnr(a, b):
@@ -35,7 +35,7 @@ def psnr(a, b):
 
 
 def main():
-    ckpt = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framecast\ckpt_tfact\tfact_best.pt"
+    ckpt = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framegen\ckpt_tfact\tfact_best.pt"
     device = torch.device("cuda")
     ck = torch.load(ckpt, map_location="cpu")
     slim = load_ifnet(SLIM, device).eval()

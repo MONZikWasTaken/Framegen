@@ -34,7 +34,7 @@ fn main() -> Result<()> {
     println!("dtype: {:?}", dtype);
 
     let t0 = Instant::now();
-    let rife = framecast::RifeCandle::load(&args.weights, dtype, &dev)?;
+    let rife = framegen::RifeCandle::load(&args.weights, dtype, &dev)?;
     println!("loaded weights in {:.2?}", t0.elapsed());
 
     let img0 = candle_core::Tensor::rand(0f32, 1f32, (1, 3, args.h, args.w), &dev)?;

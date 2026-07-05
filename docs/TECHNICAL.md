@@ -1,4 +1,4 @@
-# Framecast - technical notes
+# Framegen - technical notes
 
 Everything in the hot path is ours:
 
@@ -91,8 +91,8 @@ web/rt/sr.js             TinySR 2x upscaler kernels
 web/player.html          standalone real-time player demo (+ worker)
 web/rt_test.html         parity harness vs the ONNX reference (+built-in bench)
 crates/rife-wgpu         same kernels on native wgpu (Rust)
-crates/framecast-native  native TensorRT path + candle correctness oracle
-packages/rt              the runtime as an npm library (@framecast/rt, LGPL)
+crates/framegen-native   native TensorRT path + candle correctness oracle
+packages/rt              the runtime as an npm library (npm "framegen", LGPL)
 tools/                   training (distill/SR), export, benchmarks, packaging
 docs/                    measurements and phase notes
 ```

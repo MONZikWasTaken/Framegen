@@ -1,7 +1,7 @@
 {
-  "name": "@framecast/rt",
+  "name": "framegen",
   "version": "1.0.0",
-  "description": "Real-time neural frame interpolation on raw WebGPU: hand-written WGSL kernels, 2.9 MB model, ~3 ms per generated frame on a mid-range GPU. The runtime behind the Framecast extension.",
+  "description": "Real-time neural frame interpolation on raw WebGPU: hand-written WGSL kernels, 2.9 MB model, ~3 ms per generated frame on a mid-range GPU. The runtime behind the Framegen extension.",
   "type": "module",
   "main": "./rt.js",
   "exports": {
@@ -22,11 +22,11 @@
   "license": "LGPL-3.0-or-later",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MONZikWasTaken/Framecast.git",
+    "url": "git+https://github.com/MONZikWasTaken/Framegen.git",
     "directory": "packages/rt"
   },
-  "homepage": "https://github.com/MONZikWasTaken/Framecast#readme",
-  "bugs": "https://github.com/MONZikWasTaken/Framecast/issues",
+  "homepage": "https://github.com/MONZikWasTaken/Framegen#readme",
+  "bugs": "https://github.com/MONZikWasTaken/Framegen/issues",
   "keywords": [
     "webgpu",
     "wgsl",

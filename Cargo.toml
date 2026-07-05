@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rife-core", "crates/rife-wgpu", "crates/framecast-native"]
+members = ["crates/rife-core", "crates/rife-wgpu", "crates/framegen-native"]
 
 [profile.release]
 opt-level = 3

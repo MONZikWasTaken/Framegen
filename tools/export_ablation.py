@@ -23,9 +23,9 @@ args = sys.argv[1:]
 H, W = (int(args[0]), int(args[1])) if len(args) >= 2 else (720, 1280)
 VARIANTS = args[2:] or ["noref", "s842", "s842_noref", "2blk", "2blk_noref"]
 
-# FRAMECAST_WEIGHTS overrides the checkpoint dir (must contain flownet.pkl) —
+# FRAMEGEN_WEIGHTS overrides the checkpoint dir (must contain flownet.pkl) —
 # used to export trained students from tools/train_student.py.
-WEIGHTS = os.environ.get("FRAMECAST_WEIGHTS") or os.path.join(
+WEIGHTS = os.environ.get("FRAMEGEN_WEIGHTS") or os.path.join(
     os.environ["TEMP"], "opencode", "rife_m", "RIFE_m_train_log")
 OUT_DIR = os.path.join(os.path.dirname(__file__), "..", "assets")
 
@@ -101,7 +101,7 @@ for name in VARIANTS:
     warplayer.backwarp_tenGrid.clear()  # cached grids leak FakeTensors between dynamo exports
     cfg = CONFIGS[name]
     wrapper = Ablated(net, **cfg)
-    suffix = os.environ.get("FRAMECAST_SUFFIX", "")  # e.g. "_student" for trained checkpoints
+    suffix = os.environ.get("FRAMEGEN_SUFFIX", "")  # e.g. "_student" for trained checkpoints
     out_path = os.path.join(OUT_DIR, f"rife_lite_{H}p_{name}{suffix}.onnx")
     torch.onnx.export(
         wrapper, (dummy0, dummy1), out_path,

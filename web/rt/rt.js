@@ -1,4 +1,4 @@
-﻿// Framecast custom WebGPU runtime - hand-rolled forward of the 1-block student
+﻿// Framegen custom WebGPU runtime - hand-rolled forward of the 1-block student
 // (block0 of IFNet_m, scale=4, timestep=0.5). The whole frame is ONE command buffer
 // of ~13 dispatches; no per-op JS, no runtime glue. Weights: assets/rt_1blk.{bin,json}
 // (tools/export_rt_weights.py).

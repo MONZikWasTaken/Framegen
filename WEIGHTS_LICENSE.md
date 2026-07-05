@@ -1,6 +1,6 @@
 # Model weights license
 
-The Framecast **code** is AGPLv3 (see `LICENSE`). The **model weights**
+The Framegen **code** is AGPLv3 (see `LICENSE`). The **model weights**
 (`.bin`/`.json` blobs shipped in releases: `rt_tfact*`, `rt_slim`, `rt_1blk`,
 `rt_sr`, etc.) are distributed under separate terms:
 

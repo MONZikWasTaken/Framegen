@@ -7,7 +7,7 @@ fn main() -> Result<()> {
     let engine = std::env::args().nth(1).unwrap_or_else(|| {
         "assets/rife_lite_trt_fp16.engine".to_string()
     });
-    let rife = framecast::trt::RifeTrt::load(&PathBuf::from(&engine))?;
+    let rife = framegen::trt::RifeTrt::load(&PathBuf::from(&engine))?;
     println!("engine {engine}: C={} EH={} EW={}", rife.c, rife.eh, rife.ew);
 
     let n = rife.elems();

@@ -44,7 +44,7 @@ cannot buy what the trunk cannot represent.
 
 - No anime specialist ships; the content selector stays shelved (nothing to
   select between).
-- Checkpoint + log on the shelf: `E:\data\framecast\ckpt_anime_atd\`.
+- Checkpoint + log on the shelf: `E:\data\framegen\ckpt_anime_atd\`.
 - The anime path forward is the v7 track (stronger teacher, larger student),
   not more finetuning at current capacity.
 - ATD-12K itself is downloaded and staged (Kaggle mirror; GDrive quota is

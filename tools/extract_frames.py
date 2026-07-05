@@ -5,7 +5,7 @@ PSNR(f[i-1], f[i+1]) is between CUT_DB (scene cut / chaos) and STATIC_DB (nothin
 both computed on a 1/4-scale grayscale for speed.
 
 Usage (training venv):
-    python extract_frames.py <movie> [more movies ...] [--out=E:\\data\\framecast]
+    python extract_frames.py <movie> [more movies ...] [--out=E:\\data\\framegen]
 Writes frames to  <out>/frames/<stem>/%06d.jpg
 and the index to  <out>/frames/<stem>/triplets.txt (one frame number per line).
 """
@@ -18,7 +18,7 @@ import numpy as np
 
 CUT_DB, STATIC_DB = 16.0, 45.0
 
-out_root = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--out=")), r"E:\data\framecast")
+out_root = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--out=")), r"E:\data\framegen")
 movies = [a for a in sys.argv[1:] if not a.startswith("--")]
 
 

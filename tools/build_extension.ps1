@@ -18,22 +18,22 @@ if (Test-Path "$root\assets\rt_v7s.bin") {
 Remove-Item "$root\extension\assets\rt_slim.bin", "$root\extension\assets\rt_slim.json" -Force -ErrorAction SilentlyContinue
 $size = (Get-ChildItem "$root\extension" -Recurse | Measure-Object Length -Sum).Sum
 Write-Host ("extension ready: {0:N1} MB" -f ($size / 1MB))
-# distributable zip: extracts into a framecast-extension/ folder ready for Load unpacked.
-# (Web Store upload wants manifest.json at zip ROOT - re-zip $stage\framecast-extension\*
+# distributable zip: extracts into a framegen-extension/ folder ready for Load unpacked.
+# (Web Store upload wants manifest.json at zip ROOT - re-zip $stage\framegen-extension\*
 # without the folder for that.)
 # Chrome writes _metadata/ into the source dir when the unpacked extension has DNR
 # rulesets - shipping it makes Chrome REFUSE to load ("_ names are reserved"): stage
 # a filtered copy first.
-$stage = Join-Path $env:TEMP "framecast-zip-stage"
+$stage = Join-Path $env:TEMP "framegen-zip-stage"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
-$stageDir = Join-Path $stage "framecast-extension"
+$stageDir = Join-Path $stage "framegen-extension"
 New-Item -ItemType Directory -Force $stageDir | Out-Null
 Get-ChildItem "$root\extension" | Where-Object { $_.Name -notlike '_*' } |
     ForEach-Object { Copy-Item $_.FullName (Join-Path $stageDir $_.Name) -Recurse -Force }
-$zip = "$root\framecast-extension.zip"
+$zip = "$root\framegen-extension.zip"
 Compress-Archive -Path $stageDir -DestinationPath $zip -Force
 Write-Host ("zip: {0} ({1:N1} MB)" -f $zip, ((Get-Item $zip).Length / 1MB))
 # Web Store upload variant: same tree but manifest.json at the archive ROOT.
-$storeZip = "$root\framecast-webstore.zip"
+$storeZip = "$root\framegen-webstore.zip"
 Compress-Archive -Path "$stageDir\*" -DestinationPath $storeZip -Force
 Write-Host ("store zip: {0} ({1:N1} MB)" -f $storeZip, ((Get-Item $storeZip).Length / 1MB))

@@ -25,9 +25,9 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let rife = framecast::trt::RifeTrt::load(&args.engine)?;
+    let rife = framegen::trt::RifeTrt::load(&args.engine)?;
     eprintln!("engine loaded: C={} EH={} EW={}", rife.c, rife.eh, rife.ew);
-    framecast::io::video_trt::interpolate_video_trt(
+    framegen::io::video_trt::interpolate_video_trt(
         &rife, &args.input, &args.output, args.times, args.skip_static)?;
     Ok(())
 }

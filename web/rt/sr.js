@@ -1,4 +1,4 @@
-// Framecast tiny 2x super-resolution pass (anime upscale) for the present path.
+// Framegen tiny 2x super-resolution pass (anime upscale) for the present path.
 // Residual-vs-bilinear: out = bilinear2x(src) + detail, detail = 3 tiny convs (c=16).
 // Texture in -> texture out (2x size); everything stays on the GPU.
 // Weights: assets/rt_sr.{bin,json} (tools/export_sr_weights.py).

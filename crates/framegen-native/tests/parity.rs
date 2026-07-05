@@ -4,11 +4,11 @@
 //   cargo test --features trt --test parity -- --ignored --nocapture
 #![cfg(feature = "trt")]
 
-use framecast::trt::RifeTrt;
-use framecast::{FrameInterpolator, RifeCandle};
+use framegen::trt::RifeTrt;
+use framegen::{FrameInterpolator, RifeCandle};
 use rife_core::Frame;
 
-/// Repo root (this crate lives at crates/framecast-native/).
+/// Repo root (this crate lives at crates/framegen-native/).
 const ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
 
 /// Decode the first two frames of `demo/test_720p.mp4` as RGB24 at native size.

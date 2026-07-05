@@ -1,4 +1,4 @@
-// Framecast toolbar popup: READ-ONLY status/metadata for the active tab.
+// Framegen toolbar popup: READ-ONLY status/metadata for the active tab.
 // All controls live in the in-player UI by design.
 const $ = (id) => document.getElementById(id);
 

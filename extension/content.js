@@ -1,11 +1,11 @@
-// Framecast content script: real-time frame interpolation for any <video> on the page.
+// Framegen content script: real-time frame interpolation for any <video> on the page.
 // GPU-resident pipeline (own WebGPU runtime, weights bundled): video -> texture ->
 // interpolation -> overlay canvas (sibling of the video; site controls stay on top).
 // DRM (EME) video produces black frames - nothing any extension can do about that.
 (() => {
   'use strict';
-  if (window.__framecast) return;
-  window.__framecast = true;
+  if (window.__framegen) return;
+  window.__framegen = true;
 
   const DELAY_MS = 60;
   // runtime tiles are 16x16 - model dims must be /16 (1088, not 1080; the ~0.7%
@@ -93,7 +93,7 @@
   const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
 
-  const log = (...a) => console.log('[framecast]', ...a);
+  const log = (...a) => console.log('[framegen]', ...a);
 
   // Chrome on Windows IGNORES powerPreference (crbug.com/369219127): on dual-GPU
   // machines we get whatever GPU Chrome runs on. Detect integrated ones and tell
@@ -1413,7 +1413,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framecast <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
+      <div class="fc-title">Framegen <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
       <label class="fc-row"><span>Smoothness<small>neural frame generation</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <label class="fc-row"><span>Sharpness<small>2x upscale of inserted frames</small></span>
@@ -1592,7 +1592,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     wm.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483645;'
       + 'color:#fff; font:600 12px system-ui; opacity:.75; pointer-events:none;'
       + 'text-shadow:0 1px 3px rgba(0,0,0,.8); display:none;';
-    wm.textContent = 'Framecast';
+    wm.textContent = 'Framegen';
     document.body.appendChild(wm);
     buildPanel();
     ensureBar();

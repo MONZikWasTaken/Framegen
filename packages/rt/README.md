@@ -1,7 +1,7 @@
-# @framecast/rt
+# framegen
 
 Real-time neural frame interpolation on **raw WebGPU** - the runtime behind
-the [Framecast](https://github.com/MONZikWasTaken/Framecast) extension,
+the [Framegen](https://github.com/MONZikWasTaken/Framegen) extension,
 packaged as a library. Hand-written WGSL compute kernels, no ML framework,
 ~3 ms per generated frame at 720p on a mid-range GPU (RTX 4060 Ti).
 
@@ -11,14 +11,14 @@ works).
 ## Install
 
 ```
-npm i @framecast/rt
+npm i framegen
 ```
 
-Weights are **not** bundled - fetch them once from the Framecast release
+Weights are **not** bundled - fetch them once from the Framegen release
 (2.9 MB) and cache as you like:
 
 ```js
-const BASE = 'https://github.com/MONZikWasTaken/Framecast/releases/download/v1.0.0';
+const BASE = 'https://github.com/MONZikWasTaken/Framegen/releases/download/v1.0.0';
 const [bin, manifest] = await Promise.all([
   fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
   fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
@@ -28,7 +28,7 @@ const [bin, manifest] = await Promise.all([
 ## Interpolate between two frames
 
 ```js
-import { createRT } from '@framecast/rt';
+import { createRT } from 'framegen';
 
 const adapter = await navigator.gpu.requestAdapter();
 const device = await adapter.requestDevice({
@@ -61,7 +61,7 @@ Kernel shapes are GPU-specific. Run the autotuner once per machine and pass
 the result in:
 
 ```js
-import { createRT, tuneConvRB } from '@framecast/rt';
+import { createRT, tuneConvRB } from 'framegen';
 
 const tune = await tuneConvRB(device, { ci: 192, co: 192, w16: 80, h16: 45 });
 localStorage.setItem('fcTune', JSON.stringify(tune));
@@ -74,5 +74,5 @@ const rt = await createRT(device, { ...opts, convTune: JSON.parse(localStorage.g
 **LGPL-3.0-or-later.** Embed it in anything, including commercial products;
 modifications to the library itself must be published. The model weights are
 licensed separately (non-commercial - see
-[WEIGHTS_LICENSE](https://github.com/MONZikWasTaken/Framecast/blob/main/WEIGHTS_LICENSE.md));
+[WEIGHTS_LICENSE](https://github.com/MONZikWasTaken/Framegen/blob/main/WEIGHTS_LICENSE.md));
 for commercial weight licensing, get in touch.

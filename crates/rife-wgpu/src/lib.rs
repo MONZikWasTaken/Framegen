@@ -1,4 +1,4 @@
-//! Framecast custom runtime on wgpu - the browser's WGSL kernels (web/rt/rt.js), hosted
+//! Framegen custom runtime on wgpu - the browser's WGSL kernels (web/rt/rt.js), hosted
 //! natively. No TensorRT, no CUDA: runs on Vulkan/DX12/Metal, i.e. any GPU.
 //!
 //! Buffer-mode forward of the 1-block student (block0 of IFNet_m, scale=4):

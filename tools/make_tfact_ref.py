@@ -21,7 +21,7 @@ from train_tfact2 import TFact2
 from train_student import load_ifnet
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ckpt = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framecast\ckpt_tfact\tfact_last.pt"
+ckpt = sys.argv[1] if len(sys.argv) > 1 else r"E:\data\framegen\ckpt_tfact\tfact_last.pt"
 W = int(sys.argv[2]) if len(sys.argv) > 2 else 256
 H = int(sys.argv[3]) if len(sys.argv) > 3 else 256
 
@@ -45,7 +45,7 @@ def to_bgr_tensor(rgba, device):
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     ck = torch.load(ckpt, map_location="cpu")
-    slim = load_ifnet(r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl", device)
+    slim = load_ifnet(r"E:\data\framegen\ckpt_1blk_slim\student_last.pkl", device)
     kind = TFact2 if any(k.startswith("core.") for k in ck["sd"]) else TFactSlim
     net = kind(slim.block0, ck["c"]).to(device)
     net.load_state_dict(ck["sd"])

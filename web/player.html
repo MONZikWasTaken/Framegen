@@ -1,6 +1,6 @@
 ﻿<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Framecast - real-time 2× player</title>
+<head><meta charset="utf-8"><title>Framegen - real-time 2× player</title>
 <style>
   body { font:14px/1.5 system-ui, sans-serif; margin:20px; max-width:1100px; background:#181818; color:#ddd; }
   button,select { font-size:15px; padding:5px 10px; margin-right:8px; }
@@ -16,7 +16,7 @@
 </style>
 </head>
 <body>
-<h3>Framecast - real-time 2× player (worker edition)</h3>
+<h3>Framegen - real-time 2× player (worker edition)</h3>
 <p>Fully GPU-resident pipeline on our own WebGPU runtime: video → texture →
 interpolation (2-6×) → SR upscale → screen. No browser flags needed.</p>
 
@@ -101,9 +101,9 @@ function onWorkerMessage(ev) {
       `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '-'}\n` +
       `shown ${m.shown} · dropped ${m.dropped} · dups ${m.dups} · cuts ${m.cuts} · ${workerKey ?? ''}`;
   } else if (m.type === 'tune') {
-    const all = JSON.parse(localStorage.getItem('framecastTune') || '{}');
+    const all = JSON.parse(localStorage.getItem('framegenTune') || '{}');
     all[m.res] = m.tune;
-    localStorage.setItem('framecastTune', JSON.stringify(all));
+    localStorage.setItem('framegenTune', JSON.stringify(all));
   } else if (m.type === 'log') st(m.msg);
   else if (m.type === 'error') {
     st('WORKER ERROR: ' + m.msg, true);
@@ -160,7 +160,7 @@ function ensureWorker() {
     worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.res,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
       factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen,
-      tunes: JSON.parse(localStorage.getItem('framecastTune') || '{}') }, [offscreen]);
+      tunes: JSON.parse(localStorage.getItem('framegenTune') || '{}') }, [offscreen]);
   });
 }
 
@@ -218,7 +218,7 @@ $('stage').ondrop = e => {
 const SETTINGS = ['res', 'factor'];
 const FLAGS = ['interpOn', 'animeMode', 'mute', 'srOn'];
 try {
-  const saved = JSON.parse(localStorage.getItem('framecast') || '{}');
+  const saved = JSON.parse(localStorage.getItem('framegen') || '{}');
   SETTINGS.forEach(k => { if (saved[k]) $(k).value = saved[k]; });
   FLAGS.forEach(k => { if (k in saved) $(k).checked = saved[k]; });
 } catch {}
@@ -226,7 +226,7 @@ function saveSettings() {
   const s = {};
   SETTINGS.forEach(k => s[k] = $(k).value);
   FLAGS.forEach(k => s[k] = $(k).checked);
-  localStorage.setItem('framecast', JSON.stringify(s));
+  localStorage.setItem('framegen', JSON.stringify(s));
 }
 [...SETTINGS, ...FLAGS].forEach(k => $(k).addEventListener('change', saveSettings));
 

@@ -1,14 +1,14 @@
 # Chrome Web Store listing (draft)
 
 ## Name
-Framecast - Frame Interpolation
+Framegen - Frame Interpolation
 
 ## Summary (132 chars max)
 Real-time neural frame interpolation for any video: 24/30 fps becomes 60-240+ fps, fully on your GPU. No cloud, no account.
 
 ## Detailed description
 
-Framecast doubles (or more) the frame rate of any HTML5 video in real time,
+Framegen doubles (or more) the frame rate of any HTML5 video in real time,
 right in the tab. A small neural network - our own WebGPU runtime, ~5 ms per
 frame on a mid-range GPU - synthesizes the frames between the real ones, so
 24/30 fps footage plays at 60, 120 or up to your display's refresh rate.
@@ -30,11 +30,11 @@ Features:
 Requirements: a WebGPU-capable browser (Chrome/Edge 113+) and a GPU with
 shader-f16 support. No WebGPU = the extension politely does nothing.
 
-Privacy: everything runs locally on your GPU. Framecast has no servers, makes
+Privacy: everything runs locally on your GPU. Framegen has no servers, makes
 no network requests beyond loading its own bundled files, and collects
 nothing. See the privacy policy.
 
-Free for personal use. Source: https://github.com/MONZikWasTaken/Framecast
+Free for personal use. Source: https://github.com/MONZikWasTaken/Framegen
 
 ## Category
 Photos (or: Fun / Entertainment)

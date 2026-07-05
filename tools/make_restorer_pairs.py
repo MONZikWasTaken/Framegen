@@ -8,7 +8,7 @@ player: tfact2 outputs. Two motion regimes are sampled to match the wild:
   - stride-4, t in {0.25, 0.5, 0.75} (real GT, bigger motion,
     off-center t like the display-Hz mode)                    ~30%
 
-Output layout (E:\\data\\framecast\\restorer_pairs by default):
+Output layout (E:\\data\\framegen\\restorer_pairs by default):
   train/<clip>_<i>_<code>.png   our mid, half-res, PNG (no recompression)
   train/pairs.txt               "<mid_rel>\t<gt_abs>" per line
   eval/...                      same scheme from the held-out BBB/jellyfish clips
@@ -35,7 +35,7 @@ from train_student import load_ifnet
 from train_tfact2 import TFact2
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SLIM = r"E:\data\framecast\ckpt_1blk_slim\student_last.pkl"
+SLIM = r"E:\data\framegen\ckpt_1blk_slim\student_last.pkl"
 
 
 def load_net(ckpt, device):
@@ -65,9 +65,9 @@ def half(img):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data", default=r"E:\data\framecast\frames_v060\frames")
-    ap.add_argument("--out", default=r"E:\data\framecast\restorer_pairs")
-    ap.add_argument("--ckpt", default=r"E:\data\framecast\ckpt_big_v060\tfact2_best.pt")
+    ap.add_argument("--data", default=r"E:\data\framegen\frames_v060\frames")
+    ap.add_argument("--out", default=r"E:\data\framegen\restorer_pairs")
+    ap.add_argument("--ckpt", default=r"E:\data\framegen\ckpt_big_v060\tfact2_best.pt")
     ap.add_argument("--limit", type=int, default=12000)
     args = ap.parse_args()
 

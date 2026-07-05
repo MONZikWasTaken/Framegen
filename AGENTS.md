@@ -1,4 +1,4 @@
-# AGENTS.md - Framecast
+# AGENTS.md - Framegen
 
 Real-time RIFE-Lite (RIFEm) frame interpolation. Two backends behind one `FrameInterpolator` trait:
 - **candle** (`RifeCandle`) - pixel-accurate Rust/candle port, used as the correctness reference/oracle.
@@ -16,7 +16,7 @@ cargo check                                  # typecheck (default = CPU/candle)
 cargo build --release                        # candle CLIs
 cargo clippy --all-targets -- -D warnings    # lint
 cargo test                                   # unit tests
-cargo build --release -p framecast --features "bin trt" --bin rife-trt   # native TensorRT (needs MSVC + CUDA)
+cargo build --release -p framegen --features "bin trt" --bin rife-trt   # native TensorRT (needs MSVC + CUDA)
 ```
 
 ## Layout
@@ -26,7 +26,7 @@ extension/          Chrome MV3 extension (content.js = full pipeline)
 web/                WGSL runtime (rt/), player demo, parity harness (rt_test.html)
 crates/rife-core/   Frame, FrameInterpolator trait, prepost (to_input/from_output) - no candle/cuda deps
 crates/rife-wgpu/   the WGSL kernels hosted on native wgpu (Vulkan/DX12/Metal)
-crates/framecast-native/  candle oracle + native TensorRT backend (package name: framecast)
+crates/framegen-native/  candle oracle + native TensorRT backend (package name: framegen)
   src/lib.rs        RifeCandle (interpolate_scaled tensor API) + impl FrameInterpolator
   src/model.rs      IFNet_m reimplementation on candle
   src/warp.rs       backward warp (fused CUDA CustomOp2 + CPU fallback)

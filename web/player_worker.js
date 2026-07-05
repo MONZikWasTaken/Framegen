@@ -1,4 +1,4 @@
-// Framecast player worker - fully GPU-resident and fully OURS: video frames arrive
+// Framegen player worker - fully GPU-resident and fully OURS: video frames arrive
 // as ImageBitmaps, go straight into textures, mids are computed INTO textures by the
 // hand-written WGSL runtime (rt.js), and this worker presents everything itself on a
 // transferred OffscreenCanvas with its own rAF loop. Nothing pixel-shaped ever
