@@ -76,8 +76,10 @@
   const blitBg = new Map();
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
   let midTexs = [], midIdx = 0;
-  let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupRead = null, dedupSampler = null;
+  let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
+  let dedupReads = [], dedupReadIdx = 0; // readback ring: classifies overlap now
   let queue = [], running = false, processingFrame = false;
+  let pairSeq = 0; // generation counter for in-flight classify continuations
   let hzNext = 0; // display-match mode: absolute time of the next output vsync tick
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
   let msAvg = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
@@ -204,6 +206,7 @@
     frameTex.forEach(t => t.destroy());
     frameTex = [];
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
+    pairSeq++; // in-flight classify continuations must not prep destroyed textures
     poolGen++;
     for (let i = 0; i < 12; i++) {
       frameTex.push(device.createTexture({ label: 'fcfr' + poolGen + '_' + i, size: [w, h], format: 'rgba8unorm',
@@ -261,7 +264,8 @@
     if (dedupPipe) return;
     dedupSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     dedupStats = device.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-    dedupRead = device.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    dedupReads = Array.from({ length: 3 }, () => ({ busy: false,
+      buf: device.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }) }));
     dedupPipe = device.createComputePipeline({ layout: 'auto', compute: {
       module: device.createShaderModule({ code: `
 @group(0) @binding(0) var t0: texture_2d<f32>;
@@ -283,28 +287,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const DEDUP_ZERO = new Uint32Array(2);
   async function classifyPair(ta, tb) {
     ensureDedup();
-    const key = ta.label + '|' + tb.label;
-    if (!dedupBg.has(key)) {
-      dedupBg.set(key, device.createBindGroup({ layout: dedupPipe.getBindGroupLayout(0), entries: [
-        { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
-        { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
+    // free readback slot: the frame loop no longer awaits classifies, so two can
+    // be in flight at 120fps sources. All busy = treat as ordinary motion.
+    let rb = null;
+    for (let i = 0; i < dedupReads.length; i++) {
+      const c = dedupReads[(dedupReadIdx + i) % dedupReads.length];
+      if (!c.busy) { rb = c; dedupReadIdx = (dedupReadIdx + i + 1) % dedupReads.length; break; }
     }
-    device.queue.writeBuffer(dedupStats, 0, DEDUP_ZERO); // hoisted: this runs per frame pair
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
-    pass.dispatchWorkgroups(6, 4);
-    pass.end();
-    enc.copyBufferToBuffer(dedupStats, 0, dedupRead, 0, 8);
-    device.queue.submit([enc.finish()]);
-    await dedupRead.mapAsync(GPUMapMode.READ);
-    const s = new Uint32Array(dedupRead.getMappedRange().slice(0));
-    dedupRead.unmap();
-    const mean = s[0] / (48 * 27);
-    lastStat = { mean, max: s[1] };
-    // motion EMA feeds the artifact-aware factor cap; dups/cuts don't count as motion
-    if (mean < 90) motionAvg = motionAvg * 0.7 + mean * 0.3;
-    return { dup: mean < 2.5 && s[1] < 45, cut: mean > 90, black: s[1] === 0 };
+    if (!rb) return { dup: false, cut: false, black: false };
+    rb.busy = true;
+    try {
+      const key = ta.label + '|' + tb.label;
+      if (!dedupBg.has(key)) {
+        dedupBg.set(key, device.createBindGroup({ layout: dedupPipe.getBindGroupLayout(0), entries: [
+          { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
+          { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
+      }
+      // the single stats buffer is safe across overlapping classifies: zero,
+      // dispatch and the copy-out are queue-ordered per submit
+      device.queue.writeBuffer(dedupStats, 0, DEDUP_ZERO);
+      const enc = device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
+      pass.dispatchWorkgroups(6, 4);
+      pass.end();
+      enc.copyBufferToBuffer(dedupStats, 0, rb.buf, 0, 8);
+      device.queue.submit([enc.finish()]);
+      await rb.buf.mapAsync(GPUMapMode.READ);
+      const s = new Uint32Array(rb.buf.getMappedRange().slice(0));
+      rb.buf.unmap();
+      const mean = s[0] / (48 * 27);
+      lastStat = { mean, max: s[1] };
+      // motion EMA feeds the artifact-aware factor cap; dups/cuts don't count as motion
+      if (mean < 90) motionAvg = motionAvg * 0.7 + mean * 0.3;
+      return { dup: mean < 2.5 && s[1] < 45, cut: mean > 90, black: s[1] === 0 };
+    } finally {
+      rb.busy = false;
+    }
   }
 
   // ---------- overlay presentation ----------
@@ -1073,7 +1092,41 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         effN = 1;
         lastUniqueTs = arrival;
       } else if (prev) {
-        const { dup, cut } = await classifyPair(prev, tex);
+        // PIPELINED: the dedup readback (a full GPU->CPU roundtrip) no longer
+        // blocks the frame loop - at 120fps sources the await used to eat
+        // every other input frame. The continuation runs a few ms later, well
+        // inside the presentation buffer; pairSeq guards against a newer pair
+        // (or a pool realloc / source change) having superseded this one.
+        const seq = ++pairSeq;
+        classifyPair(prev, tex)
+          .then((r) => {
+            if (!running || seq !== pairSeq) return;
+            try { decidePair(r, prev, tex, arrival, srcAt, hzMode); }
+            catch (e) { log('decide', e); }
+          })
+          .catch((e) => log('classify', e));
+      } else {
+        lastUniqueTs = arrival;
+        if (hzMode) queue.push({ tex, at: srcAt, mid: false });
+      }
+      lastTex = tex;
+    } catch (e) {
+      if (e.name === 'OperationError') {
+        log('frame skipped (decoder gap)'); // transient: no decoded frame this tick
+      } else {
+        log('frame error', e);
+        stop();
+        hud.style.display = 'block';
+        hud.textContent = 'FC error: ' + (e.message || e);
+      }
+    } finally {
+      processingFrame = false;
+    }
+  }
+
+  // everything from "is this pair worth interpolating" to prepPair/curJob:
+  // runs when the dedup readback lands (see the pipelining note in onFrame)
+  function decidePair({ dup, cut }, prev, tex, arrival, srcAt, hzMode) {
         if (cut) { cuts++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
         else if (cfg.anime && dup) { dups++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
         else {
@@ -1157,23 +1210,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             }
           }
         }
-      } else {
-        lastUniqueTs = arrival;
-        if (hzMode) queue.push({ tex, at: srcAt, mid: false });
-      }
-      lastTex = tex;
-    } catch (e) {
-      if (e.name === 'OperationError') {
-        log('frame skipped (decoder gap)'); // transient: no decoded frame this tick
-      } else {
-        log('frame error', e);
-        stop();
-        hud.style.display = 'block';
-        hud.textContent = 'FC error: ' + (e.message || e);
-      }
-    } finally {
-      processingFrame = false;
-    }
   }
 
   // ---------- lifecycle / UI ----------
@@ -1221,6 +1257,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function onSrcChange() {
     queue = []; curJob = null; lastTex = null; cmpRing = []; schedT = 0; lastUniqueTs = 0; hzNext = 0;
+    pairSeq++; // kill in-flight classify continuations from the dead stream
     if (overlay) {
       // hide INSTANTLY: a fade would blend the dead stream's last frame over the
       // new one for 250ms. present() restores the transition on the next real frame
@@ -1580,7 +1617,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.5';
+  const VERSION = '0.7.6';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
