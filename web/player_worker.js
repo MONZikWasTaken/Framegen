@@ -8,16 +8,18 @@
 //
 // AUTO mode: a quality ladder for the mids (originals never change). The controller
 // watches the real inference cost vs the real scene budget and walks the ladder.
-import { createRT, tuneConvRB } from './rt/rt.js?v=5';
-import { createSR } from './rt/sr.js?v=1';
+import { createRT, tuneConvRB } from './rt/rt.js?v=6';
+import { createSR } from './rt/sr.js?v=2';
 
 const DELAY_MS = 100;
 const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1072] };
+// rt_tfact2 = the extension's shipping v6 model (tfact + refine head); the demo
+// must showcase what users actually get, not the superseded rt_tfact
 const LADDER = [
-  { key: 'rt@1080', res: 1080, est: 12, stem: 'rt_tfact' },
-  { key: 'rt@720',  res: 720,  est: 5,  stem: 'rt_tfact' },
-  { key: 'rt@480',  res: 480,  est: 2.5, stem: 'rt_tfact' },
-  { key: 'rt@352',  res: 352,  est: 2,  stem: 'rt_tfact' },
+  { key: 'rt@1080', res: 1080, est: 12, stem: 'rt_tfact2' },
+  { key: 'rt@720',  res: 720,  est: 5,  stem: 'rt_tfact2' },
+  { key: 'rt@480',  res: 480,  est: 2.5, stem: 'rt_tfact2' },
+  { key: 'rt@352',  res: 352,  est: 2,  stem: 'rt_tfact2' },
   { key: 'rt60@480', res: 480, est: 3,  stem: 'rt_slim60' },
   { key: 'rt60@352', res: 352, est: 2,  stem: 'rt_slim60' },
 ];
@@ -65,7 +67,7 @@ async function ensureWeights(stem) {
     return { bin, man };
   };
   let w = null;
-  for (const s of [stem, 'rt_tfact', 'rt_slim', 'rt_1blk']) {
+  for (const s of [stem, 'rt_tfact2', 'rt_tfact', 'rt_slim', 'rt_1blk']) {
     try { w = await tryFetch(s); if (s !== stem) postMessage({ type: 'log', msg: stem + ' missing - falling back to ' + s }); break; }
     catch { /* next */ }
   }

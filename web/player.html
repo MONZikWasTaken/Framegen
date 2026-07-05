@@ -28,7 +28,7 @@ interpolation (2-6×) → SR upscale → screen. No browser flags needed.</p>
 <div style="margin-top:8px">
   <button id="playBtn" disabled>Play</button>
   <button id="pauseBtn" disabled>Pause</button>
-  <label><input type="checkbox" id="interpOn" checked> interpolation 2×</label>
+  <label><input type="checkbox" id="interpOn" checked> interpolation</label>
   <label><input type="checkbox" id="animeMode" checked> anime mode (dedup twos)</label>
   <label><input type="checkbox" id="srOn"> SR 2× (anime upscale)</label>
   <label><input type="checkbox" id="mute"> mute</label>
@@ -44,35 +44,31 @@ interpolation (2-6×) → SR upscale → screen. No browser flags needed.</p>
 <video id="vid" style="display:none" playsinline></video>
 
 <script>
-// disp = display/original size; comp = model size for the mids; f32res = fallback-map key.
+// disp = display/original size; res = the worker's model rung for the mids.
 // '720' shows sharp 720p originals but computes mids at 480p (upscaled on display) -
 // a mid flashes for ~21ms between two sharp frames, the softness is invisible, and the
 // 480p model fits the real-time budget where the honest 720p one does not.
 const MODES = {
-  'auto': { disp: null,         comp: null,        f32res: '480' }, // disp = video native (<=1080), worker walks the ladder
-  '1080': { disp: [1920, 1080], comp: [854, 480],  f32res: '480' },
-  '360':  { disp: [640, 360],  comp: [640, 360],  f32res: '360' },
-  '480':  { disp: [854, 480],  comp: [854, 480],  f32res: '480' },
-  '720':  { disp: [1280, 720], comp: [854, 480],  f32res: '480' },
-  '720f': { disp: [1280, 720], comp: [1280, 720], f32res: '720' },
+  'auto': { disp: null,         res: '480' }, // disp = video native (<=1080), worker walks the ladder
+  '1080': { disp: [1920, 1080], res: '480' },
+  '360':  { disp: [640, 360],  res: '360' },
+  '480':  { disp: [854, 480],  res: '480' },
+  '720':  { disp: [1280, 720], res: '480' },
+  '720f': { disp: [1280, 720], res: '720' },
 };
 const DELAY_MS = 100; // pipeline delay (display queue + audio DelayNode)
 
 const $ = id => document.getElementById(id);
 const st = (m, bad) => { $('status').textContent += m + '\n'; if (bad) $('status').classList.add('bad'); };
 const vid = $('vid');
-let out = $('out'), octx = null; // canvas is replaced per worker (transferControlToOffscreen is one-shot)
-let presentMode = 'main';        // 'worker' = GPU-resident presentation inside the worker
+let out = $('out'); // canvas is replaced per worker (transferControlToOffscreen is one-shot)
 
+// presentation is ALWAYS worker-side (the worker refuses to init without an
+// OffscreenCanvas) - the old main-thread present path is gone
 let worker = null, workerKey = null;
 let W = 0, H = 0;     // display size
-let CW = 0, CH = 0;   // compute (model) size
 let letterbox = null, lctx = null;   // display-size staging canvas (GPU draws only)
-let letterboxC = null, lcctx = null; // compute-size staging canvas for the worker
-let queue = [];   // {kind:'bmp'|'img', payload, at}
-let prevBmp = null, prevTs = 0, intervalMs = 42;
-let shown = 0, dropped = 0, dups = 0, cuts = 0, interpMs = 0, halfRate = false, midCfg = '';
-let hudTimer = 0, shownWindow = [], running = false;
+let running = false;
 
 let audioCtx = null, audioDelay = null;
 function ensureAudioDelay() {
@@ -80,37 +76,6 @@ function ensureAudioDelay() {
   audioCtx = new AudioContext();
   audioCtx.createMediaElementSource(vid).connect(
     (audioDelay = audioCtx.createDelay(1.0))).connect(audioCtx.destination);
-}
-
-function draw(item) {
-  if (!octx) octx = out.getContext('2d');
-  if (out.width !== W) { out.width = W; out.height = H; }
-  octx.drawImage(item.payload, 0, 0, W, H); // mids at compute size upscale here (GPU)
-  item.payload.close();
-  shown++;
-  const now = performance.now();
-  shownWindow.push(now);
-  while (shownWindow.length && shownWindow[0] < now - 1000) shownWindow.shift();
-}
-
-function pump(now) {
-  if (!running) return;
-  queue.sort((a, b) => a.at - b.at);
-  let due = -1;
-  for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
-  if (due >= 0) {
-    for (let i = 0; i < due; i++) { dropped++; queue[i].payload.close(); }
-    draw(queue[due]);
-    queue = queue.slice(due + 1);
-  }
-  if (now - hudTimer > 250) {
-    hudTimer = now;
-    $('hud').textContent =
-      `out ${shownWindow.length} fps · interp ${interpMs.toFixed(0)} ms` +
-      `${halfRate ? ' · ½-rate' : ''} · mids: ${midCfg || '-'}\n` +
-      `shown ${shown} · dropped ${dropped} · dups ${dups} · cuts ${cuts} · ${workerKey ?? ''}`;
-  }
-  requestAnimationFrame(pump);
 }
 
 async function onFrame() {
@@ -121,35 +86,15 @@ async function onFrame() {
   const dw = vid.videoWidth * s, dh = vid.videoHeight * s;
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W, H);
   lctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  if (presentMode === 'worker') {
-    // the worker presents everything: one bitmap is all it needs
-    const bmp = await createImageBitmap(letterbox);
-    worker.postMessage({ type: 'frame', bmp, ts }, [bmp]);
-  } else {
-    lcctx.drawImage(letterbox, 0, 0, CW, CH);
-    const [bmpKeep, bmpSend] = await Promise.all([
-      createImageBitmap(letterbox), createImageBitmap(letterboxC)]);
-    if (prevBmp) {
-      const dt = ts - prevTs;
-      if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
-      queue.push({ payload: prevBmp, at: ts + DELAY_MS });
-    }
-    prevBmp = bmpKeep; prevTs = ts;
-    worker.postMessage({ type: 'frame', bmp: bmpSend, ts }, [bmpSend]);
-  }
+  // the worker presents everything: one bitmap is all it needs
+  const bmp = await createImageBitmap(letterbox);
+  worker.postMessage({ type: 'frame', bmp, ts }, [bmp]);
   vid.requestVideoFrameCallback(onFrame);
 }
 
 function onWorkerMessage(ev) {
   const m = ev.data;
-  if (m.type === 'mid') {
-    interpMs = m.interpMs; halfRate = m.halfRate; midCfg = m.cfg;
-    const due = m.ts + DELAY_MS + (m.frac ?? 0.5) * intervalMs;
-    if (performance.now() <= due + intervalMs / 4) {
-      createImageBitmap(new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h))
-        .then(bmp => queue.push({ payload: bmp, at: due }));
-    } else dropped++;
-  } else if (m.type === 'stats') {
+  if (m.type === 'stats') {
     // worker-present mode: the worker owns the display; we just render its HUD
     $('hud').textContent =
       `out ${m.fps} fps · interp ${m.interpMs.toFixed(0)} ms` +
@@ -159,10 +104,7 @@ function onWorkerMessage(ev) {
     const all = JSON.parse(localStorage.getItem('framecastTune') || '{}');
     all[m.res] = m.tune;
     localStorage.setItem('framecastTune', JSON.stringify(all));
-  } else if (m.type === 'dup') dups++;
-  else if (m.type === 'cut') cuts++;
-  else if (m.type === 'skipped') dropped++;
-  else if (m.type === 'log') st(m.msg);
+  } else if (m.type === 'log') st(m.msg);
   else if (m.type === 'error') {
     st('WORKER ERROR: ' + m.msg, true);
     // error storm = the wasm runtime is likely poisoned; a fresh worker is the only cure
@@ -190,21 +132,17 @@ function ensureWorker() {
     // display at the video's native size (capped at FHD); mids follow the ladder
     const s = Math.min(1, 1920 / (vid.videoWidth || 1280), 1080 / (vid.videoHeight || 720));
     [W, H] = [Math.round((vid.videoWidth || 1280) * s), Math.round((vid.videoHeight || 720) * s)];
-    [CW, CH] = [W, H];
   } else {
     [W, H] = mode.disp;
-    [CW, CH] = mode.comp;
   }
   letterbox = new OffscreenCanvas(W, H);
   lctx = letterbox.getContext('2d');
-  letterboxC = new OffscreenCanvas(CW, CH);
-  lcctx = letterboxC.getContext('2d');
   // transferControlToOffscreen is one-shot per element - every worker gets a fresh canvas
   const freshOut = out.cloneNode(false);
   out.replaceWith(freshOut);
-  out = freshOut; octx = null;
+  out = freshOut;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=23', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=24', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`creating session ${key} in the worker... (first run builds pipelines for a few seconds)`);
@@ -212,15 +150,14 @@ function ensureWorker() {
     const orig = onWorkerMessage;
     worker.onmessage = ev => {
       if (ev.data.type === 'ready') {
-        presentMode = ev.data.present || 'main';
-        st('session ready (mode ' + ev.data.mode + ', present: ' + presentMode + ')');
+        st('session ready (mode ' + ev.data.mode + ')');
         worker.onmessage = orig;
         resolve();
       }
       else if (ev.data.type === 'error') { st('WORKER ERROR: ' + ev.data.msg, true); reject(new Error(ev.data.msg)); }
       else orig(ev);
     };
-    worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.f32res,
+    worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.res,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
       factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen,
       tunes: JSON.parse(localStorage.getItem('framecastTune') || '{}') }, [offscreen]);
@@ -256,8 +193,6 @@ $('seek').oninput = () => { seeking = true; };
 $('seek').onchange = () => {
   if (vid.duration) {
     vid.currentTime = +$('seek').value / 1000 * vid.duration;
-    queue.forEach(i => i.payload.close());
-    queue = []; prevBmp?.close(); prevBmp = null;
     if (worker) worker.postMessage({ type: 'flush' }); // a mid across the seek is garbage
   }
   seeking = false;
@@ -302,11 +237,9 @@ $('playBtn').onclick = async () => {
     await audioCtx.resume();
     audioDelay.delayTime.value = DELAY_MS / 1000;
     vid.muted = $('mute').checked;
-    prevBmp = null; queue = []; running = true;
-    hudTimer = 0; shownWindow = [];
+    running = true;
     await vid.play();
     vid.requestVideoFrameCallback(onFrame);
-    if (presentMode === 'main') requestAnimationFrame(pump); // worker mode presents itself
   } catch (e) { st('ERROR: ' + (e.stack || e.message || e), true); }
 };
 $('pauseBtn').onclick = () => { vid.pause(); running = false; };
