@@ -30,8 +30,8 @@ extension/rt/
 extension/assets/
 extension/_metadata/
 
-framecast-extension.zip
-framecast-webstore.zip
+framegen-extension.zip
+framegen-webstore.zip
 
 docs/media/*.mp4
 packages/rt/rt.js
