@@ -1,125 +1,142 @@
+<div align="center">
+
+<img src="docs/media/logo.png" width="96" alt="Framecast">
+
 # Framecast
 
-Real-time neural frame interpolation for video **in the browser** - a Chrome
-extension that takes any `<video>` on any page (24 fps anime, 30 fps footage)
-and plays it at 2×-6× the frame rate, entirely on your GPU, with no server and
-no external ML runtime.
+**Silky-smooth video in your browser.** A Chrome extension that turns 24-30 fps
+video into 60-240 fps in real time - with a neural network running entirely on
+your GPU. No servers, no accounts, nothing leaves your computer.
 
-Everything in the hot path is ours:
+[![Download](https://img.shields.io/badge/download-latest_release-19c37d)](https://github.com/MONZikWasTaken/Framecast/releases/latest)
+[![License](https://img.shields.io/badge/code-AGPLv3-blue)](LICENSE)
+[![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
 
-- **The model** - a distilled, slimmed RIFE-family student (IFNet_m, arbitrary
-  timestep) trained by us; 4.6 MB of weights.
-- **The inference runtime** - hand-written WGSL compute kernels on raw WebGPU
-  (`web/rt/rt.js`), matching the PyTorch/ONNX reference to within one uint8
-  LSB (mean |err| < 0.01, max 1). No onnxruntime-web,
-  no TensorFlow.js, no WASM BLAS. The same kernels run natively via `wgpu`
-  (`crates/rife-wgpu`).
-- **The pipeline** - fully GPU-resident: video frame → texture → dedup/cut
-  detection → interpolation → (optional 2× super-resolution) → canvas. The CPU
-  only ever sees an 8-byte dedup statistic per frame.
+<img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framecast x4 interpolation, side by side">
 
-## Numbers (RTX 4060 Ti, 720p, one interpolated frame)
+*Real output of the shipped model (v7 small), not a mockup. In the browser
+this runs in real time: 3.75 ms per generated frame at 720p on an RTX 4060 Ti.*
 
-| backend | latency | note |
-|---|---|---|
-| ort-web WebGPU EP, full model (day 0) | 1957 ms | where we started |
-| ort-web WebGPU EP, distilled student | 218 ms | model shrink alone |
-| **our WGSL runtime, slim student** | **9.8 ms** | plain WebGPU, no flags |
-| **our WGSL runtime, potato student** | **6 ms** | 1 MB weights |
-| our kernels on native wgpu (Rust) | 9.5 ms | Vulkan/DX12/Metal, any GPU |
-| TensorRT engine (NVIDIA path) | 5.8 ms | 178 fps end-to-end with audio |
+</div>
 
-Browser total speed-up: **×200-×330** depending on the student (1957 → 6-10 ms).
-All latencies are p50 on an otherwise idle 4060 Ti; expect ±10% run to run.
-The remaining gap to TensorRT is structural - WGSL has no tensor-core access
-yet (waiting on `subgroup-matrix` shipping in Chrome).
+## What it does
 
-## Model ladder (distilled from RIFE-lite, PSNR on held-out clips)
+- **2×-6× more frames** on any `<video>` - movies, series, sports, anime,
+  screen recordings; YouTube and most video sites
+- **Auto mode** picks the highest factor your GPU actually sustains, and backs
+  off before you'd see a stutter
+- **Anime mode** detects animation drawn "on twos" and interpolates the real
+  motion instead of the duplicated frames
+- **Display-Hz mode** locks output to your monitor's refresh grid (great on
+  120-240 Hz screens)
+- **Compare slider** - drag a divider across the video: original on the left,
+  Framecast on the right
+- **Private by construction** - the whole pipeline runs on your GPU; we collect
+  literally nothing
 
-| student | BBB dB | Jellyfish dB | weights | 720p mid |
-|---|---|---|---|---|
-| teacher (full) | 41.50 | 37.67 | 43 MB f32 | 21.6 ms (TRT) |
-| 2-block | 40.14 | 37.14 | - (not exported) | - |
-| 1-block | 39.68 | 35.25 | 17 MB f32 | 25 ms (WGSL) |
-| slim c=120 | 39.31 | 34.83 | 4.5 MB | 9.8 ms |
-| t-factored slim | 39.48 | 34.99 | 4.5 MB | 4.9 ms trunk + 2.1 ms/mid |
-| **tfact2 = t-factored + refine (default)** | **39.94** | **35.44** | **4.6 MB** | **+0.3-0.6 ms over t-factored** |
-| **v7 small (c=96)** | **39.83** | **35.60** | **2.9 MB** | **3.75 ms full 2x cycle (default: 5.51)** |
-| potato c=60 | 39.05 | 34.44 | 1.1 MB | 6 ms |
+An interpolated frame costs ~3 ms on a mid-range GPU (RTX 4060 Ti) - the
+model and inference runtime are custom-built for this (a 2.9 MB network on
+hand-written WebGPU kernels; details in [docs/TECHNICAL.md](docs/TECHNICAL.md)).
 
-The t-factored student splits the network into a timestep-free trunk (run once
-per frame pair) and a tiny FiLM(t) head (run per interpolated frame): at 6x a
-mid costs ~2 ms instead of a full 8 ms pass (~2.4x), and it scores HIGHER than
-plain slim at every timestep (t=0.25: 37.56 vs 36.86 dB on stride-4 pairs).
-tfact2 adds a quarter-res refine head (occlusion repair) on top and ships as
-the extension default since v0.5.0.
+## Install (2 minutes)
 
-v7 small (v0.7.0) opens the v7 generation: distilled from a stronger teacher
-(EMA-VFI, Apache-2.0) whose outputs were precomputed over the whole dataset.
-It matches-or-beats the tfact2 default (summed PSNR 75.43 vs 75.38) at
-two-thirds the trunk width: the full 2x cycle drops from 3.05 to 2.57 ms at
-480p and from 5.51 to 3.75 ms at 720p on the reference GPU. Switchable in the
-extension's model selector.
+1. Download **`framecast-extension.zip`** from the
+   [latest release](https://github.com/MONZikWasTaken/Framecast/releases/latest)
+   and extract it anywhere.
+2. Open `chrome://extensions` in Chrome.
+3. Turn on **Developer mode** (top-right toggle).
+4. Click **Load unpacked** and select the extracted `framecast-extension`
+   folder.
 
-All students keep **arbitrary timestep** (t = k/n for 2×-6× factors) - trained
-with stride-4 ground-truth samples, not just t=0.5. Plus **TinySR**: a 26 KB
-residual 2× upscaler (+1.1 dB over bilinear) applied to interpolated frames.
+That's it. Requirements: **Chrome 121+** on a machine with a GPU (Windows,
+macOS with Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU
+features we need yet.
 
-## The extension (`extension/`)
+## How to use
 
-Chrome MV3, works on YouTube and most video sites (`all_frames` covers
-cross-origin iframe players):
+1. Open any video and hover over it - a round **FC** button appears at the
+   left edge of the player.
+2. Click it. The button turns green, an fps readout appears, and the video is
+   now interpolated. Click again to turn it off.
+3. The **gear** button next to it opens settings:
 
-- 2×-6× factor, or **auto** - an AIMD controller driven by a leaky-bucket drop
-  detector picks the highest factor the GPU and compositor actually sustain
-- anime mode: GPU dedup detects frames drawn "on twos" and doubles the budget;
-  scene-cut detection avoids interpolating across cuts
-- quality presets 360p → 1080p inserts, hot-swapped without restart
-- own glass player UI (the canvas covers native controls): play/seek/volume,
-  fullscreen, click-to-pause, compare slider (original | interpolated),
-  optional HDR via inverse tone mapping, debug telemetry HUD
-- just-in-time GPU scheduling: each mid is submitted one compute-time before
-  its display slot; presentation delay is ~2 frame-times, not a whole batch
+| Setting | What it does |
+|---|---|
+| **Factor** | `auto` is right for most people. Fixed 2×-6× if you want control, `display Hz` to sync exactly to your monitor |
+| **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
+| **Model** | `v7` (default, fastest) or `v6` (previous generation) |
+| **Anime mode** | Keep on for anime; harmless elsewhere |
+| **SR 2×** | Neural upscale of inserted frames - costs GPU, sharper result |
+| **Compare** | The split slider, for seeing the difference yourself |
 
-**Install:** grab `framecast-extension.zip` from Releases and extract it (or
-run `tools/build_extension.ps1` with weights in `assets/`), then
-`chrome://extensions` → enable Developer mode → **Load unpacked** → select the
-extracted `framecast-extension` folder.
+**Good first test:** anything shot at 24 fps - a movie trailer, a film scene
+with a slow camera pan, an anime opening. That's where the difference hits
+hardest. On a 60 Hz screen you'll see 24→60; on a 144-240 Hz screen,
+considerably more.
 
-## Repo layout
+## FAQ
 
-```
-extension/               Chrome extension (content.js = full pipeline)
-web/rt/rt.js             WGSL inference runtime (the heart of the project)
-web/rt/sr.js             TinySR 2x upscaler kernels
-web/player.html          standalone real-time player demo (+ worker)
-web/rt_test.html         parity harness vs the ONNX reference (+built-in bench)
-crates/rife-wgpu         same kernels on native wgpu (Rust)
-crates/framecast-native  native TensorRT path + candle correctness oracle
-tools/                   training (distill/SR), export, benchmarks, packaging
-docs/                    measurements and phase notes
-```
+**It says "no video found" / the button doesn't appear.**
+Make sure the video is actually playing. On some players the button appears
+only when the mouse is over the video itself.
 
-## Training your own weights
+**Does it work on Netflix / Crunchyroll?**
+No, and it can't: DRM-protected video is invisible to extensions by design -
+the browser hands us black frames. YouTube and most other sites work.
 
-`tools/train_student.py` distills from the RIFE-lite teacher (`--slim C` for
-thin channels, `--arbitrary-t` to keep timestep conditioning - without it any
-finetune collapses t≠0.5). `tools/train_sr.py` trains TinySR.
-`tools/export_rt_weights.py` / `export_sr_weights.py` produce the `.bin/.json`
-blobs the runtime loads. Frames are extracted with `tools/extract_frames.py`
-from any movies you have locally.
+**My fps counter shows less than the promised factor.**
+Auto mode adapts to your GPU's real headroom - it will never stutter to hit a
+number. Lower the quality setting or the factor ceiling if you want more.
 
-## Known limitations
+**Does it phone home?**
+No. There is no server, no telemetry, no analytics. The extension is a local
+GPU pipeline; the code is right here to check.
 
-- **Chrome only** (WebGPU + shader-f16; the UI also uses base-select).
-- **DRM sites (Netflix, Crunchyroll/EME) cannot work** - the browser hands us
-  black frames by design. YouTube and plain `<video>`/MSE sites are fine.
-- SDR sources only get *simulated* HDR (inverse tone mapping, RTX-Video-HDR
-  style) - the browser never exposes true HDR video data.
-- Interpolation is honest about impossible cases: 5 fps sources have too little
-  information between frames; artifacts on fast motion are expected there.
+**Is my GPU good enough?**
+If it can run the video at all, 2× at 480p almost certainly fits. The HUD
+shows the per-frame cost in ms - budget is roughly `(factor-1) × cost <
+frame interval`.
+
+## The story
+
+Framecast is older than this repo. The idea - and the first prototype - date
+back six months before the first commit here. That prototype never got
+published: it worked far too poorly to show anyone. But the idea refused to
+go away, and for half a year I kept watching the space - and nobody shipped
+it properly: real-time neural frame interpolation, in the browser, on any
+video, for anyone. So I decided to build it myself. That's how Framecast
+happened.
+
+## Support the project
+
+Framecast is built by **one person** with one mid-range GPU. The extension is
+free and will stay free - but the models behind it are not free to make:
+every training experiment runs on rented cloud GPUs paid out of pocket
+($5-30 per run, and a new model generation takes dozens of runs before one
+is good enough to ship). The next, bigger model is designed and waiting -
+mostly for GPU-hours.
+
+If Framecast made your video smoother and you want the next model to exist
+sooner:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/monzikxd)
+
+Starring the repo helps too - visibility is the other currency.
+
+## Under the hood (the short version)
+
+A distilled RIFE-family student (2.9 MB) runs on a hand-written WGSL runtime -
+raw WebGPU compute shaders, no ML framework, matching the PyTorch reference to
+1 LSB. The pipeline is fully GPU-resident: frames never cross to the CPU. From
+the first naive browser attempt to today is a **×200-330 speedup**
+(1957 ms → 2.6-3.75 ms per frame).
+
+Full story, numbers, model ladder and training instructions:
+**[docs/TECHNICAL.md](docs/TECHNICAL.md)**
 
 ## License
 
-Code: **AGPLv3** - see [`LICENSE`](LICENSE). Model weights: non-commercial
-research/personal use - see [`WEIGHTS_LICENSE.md`](WEIGHTS_LICENSE.md).
+Code: **AGPLv3** ([LICENSE](LICENSE)). The inference runtime is also
+available as a library under **LGPL-3.0** - [`@framecast/rt`](packages/rt) -
+so it can be embedded in other projects. Model weights: non-commercial
+research/personal use ([WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md)).

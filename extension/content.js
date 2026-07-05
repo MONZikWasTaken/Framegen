@@ -287,8 +287,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const DEDUP_ZERO = new Uint32Array(2);
   async function classifyPair(ta, tb) {
     ensureDedup();
-    // free readback slot: the frame loop no longer awaits classifies, so two can
-    // be in flight at 120fps sources. All busy = treat as ordinary motion.
+    // free readback slot: classifies overlap (the frame loop does not await
+    // them), two can be in flight at 120fps sources. All busy = ordinary motion.
     let rb = null;
     for (let i = 0; i < dedupReads.length; i++) {
       const c = dedupReads[(dedupReadIdx + i) % dedupReads.length];
@@ -1092,9 +1092,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         effN = 1;
         lastUniqueTs = arrival;
       } else if (prev) {
-        // PIPELINED: the dedup readback (a full GPU->CPU roundtrip) no longer
-        // blocks the frame loop - at 120fps sources the await used to eat
-        // every other input frame. The continuation runs a few ms later, well
+        // the dedup readback is a full GPU->CPU roundtrip and must not block
+        // the frame loop (awaiting it here starves 120fps sources of every
+        // other input frame). The continuation runs a few ms later, well
         // inside the presentation buffer; pairSeq guards against a newer pair
         // (or a pool realloc / source change) having superseded this one.
         const seq = ++pairSeq;
@@ -1125,7 +1125,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   // everything from "is this pair worth interpolating" to prepPair/curJob:
-  // runs when the dedup readback lands (see the pipelining note in onFrame)
+  // runs when the dedup readback lands
   function decidePair({ dup, cut }, prev, tex, arrival, srcAt, hzMode) {
         if (cut) { cuts++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
         else if (cfg.anime && dup) { dups++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
@@ -1617,7 +1617,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.6';
+  const VERSION = '1.0.0';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {

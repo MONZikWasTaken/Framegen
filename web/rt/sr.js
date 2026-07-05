@@ -50,8 +50,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // mid convs use the register-blocked kernel from rt.js (2x2 patch x 4 output
 // channels per thread, shared-memory tiles) - the naive per-pixel loops cost
 // 3.5x more at c=32. The out conv computes ALL 12 pixel-shuffle outputs per
-// low-res pixel in one thread: the four 2x-quadrant threads used to re-read
-// the same CxHxW window four times.
+// low-res pixel in one thread - four 2x-quadrant threads would re-read the
+// same CxHxW window four times.
 function wgslShuffle(W, H) {
   return /* wgsl */`
 enable f16;

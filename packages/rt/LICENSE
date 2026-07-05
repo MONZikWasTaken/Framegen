@@ -1,0 +1,18 @@
+@framecast/rt - the Framecast WebGPU inference runtime (rt.js, sr.js)
+
+Copyright (C) 2026 MONZik
+
+This library is free software: you can redistribute it and/or modify it
+under the terms of the GNU Lesser General Public License as published by
+the Free Software Foundation, either version 3 of the License, or (at your
+option) any later version.
+
+This library is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public License
+for more details: https://www.gnu.org/licenses/lgpl-3.0.html
+
+Note: this LGPL grant covers the runtime library as distributed in this
+package. The Framecast repository as a whole (extension, tools, training
+code) remains AGPL-3.0; the model weights are licensed separately (see
+WEIGHTS_LICENSE.md in the repository).

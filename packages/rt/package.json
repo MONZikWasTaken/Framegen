@@ -1,0 +1,43 @@
+{
+  "name": "@framecast/rt",
+  "version": "1.0.0",
+  "description": "Real-time neural frame interpolation on raw WebGPU: hand-written WGSL kernels, 2.9 MB model, ~3 ms per generated frame on a mid-range GPU. The runtime behind the Framecast extension.",
+  "type": "module",
+  "main": "./rt.js",
+  "exports": {
+    ".": "./rt.js",
+    "./sr": "./sr.js"
+  },
+  "types": "./index.d.ts",
+  "files": [
+    "rt.js",
+    "sr.js",
+    "index.d.ts",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "prepack": "node prepack.mjs"
+  },
+  "license": "LGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MONZikWasTaken/Framecast.git",
+    "directory": "packages/rt"
+  },
+  "homepage": "https://github.com/MONZikWasTaken/Framecast#readme",
+  "bugs": "https://github.com/MONZikWasTaken/Framecast/issues",
+  "keywords": [
+    "webgpu",
+    "wgsl",
+    "frame-interpolation",
+    "video",
+    "rife",
+    "machine-learning",
+    "real-time"
+  ],
+  "author": "MONZik",
+  "engines": {
+    "node": ">=18"
+  }
+}

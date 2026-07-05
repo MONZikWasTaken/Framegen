@@ -808,8 +808,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     wbuf[name] = buf(n);
     device.queue.writeBuffer(wbuf[name], 0, weightsBin, m.offset * 4, n * 4);
   }
-  // one pipeline for ALL weight conversions - this used to compile the same
-  // tiny shader once per weight tensor (~15 identical compiles at startup)
+  // one pipeline shared by all weight conversions
   const pToF16 = useF16 ? pipe(WGSL_TO_F16) : null;
   const convW = (name) => {
     if (!useF16) return wbuf[name];
@@ -836,8 +835,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
   const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
   const tmp8 = buf(5 * H8 * W8);
-  // readback plumbing exists only for the buffer-output path (rt_test harness):
-  // in texture-output mode these were ~7*w*h*4 bytes of dead MAP_READ allocations
+  // readback plumbing exists only for the buffer-output path (rt_test harness);
+  // texture-output callers never read back - ~7*w*h*4 bytes of MAP_READ saved
   const outp = textureOutput ? null : buf(w * h);
   const staging = textureOutput ? null
     : device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -900,7 +899,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // Keyed by texture IDENTITY, not label: callers recreate pools reusing the same
   // labels (resolution change), and a label-keyed cache would keep serving bind
   // groups of destroyed textures - every submit fails async validation and the
-  // mids silently replay stale content. (texBgId lives at module scope - see top.)
+  // mids silently replay stale content.
   const texBgCache = new Map();
   function texPrepBgs(texA, texB) {
     const key = texBgId(texA) + '|' + texBgId(texB);
