@@ -195,13 +195,16 @@
     log('runtime up @', cfg.res);
   }
 
+  let poolGen = 0; // labels must be unique across reallocations: label-keyed
+  // caches (dedup) must never hit an entry built for a destroyed generation
   function ensureFrameTextures(w, h) {
     if (texW === w && texH === h && frameTex.length === 12) return;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
+    poolGen++;
     for (let i = 0; i < 12; i++) {
-      frameTex.push(device.createTexture({ label: 'fcfr' + i, size: [w, h], format: 'rgba8unorm',
+      frameTex.push(device.createTexture({ label: 'fcfr' + poolGen + '_' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
     texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
@@ -561,7 +564,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const seq = ++reattachSeq, t0 = performance.now();
     const tick = async () => {
       if (seq !== reattachSeq || running || !inFeed()) return;
-      if (performance.now() - t0 > 6000) return; // closed player / no video: give up
+      if (performance.now() - t0 > 12000) return; // closed player / no video: give up
       const v = biggestVideo();
       if (!v || !v.videoWidth || toggling) { setTimeout(tick, 150); return; }
       toggling = true;
@@ -821,8 +824,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function pump(now) {
     if (!running) return;
     // SPA navigation can replace the <video> element entirely: rVFC dies with it
-    // and the canvas would keep showing the dead stream's frames forever
-    if (videoEl && !videoEl.isConnected) { stop(); return; }
+    // and the canvas would keep showing the dead stream's frames forever.
+    // Feeds recycle player elements - carry the FC intent to the replacement.
+    if (videoEl && !videoEl.isConnected) { stop(); if (inFeed()) reattach(); return; }
     try { pumpBody(now); } catch (e) { log('pump', e); }
     requestAnimationFrame(pump);
   }
@@ -1275,10 +1279,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function biggestVideo() {
-    let best = null, area = 0;
+    // rank by VISIBLE area in the viewport, not raw size: virtualized feeds
+    // (TikTok) keep several same-sized players mounted and rotate them through
+    // the viewport - an off-screen one must never win. Playing beats paused.
+    let best = null, score = 0;
     for (const v of document.querySelectorAll('video')) {
+      if (v.readyState < 2) continue;
       const r = v.getBoundingClientRect();
-      if (r.width * r.height > area && v.readyState >= 2) { area = r.width * r.height; best = v; }
+      const vis = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0))
+                * Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+      const s = vis * (v.paused ? 0.5 : 1);
+      if (s > score) { score = s; best = v; }
     }
     return best;
   }
@@ -1546,7 +1557,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.2';
+  const VERSION = '0.7.3';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
