@@ -14,13 +14,15 @@
 
   // ---------- settings (chrome.storage.local, live-applied) ----------
   // factor: 'auto' (smart) or a fixed 2..6 treated as a CEILING under GPU overload
-  // model: weight set key from MODELS; unknown/missing files fall back to v6
+  // model: weight set key from MODELS. v7s is the default: faster (2.57ms vs
+  // 3.05ms @480p, 3.75 vs 5.51 @720p) at equal-or-better quality. v6 stays
+  // selectable; users with a saved choice keep it.
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, guard: true, model: 'v6' };
+    fg: true, sr: false, hdr: false, showFps: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
-    if (!MODELS[cfg.model]) cfg.model = 'v6';
+    if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
@@ -1578,7 +1580,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.4';
+  const VERSION = '0.7.5';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
