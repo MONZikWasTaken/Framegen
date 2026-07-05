@@ -808,11 +808,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     wbuf[name] = buf(n);
     device.queue.writeBuffer(wbuf[name], 0, weightsBin, m.offset * 4, n * 4);
   }
+  // one pipeline for ALL weight conversions - this used to compile the same
+  // tiny shader once per weight tensor (~15 identical compiles at startup)
+  const pToF16 = useF16 ? pipe(WGSL_TO_F16) : null;
   const convW = (name) => {
     if (!useF16) return wbuf[name];
     const n = man[name].shape.reduce((a, b) => a * b, 1);
     const half = bufBytes(n * 2);
-    const p = pipe(WGSL_TO_F16);
+    const p = pToF16;
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(p);
@@ -852,19 +855,26 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     ? device.createSampler({ magFilter: 'linear', minFilter: 'linear',
                              addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' })
     : null;
-  const pPrepFull = pipe(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h));
-  const pPrepQ = pipe(tfact ? wgslPrepQuarterTex6(w, h, useF16)
-    : (textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16)));
-  const pConv0a = pipe(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16));
-  const pConv0b = pipe(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16));
-  const pConvB = useF16
-    ? pipe((convTune && convTune.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, false, convTune))
-    : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, false, false));
-  const pConvBR = useF16
-    ? pipe((convTune && convTune.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, true, convTune))
-    : pipe(wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false));
-  const pDeconv = pipe(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16));
-  const pFlow = pipe(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h));
+  // the heavy shaders compile in PARALLEL on Dawn's worker pool (and without
+  // blocking the main thread) - createRT is async anyway, so batch-await them
+  const pipeAsync = (code, entry = 'main') => device.createComputePipelineAsync({
+    layout: 'auto', compute: { module: mod(code), entryPoint: entry } });
+  const sgTuned = convTune && convTune.sg && device.features.has('subgroups');
+  const [pPrepFull, pPrepQ, pConv0a, pConv0b, pConvB, pConvBR, pDeconv, pFlow] = await Promise.all([
+    pipeAsync(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h)),
+    pipeAsync(tfact ? wgslPrepQuarterTex6(w, h, useF16)
+      : (textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16))),
+    pipeAsync(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16)),
+    pipeAsync(wgslConv(C1, C2, W8, H8, W16, H16, 2, false, useF16)),
+    pipeAsync(useF16
+      ? (sgTuned ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, false, convTune)
+      : wgslConv(C2, C2, W16, H16, W16, H16, 1, false, false)),
+    pipeAsync(useF16
+      ? (sgTuned ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, true, convTune)
+      : wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false)),
+    pipeAsync(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16)),
+    pipeAsync(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h)),
+  ]);
   // texture-output mode: flow bind groups are per output texture (small ring - cache them)
   const flowBgCache = new Map();
   function flowBgFor(tex) {
@@ -944,10 +954,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     const rA2 = abuf(RC * RH4 * RW4);
     const rB2 = abuf(RC * RH4 * RW4);
     rRes = buf(3 * RH4 * RW4);
-    pRPrep = pipe(wgslRefinePrep(w, h, useF16));
-    pRC0 = pipe(wgslConv(11, RC, RW4, RH4, RW4, RH4, 1, false, useF16));
-    pRC1 = pipe(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16));
-    pROut = pipe(wgslRefineOut(RC, RW4, RH4, useF16));
+    [pRPrep, pRC0, pRC1, pROut] = await Promise.all([
+      pipeAsync(wgslRefinePrep(w, h, useF16)),
+      pipeAsync(wgslConv(11, RC, RW4, RH4, RW4, RH4, 1, false, useF16)),
+      pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16)),
+      pipeAsync(wgslRefineOut(RC, RW4, RH4, useF16)),
+    ]);
     bgRPrep = bg(pRPrep, [tmp8, imgs, rIn]);
     bgRC0 = bg(pRC0, [rIn, convW('refine.c0.weight'), wbuf['refine.c0.bias'], wbuf['refine.a0.weight'], rA2]);
     bgRC1 = bg(pRC1, [rA2, convW('refine.c1.weight'), wbuf['refine.c1.bias'], wbuf['refine.a1.weight'], rB2]);
