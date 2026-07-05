@@ -78,7 +78,7 @@
   let queue = [], running = false, processingFrame = false;
   let hzNext = 0; // display-match mode: absolute time of the next output vsync tick
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
-  let msAvg = 0, shown = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
+  let msAvg = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
   let bar = null, barSeeking = false, wm = null;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
@@ -278,6 +278,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   atomicMax(&stats[1], d);
 }`}), entryPoint: 'main' } });
   }
+  const DEDUP_ZERO = new Uint32Array(2);
   async function classifyPair(ta, tb) {
     ensureDedup();
     const key = ta.label + '|' + tb.label;
@@ -286,7 +287,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
         { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
     }
-    device.queue.writeBuffer(dedupStats, 0, new Uint32Array([0, 0]));
+    device.queue.writeBuffer(dedupStats, 0, DEDUP_ZERO); // hoisted: this runs per frame pair
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
@@ -405,12 +406,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }));
   });
 
-  function positionOverlay() {
+  function positionOverlay(vrIn) { // caller may pass a fresh video rect to save a forced layout
     if (overlay.parentElement !== videoEl.parentElement) {
       videoEl.parentElement.insertBefore(overlay, videoEl.nextSibling);
     }
     reparentUI();
-    const r = videoEl.getBoundingClientRect();
+    const r = vrIn || videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
     // self-calibrating placement: measure where the overlay actually landed and nudge
     // by the delta - immune to whatever containing block/margins the site uses
@@ -506,7 +507,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       overlay.style.transition = ''; // back to the stylesheet fade (onSrcChange kills it)
       overlay.style.opacity = '1'; // reveal only once pixels exist
     }
-    shown++;
     const now = performance.now();
     fpsWin.push(now);
     while (fpsWin.length && fpsWin[0] < now - 1000) fpsWin.shift();
@@ -716,21 +716,34 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     el.style.background = `linear-gradient(to right, ${color} ${p}%, rgba(255,255,255,.22) ${p}%)`;
   };
   let barPlayIcon = '', barMuteIcon = '';
+  // element refs + last-written values cached: this runs every UI tick, and
+  // querySelector lookups + unconditional style writes are wasted work when
+  // nothing changed (the gradient string rebuild forces a style recalc)
+  let barEls = null, barVolP = -1, barCurT = '', barDurT = '', barSeekV = '', barSeekF = -1;
   function updateBar() {
     if (!bar || bar.style.display === 'none' || !videoEl) return;
+    if (!barEls) {
+      barEls = { play: bar.querySelector('#fcPlay'), mute: bar.querySelector('#fcMute'),
+                 vol: bar.querySelector('#fcVol'), cur: bar.querySelector('#fcCur'),
+                 dur: bar.querySelector('#fcDur'), seek: bar.querySelector('#fcSeek') };
+    }
     const pi = videoEl.paused ? 'play' : 'pause';
-    if (pi !== barPlayIcon) { barPlayIcon = pi; bar.querySelector('#fcPlay').innerHTML = svgIcon(pi, 19); }
+    if (pi !== barPlayIcon) { barPlayIcon = pi; barEls.play.innerHTML = svgIcon(pi, 19); }
     const mi = (videoEl.muted || videoEl.volume === 0) ? 'volX' : 'vol';
-    if (mi !== barMuteIcon) { barMuteIcon = mi; bar.querySelector('#fcMute').innerHTML = svgIcon(mi); }
-    const vol = bar.querySelector('#fcVol'), volP = (videoEl.muted ? 0 : videoEl.volume) * 100;
-    vol.value = String(Math.round(volP));
-    rangeFill(vol, volP, '#fff');
+    if (mi !== barMuteIcon) { barMuteIcon = mi; barEls.mute.innerHTML = svgIcon(mi); }
+    const volP = Math.round((videoEl.muted ? 0 : videoEl.volume) * 100);
+    if (volP !== barVolP) { barVolP = volP; barEls.vol.value = String(volP); rangeFill(barEls.vol, volP, '#fff'); }
     const d = videoEl.duration || 0, c = videoEl.currentTime || 0;
-    bar.querySelector('#fcCur').textContent = fmt(c);
-    bar.querySelector('#fcDur').textContent = fmt(d);
-    const seek = bar.querySelector('#fcSeek'), p = d ? c / d * 100 : 0;
-    if (!barSeeking && d) seek.value = String(Math.round(p * 10));
-    rangeFill(seek, p, '#19c37d');
+    const ct = fmt(c), dt = fmt(d);
+    if (ct !== barCurT) { barCurT = ct; barEls.cur.textContent = ct; }
+    if (dt !== barDurT) { barDurT = dt; barEls.dur.textContent = dt; }
+    const p = d ? c / d * 100 : 0;
+    if (!barSeeking && d) {
+      const sv = String(Math.round(p * 10));
+      if (sv !== barSeekV) { barSeekV = sv; barEls.seek.value = sv; }
+    }
+    const fp = Math.round(p * 10);
+    if (fp !== barSeekF) { barSeekF = fp; rangeFill(barEls.seek, p, '#19c37d'); }
   }
 
   // compare mode: a draggable divider - raw video shows LEFT of it (the overlay is
@@ -846,9 +859,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // runs at rAF/4 - presentation below stays per-tick
     uiTick = (uiTick + 1) & 3;
     if (uiTick === 0) {
-    positionOverlay();
     { // our control bar floats above the video bottom, HUD in the top-right corner
-      const vr = videoEl.getBoundingClientRect();
+      const vr = videoEl.getBoundingClientRect(); // read ONCE per tick, shared with positionOverlay
+      positionOverlay(vr);
       // our bar everywhere except sites whose own controls verifiably sit above
       // the overlay (see SITE_CONTROLS_OK)
       if (cfg.hoverReveal && (videoEl.controls || !SITE_CONTROLS_OK)) {
@@ -888,7 +901,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     updateBar();
     } // end of throttled UI block
-    queue.sort((a, b) => a.at - b.at);
+    if (queue.length > 1) queue.sort((a, b) => a.at - b.at);
     let due = -1;
     for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
     // drop pressure: leaky integrator (tau 300ms) - a burst of drops is visible in
@@ -905,7 +918,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const late = now - queue[due].at;
       lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
       present(queue[due].tex, queue[due].mid);
-      queue = queue.slice(due + 1);
+      queue.splice(0, due + 1); // drop in place - slice would allocate per presented frame
     }
     while (dropWin.length && dropWin[0] < now - 2000) dropWin.shift();
     // AIMD controller, evaluated EVERY frame: aggressive decrease on pressure,
@@ -952,20 +965,27 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // for its display slot, so present blits interleave with computes on the GPU
   // queue instead of the first mid waiting for the whole batch.
   let curJob = null;
+  // queue is tiny (a handful of entries): a linear scan beats allocating a Set,
+  // and this runs up to ~19x per source pair in hz mode
+  function texQueued(t) {
+    for (let i = 0; i < queue.length; i++) if (queue[i].tex === t) return true;
+    return false;
+  }
   function submitMid() {
     const k = curJob.next;
     const disp = curJob.at + curJob.ts[k] * intervalMs;
-    const busyMid = new Set(queue.map(q => q.tex)); // don't clobber queued mids
-    let guard = midTexs.length;
-    while (guard-- > 0 && busyMid.has(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
+    let guard = midTexs.length; // don't clobber queued mids
+    while (guard-- > 0 && texQueued(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
     const out = midTexs[midIdx];
     midIdx = (midIdx + 1) % midTexs.length;
     const t0 = performance.now();
     try { rt.runT(curJob.ts[k], out); } catch (e) { log('runT', e); curJob = null; return; }
-    device.queue.onSubmittedWorkDone().then(() => {
-      const ms = performance.now() - t0;
-      msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
-    });
+    if ((k & 3) === 0) { // sample every 4th mid: a drain-probe promise per submit adds up at high factors
+      device.queue.onSubmittedWorkDone().then(() => {
+        const ms = performance.now() - t0;
+        msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
+      });
+    }
     queue.push({ tex: out, at: disp, mid: true });
     curJob.next++;
     if (curJob.next >= curJob.ts.length) curJob = null;
@@ -1023,10 +1043,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // texture instead of the copy saves nothing measurable.
       // NEVER overwrite a texture that is still queued for presentation or needed
       // as an interpolation input - reuse of live textures = timeline soup
-      const busyTex = new Set(queue.map(q => q.tex));
-      if (lastTex) busyTex.add(lastTex);
       let guard = frameTex.length;
-      while (guard-- > 0 && busyTex.has(frameTex[frameIdx])) frameIdx = (frameIdx + 1) % frameTex.length;
+      while (guard-- > 0 && (frameTex[frameIdx] === lastTex || texQueued(frameTex[frameIdx]))) {
+        frameIdx = (frameIdx + 1) % frameTex.length;
+      }
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       captureFrame(tex, vw, vh);
@@ -1208,6 +1228,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   let srcWatchEl = null;
   async function start(v) {
+    if (running && videoEl === v) return; // re-entry insurance: never double-arm the rVFC/rAF loops
     videoEl = v;
     if (srcWatchEl !== v) {
       if (srcWatchEl) srcWatchEl.removeEventListener('emptied', onSrcChange);
@@ -1250,7 +1271,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
     queue = []; lastTex = null; curJob = null; schedT = 0; hzNext = 0;
-    shown = 0; dropped = 0; dups = 0; cuts = 0;
+    dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
     if (sys.integrated) {
@@ -1301,7 +1322,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!st) return;
     const srState = cfg.sr ? (!sys.f16 ? 'unavailable (no f16)' : (sr ? 'on x2' : 'loading…')) : 'off';
     const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
-      `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: rt_tfact2`,
+      `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
       `status: ${running ? 'running' : 'stopped'}`];
@@ -1557,7 +1578,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '0.7.3';
+  const VERSION = '0.7.4';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -1566,7 +1587,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           version: VERSION, gpu: sys.gpu, integrated: sys.integrated, f16: sys.f16,
           hasVideo: !!v, running, fps: fpsWin.length, effN,
           ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor,
-          drops: dropped, model: 'rt_tfact2',
+          drops: dropped, model: rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model,
         }); } catch {} };
         if (running) respond();
         else setTimeout(respond, v ? 120 : 250);
