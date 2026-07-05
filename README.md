@@ -10,6 +10,7 @@ your GPU. No servers, no accounts, nothing leaves your computer.
 
 [![Download](https://img.shields.io/badge/download-latest_release-19c37d)](https://github.com/MONZikWasTaken/Framecast/releases/latest)
 [![License](https://img.shields.io/badge/code-AGPLv3-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/%40framecast%2Frt?label=%40framecast%2Frt&color=cb3837)](https://www.npmjs.com/package/@framecast/rt)
 [![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
 
 <img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framecast x4 interpolation, side by side">
