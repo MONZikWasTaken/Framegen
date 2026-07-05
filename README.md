@@ -18,6 +18,10 @@ your GPU. No servers, no accounts, nothing leaves your computer.
 *Real output of the shipped model (v7 small), not a mockup. In the browser
 this runs in real time: 3.75 ms per generated frame at 720p on an RTX 4060 Ti.*
 
+🎬 **[Watch a 50-second live demo](https://github.com/MONZikWasTaken/Framecast/releases/download/v1.0.0/framecast-live-demo.mp4)** -
+real YouTube, the compare slider, the debug HUD, recorded at 60 fps on an
+RTX 4060 Ti. *(Footage: Sintel © Blender Foundation, CC-BY.)*
+
 </div>
 
 ## What it does
