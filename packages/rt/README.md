@@ -73,6 +73,14 @@ localStorage.setItem('fcTune', JSON.stringify(tune));
 const rt = await createRT(device, { ...opts, convTune: JSON.parse(localStorage.getItem('fcTune')) });
 ```
 
+## Example project
+
+A complete working integration - synthetic WebGPU scene boosted in real time,
+raw-vs-boosted split, naive-blend comparison, honest GPU timing via
+timestamp queries:
+live at https://monzikwastaken.github.io/framegen-fps-booster/, source at
+https://github.com/MONZikWasTaken/framegen-fps-booster.
+
 ## License
 
 **LGPL-3.0-or-later.** Embed it in anything, including commercial products;

@@ -150,7 +150,7 @@ rt.prepPair(frameA, frameB); // t-free trunk, once per pair
 rt.runT(0.5, outTexture);    // any t in (0,1), ~1-2 ms each
 ```
 
-Full API and notes: [packages/rt](packages/rt).
+Full API and notes: [packages/rt](packages/rt). Working example: [framegen-fps-booster](https://github.com/MONZikWasTaken/framegen-fps-booster) ([live](https://monzikwastaken.github.io/framegen-fps-booster/)).
 
 ## Under the hood (the short version)
 
