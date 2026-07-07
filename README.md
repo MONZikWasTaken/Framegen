@@ -8,7 +8,7 @@
 video into 60-240 fps in real time - with a neural network running entirely on
 your GPU. No servers, no accounts, nothing leaves your computer.
 
-[![Download](https://img.shields.io/badge/download-latest_release-19c37d)](https://github.com/MONZikWasTaken/Framegen/releases/latest)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hpdpcjakhclhljfdkpjolonjlopbdhfk?label=chrome%20web%20store&color=19c37d)](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)
 [![License](https://img.shields.io/badge/code-AGPLv3-blue)](LICENSE)
 [![npm](https://img.shields.io/npm/v/framegen?label=npm&color=cb3837)](https://www.npmjs.com/package/framegen)
 [![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
@@ -46,19 +46,19 @@ An interpolated frame costs ~3 ms on a mid-range GPU (RTX 4060 Ti) - the
 model and inference runtime are custom-built for this (a 2.9 MB network on
 hand-written WebGPU kernels; details in [docs/TECHNICAL.md](docs/TECHNICAL.md)).
 
-## Install (2 minutes)
+## Install
 
-1. Download **`framegen-extension.zip`** from the
-   [latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest)
-   and extract it anywhere.
-2. Open `chrome://extensions` in Chrome.
-3. Turn on **Developer mode** (top-right toggle).
-4. Click **Load unpacked** and select the extracted `framegen-extension`
-   folder.
+**[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)** - one click.
 
-That's it. Requirements: **Chrome 121+** on a machine with a GPU (Windows,
-macOS with Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU
-features we need yet.
+Manual install (if you want the newest build before it clears store review):
+download `framegen-extension.zip` from the
+[latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest),
+extract it, open `chrome://extensions`, enable **Developer mode**, click
+**Load unpacked** and select the extracted folder.
+
+Requirements: **Chrome 121+** on a machine with a GPU (Windows, macOS with
+Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU features we
+need yet.
 
 ## How to use
 
