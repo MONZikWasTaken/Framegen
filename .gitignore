@@ -37,3 +37,4 @@ docs/media/*.mp4
 packages/rt/rt.js
 packages/rt/sr.js
 packages/rt/*.tgz
+packages/rt/weights/

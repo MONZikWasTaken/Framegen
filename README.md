@@ -131,6 +131,27 @@ sooner:
 
 Starring the repo helps too - visibility is the other currency.
 
+## Use it as a library
+
+The inference runtime is on npm as [`framegen`](https://www.npmjs.com/package/framegen)
+(LGPL) - real-time neural frame interpolation for your own project in ~20
+lines, weights included:
+
+```js
+import { createRT } from 'framegen';
+
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.0.1/weights';
+const rt = await createRT(device, {
+  w: 1280, h: 720, textureInput: true, textureOutput: true,
+  weightsBin: await fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
+  weightsManifest: await fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
+});
+rt.prepPair(frameA, frameB); // t-free trunk, once per pair
+rt.runT(0.5, outTexture);    // any t in (0,1), ~1-2 ms each
+```
+
+Full API and notes: [packages/rt](packages/rt).
+
 ## Under the hood (the short version)
 
 A distilled RIFE-family student (2.9 MB) runs on a hand-written WGSL runtime -

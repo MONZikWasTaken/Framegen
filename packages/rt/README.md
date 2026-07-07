@@ -14,16 +14,20 @@ works).
 npm i framegen
 ```
 
-Weights are **not** bundled - fetch them once from the Framegen release
-(2.9 MB) and cache as you like:
+The v7-small weights (2.9 MB) ship inside the package (`weights/`). In a
+bundler setup copy them from `node_modules/framegen/weights/`; in the browser
+the easiest path is the npm CDN (proper CORS, versioned, cached):
 
 ```js
-const BASE = 'https://github.com/MONZikWasTaken/Framegen/releases/download/v1.0.0';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.0.1/weights';
 const [bin, manifest] = await Promise.all([
   fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
   fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
 ]);
 ```
+
+(GitHub release assets do NOT send CORS headers - fetching them from a page
+fails. The CDN route above is the supported one.)
 
 ## Interpolate between two frames
 
