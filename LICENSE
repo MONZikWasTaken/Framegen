@@ -19,10 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-NOTE: This MIT license covers the Framegen source code only. The model weights
-shipped in releases and in the npm package (rt_tfact*, rt_slim, rt_1blk,
-rt_sr, rt_v7s, etc.) are distributed under separate non-commercial terms - see
-WEIGHTS_LICENSE.md.
