@@ -1,0 +1,11 @@
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const dawn = require(process.argv[2]);
+const gpu = dawn.create(['enable-dawn-features=allow_unsafe_apis', 'backend=vulkan', 'adapter=NVIDIA']);
+const adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
+console.log('adapter:', adapter.info?.description);
+console.log('has shader-f16:', adapter.features.has('shader-f16'));
+console.log('has subgroup-matrix:', adapter.features.has('chromium-experimental-subgroup-matrix'));
+const cfgs = adapter.info?.subgroupMatrixConfigs || [];
+console.log('all configs:', cfgs.map(c => `${c.componentType}->${c.resultComponentType}`).join(', '));
+process.stdout.write('', () => process.exit(0));
