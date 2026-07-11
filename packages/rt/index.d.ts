@@ -3,6 +3,9 @@ export interface ConvTune {
   coc: number;
   slab: number;
   sg?: boolean;
+  /** Workgroup shape (threads); output tile is (2*wgx)x(2*wgy). Default 8x8. */
+  wgx?: number;
+  wgy?: number;
   ms?: number;
 }
 
@@ -23,6 +26,15 @@ export interface CreateRTOptions {
   textureOutput?: boolean;
   /** Bake the static-region guard into the flow kernel. */
   staticGuard?: boolean;
+  /**
+   * Occlusion-sparse refine (tfact2 weights, texture mode): the refine conv
+   * chain dispatches indirectly on tiles where the two warps disagree, skipping
+   * the rest. Bit-identical on full-motion frames, up to ~4x cheaper refine on
+   * calm content. Default true.
+   */
+  sparseRefine?: boolean;
+  /** Per-tile max warp-disagreement threshold for sparseRefine (0..1 color units, default 0.02). */
+  refineThr?: number;
 }
 
 export interface RT {
@@ -42,8 +54,14 @@ export interface RT {
   prepPair(a: GPUTexture, b: GPUTexture): void;
   /** Texture mode: one mid at timestep t into outTex (call prepPair first). */
   runT(t: number, outTex: GPUTexture): void;
-  /** Per-pass GPU timings (requires timestamp-query). */
+  /** Per-pass GPU timings, buffer mode (requires timestamp-query). */
   profile(rgbaA: Uint8Array, rgbaB: Uint8Array): Promise<string>;
+  /**
+   * Per-stage GPU timings for the tfact TEXTURE path - trunk + one mid,
+   * including the refine chain and flowout (requires timestamp-query).
+   * Pass outTex to include the flow stage.
+   */
+  profileT(a: GPUTexture, b: GPUTexture, t?: number, outTex?: GPUTexture | null): Promise<string>;
   readonly w: number;
   readonly h: number;
 }

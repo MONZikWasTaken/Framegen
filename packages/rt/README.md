@@ -19,7 +19,7 @@ bundler setup copy them from `node_modules/framegen/weights/`; in the browser
 the easiest path is the npm CDN (proper CORS, versioned, cached):
 
 ```js
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.0.1/weights';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.1.0/weights';
 const [bin, manifest] = await Promise.all([
   fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
   fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
@@ -72,6 +72,21 @@ localStorage.setItem('fcTune', JSON.stringify(tune));
 // ...next session:
 const rt = await createRT(device, { ...opts, convTune: JSON.parse(localStorage.getItem('fcTune')) });
 ```
+
+## What's new in 1.1.0
+
+- **Direct-warp flowout**: the warp samples your source textures through the
+  hardware bilinear unit instead of an internal full-res copy - less VRAM,
+  less bandwidth, mids resampled once instead of twice (slightly sharper).
+- **Occlusion-sparse refine** (tfact2 weights): the refine chain runs only on
+  tiles where the two warps disagree, scheduled entirely on the GPU via
+  indirect dispatch. Bit-identical output on full-motion frames, up to ~4x
+  cheaper refine on calm content. On by default; `sparseRefine: false`
+  restores the dense path, `refineThr` tunes the sensitivity (default 0.02).
+- **`rt.profileT(a, b, t, outTex)`**: per-stage GPU timings for the texture
+  path (needs `timestamp-query` on the device).
+- `tuneConvRB` explores more workgroup shapes; pass its result as `convTune`
+  exactly as before.
 
 ## Example project
 
