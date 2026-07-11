@@ -145,7 +145,7 @@
       if (all[key]) return;
       const [mw, mh] = SIZES[cfg.res];
       const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16 });
-      all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg };
+      all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg, wgx: best.wgx || 8, wgy: best.wgy || 8 };
       await chrome.storage.local.set({ fcTune: all });
       log('conv tune', cfg.res, JSON.stringify(best));
     } catch (e) { log('tune skipped', e); }
