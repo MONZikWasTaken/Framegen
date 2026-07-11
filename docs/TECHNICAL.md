@@ -92,7 +92,7 @@ web/player.html          standalone real-time player demo (+ worker)
 web/rt_test.html         parity harness vs the ONNX reference (+built-in bench)
 crates/rife-wgpu         same kernels on native wgpu (Rust)
 crates/framegen-native   native TensorRT path + candle correctness oracle
-packages/rt              the runtime as an npm library (npm "framegen", LGPL)
+packages/rt              the runtime as an npm library (npm "framegen", MIT)
 tools/                   training (distill/SR), export, benchmarks, packaging
 docs/                    measurements and phase notes
 ```

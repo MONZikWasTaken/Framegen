@@ -98,8 +98,8 @@ https://github.com/MONZikWasTaken/framegen-fps-booster.
 
 ## License
 
-**LGPL-3.0-or-later.** Embed it in anything, including commercial products;
-modifications to the library itself must be published. The model weights are
-licensed separately (non-commercial - see
+**MIT.** Embed it in anything, including commercial products - no strings on
+the code. The model weights bundled in this package are licensed separately
+(non-commercial - see
 [WEIGHTS_LICENSE](https://github.com/MONZikWasTaken/Framegen/blob/main/WEIGHTS_LICENSE.md));
 for commercial weight licensing, get in touch.

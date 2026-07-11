@@ -9,7 +9,7 @@ video into 60-240 fps in real time - with a neural network running entirely on
 your GPU. No servers, no accounts, nothing leaves your computer.
 
 [![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hpdpcjakhclhljfdkpjolonjlopbdhfk?label=chrome%20web%20store&color=19c37d)](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)
-[![License](https://img.shields.io/badge/code-AGPLv3-blue)](LICENSE)
+[![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
 [![npm](https://img.shields.io/npm/v/framegen?label=npm&color=cb3837)](https://www.npmjs.com/package/framegen)
 [![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
 
@@ -134,7 +134,7 @@ Starring the repo helps too - visibility is the other currency.
 ## Use it as a library
 
 The inference runtime is on npm as [`framegen`](https://www.npmjs.com/package/framegen)
-(LGPL) - real-time neural frame interpolation for your own project in ~20
+(MIT) - real-time neural frame interpolation for your own project in ~20
 lines, weights included:
 
 ```js
@@ -165,7 +165,8 @@ Full story, numbers, model ladder and training instructions:
 
 ## License
 
-Code: **AGPLv3** ([LICENSE](LICENSE)). The inference runtime is also
-available as a library under **LGPL-3.0** - [`framegen`](packages/rt) -
-so it can be embedded in other projects. Model weights: non-commercial
-research/personal use ([WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md)).
+Code: **MIT** ([LICENSE](LICENSE)) - the extension and the inference runtime
+([`framegen`](packages/rt) on npm), embed it in anything, commercial included.
+Model weights: non-commercial research/personal use
+([WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md)) - they are distilled from a
+RIFE-family teacher whose license chain isn't clean enough to free them yet.
