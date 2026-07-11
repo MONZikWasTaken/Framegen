@@ -89,6 +89,7 @@
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
+  let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
@@ -149,6 +150,24 @@
       log('conv tune', cfg.res, JSON.stringify(best));
     } catch (e) { log('tune skipped', e); }
   }
+  // the calibration burst is 200-400ms of GPU work - injected 4s into playback it
+  // was a guaranteed drop cascade right after the user enabled FC. Wait for an idle
+  // moment (paused / FC off) instead; after 2 minutes of nonstop playback run anyway
+  // (tuned kernels are worth one hiccup - up to +20% on some rungs).
+  let tuneTimer = 0;
+  function scheduleConvTune(rtMod) {
+    const t0 = performance.now();
+    clearTimeout(tuneTimer);
+    const tick = () => {
+      if (!rt || rtRes !== cfg.res || rtModel !== cfg.model) return; // runtime changed - resched rides the rebuild
+      if (!running || !videoEl || videoEl.paused || performance.now() - t0 > 120000) {
+        calibrateConvTune(rtMod);
+        return;
+      }
+      tuneTimer = setTimeout(tick, 3000);
+    };
+    tuneTimer = setTimeout(tick, 4000);
+  }
   let rtC2 = 0;
   async function buildRuntime() {
     if (!device) {
@@ -187,7 +206,7 @@
     rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
       staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
     rtRes = cfg.res; rtModel = cfg.model;
-    if (!convTune) setTimeout(() => calibrateConvTune(rtMod), 4000);
+    if (!convTune) scheduleConvTune(rtMod);
     midTexs.forEach(t => t.destroy());
     midTexs = [];
     for (let i = 0; i < 24; i++) {
@@ -489,8 +508,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             blitBg.clear();
           }
         }
-        sr.process(tex, out, tex.width, tex.height);
-        tex = out;
+        // false while the per-size pipelines compile (async) - show the raw frame
+        if (sr.process(tex, out, tex.width, tex.height)) tex = out;
       }
     }
     const enc = device.createCommandEncoder();
@@ -882,6 +901,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (uiTick === 0) {
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect(); // read ONCE per tick, shared with positionOverlay
+      lastVr = vr; lastVrT = now; // onFrame's aspect check reuses this instead of forcing layout
       positionOverlay(vr);
       // our bar everywhere except sites whose own controls verifiably sit above
       // the overlay (see SITE_CONTROLS_OK)
@@ -1001,7 +1021,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     midIdx = (midIdx + 1) % midTexs.length;
     const t0 = performance.now();
     try { rt.runT(curJob.ts[k], out); } catch (e) { log('runT', e); curJob = null; return; }
-    if ((k & 3) === 0) { // sample every 4th mid: a drain-probe promise per submit adds up at high factors
+    // sample every 4th mid STARTING AT k=1: mid 0's drain wait also swallows the
+    // trunk prep still executing ahead of it, so sampling it inflated msAvg by the
+    // trunk share and the auto controller under-committed. Single-mid jobs (x2)
+    // have no k=1 - sample k=0 there, prep has usually drained by its slot.
+    if ((k & 3) === 1 || curJob.ts.length === 1) { // a drain-probe promise per submit adds up at high factors
       device.queue.onSubmittedWorkDone().then(() => {
         const ms = performance.now() - t0;
         msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
@@ -1043,9 +1067,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (!videoEl.videoWidth || !videoEl.videoHeight) return;
       // letterboxed content (video aspect != player box, e.g. a landscape clip
       // inside a vertical shorts player) renders stretched - disengage cleanly
-      // and let the raw player show; resumes by itself when aspects match again
+      // and let the raw player show; resumes by itself when aspects match again.
+      // rect comes from pump's UI tick when fresh: a per-decoded-frame
+      // getBoundingClientRect forces layout 24-60x/s on heavy pages
       {
-        const br = videoEl.getBoundingClientRect();
+        const br = (lastVr && arrival - lastVrT < 250) ? lastVr : videoEl.getBoundingClientRect();
         if (br.width > 1 && br.height > 1) {
           const ea = br.width / br.height;
           const va = videoEl.videoWidth / videoEl.videoHeight;
@@ -1141,7 +1167,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             // frames display only when a tick lands within 8% of them.
             // the raf-floor estimate jitters (3.2ms "312Hz" moments) - snap it to
             // the nearest REAL refresh rate so the divisor grid stays sane
-            const RATES = [240, 165, 144, 120, 100, 75, 60];
+            const RATES = [360, 240, 165, 144, 120, 100, 90, 75, 60]; // 90 missing = 90Hz panels snapped to 100 and drifted every tick
             const rawHz = (rafFloor > 2 && rafFloor < 90) ? 1000 / rafFloor : 60;
             let snapHz = 60;
             for (const r of RATES) if (Math.abs(rawHz - r) / r < Math.abs(rawHz - snapHz) / snapHz) snapHz = r;
@@ -1310,6 +1336,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
     queue = []; lastTex = null; curJob = null; schedT = 0; hzNext = 0;
+    lastVr = null; // the cached rect belongs to the previous video element
     dropped = 0; dups = 0; cuts = 0;
     running = true;
     hud.style.display = 'block';
@@ -1386,8 +1413,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   async function switchRes() {
     switching = true; // gates onFrame/runPair: NO new mids while textures are being replaced
     try {
-      // loop: the user may flip the select again mid-rebuild - converge on the latest
-      while (rtRes !== cfg.res) {
+      // loop: the user may flip the select again mid-rebuild - converge on the latest.
+      // model counts too: a model-only change used to skip the loop entirely and
+      // silently keep the old weights until the next res change or restart
+      while (rtRes !== cfg.res || rtModel !== cfg.model) {
         curJob = null; // abandon un-submitted mids of the old pair
         queue = queue.filter((it) => !it.mid);
         msAvg = 0; // cost at the new size is different - relearn

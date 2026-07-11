@@ -94,11 +94,13 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
   }
   const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear',
     addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
-  const pipe = (code) => device.createComputePipeline({ layout: 'auto',
+  // async compiles: the RB conv shaders are heavily unrolled and a sync
+  // createComputePipeline stalls the main thread for tens of ms - exactly when
+  // the user flips SR on. Dawn compiles these on its worker pool instead.
+  const pipeAsync = (code) => device.createComputePipelineAsync({ layout: 'auto',
     compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
-  const pIn = pipe(wgslIn(C));
   // f16 copies of the heavy conv weights (the RB kernels read f16)
-  const pToH = pipe(WGSL_TO_F16);
+  const [pIn, pToH] = await Promise.all([pipeAsync(wgslIn(C)), pipeAsync(WGSL_TO_F16)]);
   const wbufH = {};
   {
     const enc = device.createCommandEncoder();
@@ -119,19 +121,27 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
   const onesAlpha = bufN(12 * 4);
   device.queue.writeBuffer(onesAlpha, 0, new Float32Array(12).fill(1));
 
-  // per-input-size state (feature buffers + dims); keyed by "WxH"
+  // per-input-size state (feature buffers + dims); keyed by "WxH". Built ASYNC:
+  // the first process() call at a new size kicks the build and returns null -
+  // the caller keeps presenting un-upscaled frames until the pipelines are ready
+  // (a sync build here froze the page right as SR engaged).
   const states = new Map();
   function stateFor(w, h) {
     const k = w + 'x' + h;
-    if (!states.has(k)) {
+    const st = states.get(k);
+    if (st) return st.ready ? st : null;
+    const building = { ready: false };
+    states.set(k, building);
+    (async () => {
       const dims = bufN(8);
       device.queue.writeBuffer(dims, 0, new Uint32Array([w, h]));
       const fa = bufN(C * w * h * 2);
       const fb = bufN(C * w * h * 2);
       const det = bufN(12 * w * h * 2);
-      const pMid = pipe(wgslConvRB(C, C, w, h, w, h, false));
-      const pOutConv = pipe(wgslConvRB(C, 12, w, h, w, h, false));
-      const pShuf = pipe(wgslShuffle(w, h));
+      const [pMid, pOutConv, pShuf] = await Promise.all([
+        pipeAsync(wgslConvRB(C, C, w, h, w, h, false)),
+        pipeAsync(wgslConvRB(C, 12, w, h, w, h, false)),
+        pipeAsync(wgslShuffle(w, h))]);
       const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
         layout: pMid.getBindGroupLayout(0), entries: [
           { binding: 0, resource: { buffer: sBuf } },
@@ -139,7 +149,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
           { binding: 2, resource: { buffer: wbuf[wname.replace('.weight', '.bias')] } },
           { binding: 3, resource: { buffer: wbuf[aname] } },
           { binding: 4, resource: { buffer: dBuf } }] });
-      states.set(k, {
+      Object.assign(building, {
         dims, fa, fb, det, pMid, pOutConv, pShuf,
         bgM2: midBg('c2.weight', 'a2.weight', fa, fb),
         bgM3: midBg('c3.weight', 'a3.weight', fb, fa),
@@ -149,12 +159,13 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
           { binding: 2, resource: { buffer: wbuf['c4.bias'] } },
           { binding: 3, resource: { buffer: onesAlpha } },
           { binding: 4, resource: { buffer: det } }] }),
+        ready: true,
       });
       if (states.size > 6) { // sizes changed wholesale
-        for (const [kk, s] of states) if (kk !== k) { s.fa.destroy(); s.fb.destroy(); s.det.destroy(); s.dims.destroy(); states.delete(kk); }
+        for (const [kk, s] of states) if (kk !== k && s.ready) { s.fa.destroy(); s.fb.destroy(); s.det.destroy(); s.dims.destroy(); states.delete(kk); }
       }
-    }
-    return states.get(k);
+    })().catch(() => states.delete(k)); // failed build: retry on a later frame
+    return null;
   }
 
   const gx = (n) => Math.ceil(n / WG);
@@ -164,9 +175,12 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
   // page reload. WeakMaps also let dead textures drop their bind groups with GC.
   const bgCache = new WeakMap();
 
-  // srcTex (w x h) -> dstTex (2w x 2h, rgba8unorm STORAGE_BINDING)
+  // srcTex (w x h) -> dstTex (2w x 2h, rgba8unorm STORAGE_BINDING).
+  // Returns false while the per-size pipelines are still compiling - the caller
+  // should present the original texture that frame.
   function process(srcTex, dstTex, w, h) {
     const S = stateFor(w, h);
+    if (!S) return false;
     let perSrc = bgCache.get(srcTex);
     if (!perSrc) { perSrc = new WeakMap(); bgCache.set(srcTex, perSrc); }
     let bgs = perSrc.get(dstTex);
@@ -199,6 +213,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
     pass.dispatchWorkgroups(gx(w * 2), gx(h * 2));
     pass.end();
     device.queue.submit([enc.finish()]);
+    return true;
   }
 
   return { process };

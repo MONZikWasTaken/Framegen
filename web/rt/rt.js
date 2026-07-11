@@ -563,6 +563,114 @@ ${GUARD}
 }`;
 }
 
+// per-pair static-difference plane (texture in/out mode): the guard's d-term
+// depends only on the frame PAIR, never on t - computing it once here removes
+// 54 full-res buffer reads/px from EVERY flowout dispatch (up to 19 mids in hz
+// mode share one pair). Same sampler/uv as the old prepFull, so d is bit-equal.
+function wgslDiff(W, H) {
+  return /* wgsl */`
+@group(0) @binding(0) var tex0: texture_2d<f32>;
+@group(0) @binding(1) var tex1: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var<storage, read_write> dst: array<f32>; // [${H},${W}] max-channel |A-B|
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${W} || y >= ${H}) { return; }
+  let uv = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  let d = abs(textureSampleLevel(tex0, samp, uv, 0.0).rgb
+            - textureSampleLevel(tex1, samp, uv, 0.0).rgb);
+  dst[y * ${W} + x] = max(d.x, max(d.y, d.z));
+}`;
+}
+
+// direct-warp flowout (texture in/out mode): the warp samples the SOURCE textures
+// through the hardware bilinear unit instead of a model-res f32 copy - one texture
+// sample replaces 12 buffer reads, the 6-plane imgs buffer and its per-pair prep
+// pass disappear, and the source is resampled ONCE (warp) instead of twice
+// (copy then warp) - sharper mids for less bandwidth. Filter precision is the
+// sampler's (~8-bit subtexel) - same +-1 LSB class as the rgba8 store above.
+function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false) {
+  const TW = W / 8, TH = H / 8, RW = W / 4, RH = H / 4;
+  const RES_DECL = withRes ? /* wgsl */`
+@group(0) @binding(2) var<storage, read> res: array<f32>; // [3,${RH},${RW}]
+fn rtap(c: i32, x: i32, y: i32) -> f32 {
+  return res[c * ${RH * RW} + clamp(y, 0, ${RH - 1}) * ${RW} + clamp(x, 0, ${RW - 1})];
+}
+fn rup(c: i32, sx: f32, sy: f32) -> f32 {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  return mix(mix(rtap(c, x0, y0), rtap(c, x0 + 1, y0), fx),
+             mix(rtap(c, x0, y0 + 1), rtap(c, x0 + 1, y0 + 1), fx), fy);
+}` : '';
+  const RES_ADD = withRes ? /* wgsl */`
+  let rx = (f32(x) + 0.5) / 4.0 - 0.5;
+  let ry = (f32(y) + 0.5) / 4.0 - 0.5;
+  bgr = bgr + vec3<f32>(rup(0, rx, ry), rup(1, rx, ry), rup(2, rx, ry));` : '';
+  // static-region protection: d comes from the per-pair sdiff plane (9 taps of one
+  // plane instead of 9x6 image reads); the untouched-source blend samples the pair
+  // at the pixel center - identical values to the old imgs-based path
+  const GUARD = staticGuard ? /* wgsl */`
+  var d = 0.0;
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      d += dtap(x + dx, y + dy);
+    }
+  }
+  d *= (1.0 / 9.0);
+  let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  if (wStatic > 0.001) {
+    let stat = (warpT(tex0, f32(x), f32(y)) + warpT(tex1, f32(x), f32(y))) * 0.5;
+    bgr = mix(bgr, stat, wStatic);
+  }` : '';
+  return /* wgsl */`
+@group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
+@group(0) @binding(1) var outTex: texture_storage_2d<rgba8unorm, write>;
+${RES_DECL}
+${staticGuard ? /* wgsl */`@group(0) @binding(3) var<storage, read> sdiff: array<f32>; // [${H},${W}]
+fn dtap(x: i32, y: i32) -> f32 {
+  return sdiff[clamp(y, 0, ${H - 1}) * ${W} + clamp(x, 0, ${W - 1})];
+}` : ''}
+@group(1) @binding(0) var tex0: texture_2d<f32>;
+@group(1) @binding(1) var tex1: texture_2d<f32>;
+@group(1) @binding(2) var samp: sampler;
+fn tap(c: i32, x: i32, y: i32) -> f32 {
+  return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
+}
+fn up(c: i32, sx: f32, sy: f32) -> f32 {
+  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
+  let fx = sx - f32(x0);   let fy = sy - f32(y0);
+  return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
+             mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
+}
+// grid_sample bilinear/border via the sampler: clamp-to-edge + hw filtering
+fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
+  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r like the buffer path
+}
+
+@compute @workgroup_size(${WG}, ${WG})
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let x = i32(gid.x); let y = i32(gid.y);
+  if (x >= ${W} || y >= ${H}) { return; }
+  let sx = (f32(x) + 0.5) / 8.0 - 0.5;
+  let sy = (f32(y) + 0.5) / 8.0 - 0.5;
+  let fx0 = up(0, sx, sy) * 8.0;
+  let fy0 = up(1, sx, sy) * 8.0;
+  let fx1 = up(2, sx, sy) * 8.0;
+  let fy1 = up(3, sx, sy) * 8.0;
+  let m = 1.0 / (1.0 + exp(-up(4, sx, sy)));
+  let w0 = warpT(tex0, f32(x) + fx0, f32(y) + fy0);
+  let w1 = warpT(tex1, f32(x) + fx1, f32(y) + fy1);
+  var bgr = w0 * m + w1 * (1.0 - m);
+${RES_ADD}
+  bgr = clamp(bgr, vec3<f32>(0.0), vec3<f32>(1.0));
+${GUARD}
+  textureStore(outTex, vec2<i32>(x, y), vec4<f32>(bgr.z, bgr.y, bgr.x, 1.0));
+}`;
+}
+
 // ---- refine head (tfact2): occlusion repair at QUARTER resolution ----
 // Gathers [warped0(3), warped1(3), mask(1), flow*(0.25/20)(4)] = 11ch at H/4.
 // F.interpolate(x, 0.25, bilinear, align_corners=False) samples the source at
@@ -574,8 +682,10 @@ function wgslRefinePrep(W, H, f16) {
   return /* wgsl */`
 ${f16 ? 'enable f16;' : ''}
 @group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
-@group(0) @binding(1) var<storage, read> imgs: array<f32>;  // [6,${H},${W}]
-@group(0) @binding(2) var<storage, read_write> rin: array<${T}>; // [11,${HH},${HW}]
+@group(0) @binding(1) var<storage, read_write> rin: array<${T}>; // [11,${HH},${HW}]
+@group(1) @binding(0) var tex0: texture_2d<f32>;
+@group(1) @binding(1) var tex1: texture_2d<f32>;
+@group(1) @binding(2) var samp: sampler;
 
 fn tap(c: i32, x: i32, y: i32) -> f32 {
   return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
@@ -586,19 +696,10 @@ fn up(c: i32, sx: f32, sy: f32) -> f32 {
   return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
              mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
 }
-fn img(plane: i32, x: i32, y: i32) -> f32 {
-  return imgs[plane * ${H * W} + clamp(y, 0, ${H - 1}) * ${W} + clamp(x, 0, ${W - 1})];
-}
-fn warp3(base: i32, sx: f32, sy: f32) -> vec3<f32> {
-  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
-  let fx = sx - f32(x0);   let fy = sy - f32(y0);
-  var r: vec3<f32>;
-  for (var c = 0; c < 3; c++) {
-    let p = base + c;
-    r[c] = mix(mix(img(p, x0, y0), img(p, x0 + 1, y0), fx),
-               mix(img(p, x0, y0 + 1), img(p, x0 + 1, y0 + 1), fx), fy);
-  }
-  return r;
+// direct warp: sample the source texture (see wgslFlowOutTexDirect)
+fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
+  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r
 }
 
 @compute @workgroup_size(${WG}, ${WG})
@@ -615,8 +716,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       let fx0 = up(0, gx8, gy8) * 8.0; let fy0 = up(1, gx8, gy8) * 8.0;
       let fx1 = up(2, gx8, gy8) * 8.0; let fy1 = up(3, gx8, gy8) * 8.0;
       mk += 1.0 / (1.0 + exp(-up(4, gx8, gy8)));
-      w0 += warp3(0, f32(X) + fx0, f32(Y) + fy0);
-      w1 += warp3(3, f32(X) + fx1, f32(Y) + fy1);
+      w0 += warpT(tex0, f32(X) + fx0, f32(Y) + fy0);
+      w1 += warpT(tex1, f32(X) + fx1, f32(Y) + fy1);
       fl += vec4<f32>(fx0, fy0, fx1, fy1);
     }
   }
@@ -676,12 +777,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 
 // ConvTranspose2d 4x4 stride2 pad1, no activation. Weight layout [CI, CO, 4, 4].
+// f16 mode covers src AND weights (accumulation stays f32) - the per-thread
+// 4*CI weight reads were the last f32 stream on the per-mid path.
 function wgslDeconv(CI, CO, IW, IH, OW, OH, f16src) {
   const T = f16src ? 'f16' : 'f32';
   return /* wgsl */`
 ${f16src ? 'enable f16;' : ''}
 @group(0) @binding(0) var<storage, read> src: array<${T}>;
-@group(0) @binding(1) var<storage, read> wgt: array<f32>;
+@group(0) @binding(1) var<storage, read> wgt: array<${T}>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
 @group(0) @binding(3) var<storage, read_write> dst: array<f32>;
 
@@ -702,7 +805,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
       if (ix >= ${IW}) { continue; }
       for (var ci = 0; ci < ${CI}; ci++) {
         acc += f32(src[ci * ${IH * IW} + iy * ${IW} + ix])
-             * wgt[ci * ${CO * 16} + co * 16 + ky * 4 + kx];
+             * f32(wgt[ci * ${CO * 16} + co * 16 + ky * 4 + kx]);
       }
     }
   }
@@ -785,6 +888,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     throw new Error('rt: tfact weights need texture input/output mode');
   }
   const refi = tfact && ('refine.c0.weight' in weightsManifest); // tfact2
+  // fully GPU-resident path (texture in AND out): warps sample the source textures
+  // directly - no model-res imgs copy, no prepFull pass; the guard reads a per-pair
+  // sdiff plane. Mixed modes keep the old imgs plumbing.
+  const direct = textureInput && textureOutput;
   const Z0A = C1 % 4 === 0 ? C1 / 4 : C1; // conv0a kernel packs 4 channels only when C1 is /4
 
   const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
@@ -829,7 +936,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const tbuf = buf(1);
   const rgba0 = textureInput ? null : buf(w * h);
   const rgba1 = textureInput ? null : buf(w * h);
-  const imgs = buf(6 * w * h);
+  const imgs = direct ? null : buf(6 * w * h);
+  const sdiff = direct && staticGuard ? buf(w * h) : null; // per-pair max-channel |A-B|
   const xq = abuf(CI0 * QH * QW);
   const f8 = abuf(C1 * H8 * W8);
   const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
@@ -859,8 +967,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const pipeAsync = (code, entry = 'main') => device.createComputePipelineAsync({
     layout: 'auto', compute: { module: mod(code), entryPoint: entry } });
   const sgTuned = convTune && convTune.sg && device.features.has('subgroups');
-  const [pPrepFull, pPrepQ, pConv0a, pConv0b, pConvB, pConvBR, pDeconv, pFlow] = await Promise.all([
-    pipeAsync(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h)),
+  const [pPrepFull, pPrepQ, pConv0a, pConv0b, pConvB, pConvBR, pDeconv, pFlow, pDiff] = await Promise.all([
+    direct ? null : pipeAsync(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h)),
     pipeAsync(tfact ? wgslPrepQuarterTex6(w, h, useF16)
       : (textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16))),
     pipeAsync(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16)),
@@ -872,7 +980,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       ? (sgTuned ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, true, convTune)
       : wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false)),
     pipeAsync(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16)),
-    pipeAsync(textureOutput ? wgslFlowOutTex(w, h, staticGuard, refi) : wgslFlowOut(w, h)),
+    pipeAsync(textureOutput
+      ? (direct ? wgslFlowOutTexDirect(w, h, staticGuard, refi) : wgslFlowOutTex(w, h, staticGuard, refi))
+      : wgslFlowOut(w, h)),
+    sdiff ? pipeAsync(wgslDiff(w, h)) : null,
   ]);
   // texture-output mode: flow bind groups are per output texture (small ring - cache them)
   const flowBgCache = new Map();
@@ -881,11 +992,16 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       // evict BEFORE inserting - clearing after would wipe the fresh entry and
       // hand setBindGroup an undefined (latent until a caller rings >24 textures)
       if (flowBgCache.size > 24) flowBgCache.clear();
-      const entries = [
-        { binding: 0, resource: { buffer: tmp8 } },
-        { binding: 1, resource: { buffer: imgs } },
-        { binding: 2, resource: tex.createView() }];
-      if (refi) entries.push({ binding: 3, resource: { buffer: rRes } }); // tfact2 residual
+      // direct layout: 0 tmp8, 1 outTex, 2 res?, 3 sdiff? (textures ride group 1);
+      // legacy layout: 0 tmp8, 1 imgs, 2 outTex, 3 res?
+      const entries = direct
+        ? [{ binding: 0, resource: { buffer: tmp8 } },
+           { binding: 1, resource: tex.createView() }]
+        : [{ binding: 0, resource: { buffer: tmp8 } },
+           { binding: 1, resource: { buffer: imgs } },
+           { binding: 2, resource: tex.createView() }];
+      if (refi) entries.push({ binding: direct ? 2 : 3, resource: { buffer: rRes } }); // tfact2 residual
+      if (sdiff) entries.push({ binding: 3, resource: { buffer: sdiff } });
       flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries }));
     }
     return flowBgCache.get(tex);
@@ -907,10 +1023,19 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       // evict BEFORE inserting - clearing after would wipe the fresh entry too
       if (texBgCache.size > 12) texBgCache.clear(); // texture set changed wholesale
       const va = texA.createView(), vb = texB.createView();
+      const texEntries = [
+        { binding: 0, resource: va }, { binding: 1, resource: vb },
+        { binding: 2, resource: sampler }];
       texBgCache.set(key, {
-        full: device.createBindGroup({ layout: pPrepFull.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: va }, { binding: 1, resource: vb },
-          { binding: 2, resource: sampler }, { binding: 3, resource: { buffer: imgs } }] }),
+        full: direct ? null : device.createBindGroup({ layout: pPrepFull.getBindGroupLayout(0), entries: [
+          ...texEntries, { binding: 3, resource: { buffer: imgs } }] }),
+        // direct mode: per-pair companions - the sdiff writer and the group(1)
+        // texture bindings of the flow / refine-prep pipelines ('auto' layouts
+        // are pipeline-unique, so each needs its own bind group)
+        diff: sdiff ? device.createBindGroup({ layout: pDiff.getBindGroupLayout(0), entries: [
+          ...texEntries, { binding: 3, resource: { buffer: sdiff } }] }) : null,
+        flowTex: direct ? device.createBindGroup({ layout: pFlow.getBindGroupLayout(1), entries: texEntries }) : null,
+        rprepTex: refi ? device.createBindGroup({ layout: pRPrep.getBindGroupLayout(1), entries: texEntries }) : null,
         q: tfact
           ? [device.createBindGroup({ layout: pPrepQ.getBindGroupLayout(0), entries: [
               { binding: 0, resource: va }, { binding: 1, resource: vb },
@@ -959,7 +1084,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16)),
       pipeAsync(wgslRefineOut(RC, RW4, RH4, useF16)),
     ]);
-    bgRPrep = bg(pRPrep, [tmp8, imgs, rIn]);
+    bgRPrep = bg(pRPrep, [tmp8, rIn]); // sources ride group(1) per pair (rprepTex)
     bgRC0 = bg(pRC0, [rIn, convW('refine.c0.weight'), wbuf['refine.c0.bias'], wbuf['refine.a0.weight'], rA2]);
     bgRC1 = bg(pRC1, [rA2, convW('refine.c1.weight'), wbuf['refine.c1.bias'], wbuf['refine.a1.weight'], rB2]);
     bgRC2 = bg(pRC1, [rB2, convW('refine.c2.weight'), wbuf['refine.c2.bias'], wbuf['refine.a2.weight'], rA2]);
@@ -996,7 +1121,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     [src, dst] = [dst, src];
   }
   const f16out = src; // after 8 convs
-  const bgDeconv = bg(pDeconv, [f16out, wbuf['block0.lastconv.weight'], wbuf['block0.lastconv.bias'], tmp8]);
+  const bgDeconv = bg(pDeconv, [f16out, convW('block0.lastconv.weight'), wbuf['block0.lastconv.bias'], tmp8]);
   const bgFlow = textureOutput ? null : bg(pFlow, [tmp8, imgs, outp]);
 
   const gx = (n) => Math.ceil(n / WG);
@@ -1007,6 +1132,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
 
   // per-stage GPU times via timestamp queries (needs 'timestamp-query' on the device)
   async function profile(rgbaA, rgbaB) {
+    if (textureInput) return 'profile: buffer-input mode only';
     if (!device.features.has('timestamp-query')) return 'no timestamp-query feature';
     const stages = [
       ['prepFull', pPrepFull, bgPrepFull, [gx(w), gx(h), 1]],
@@ -1094,7 +1220,11 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     const enc = device.createCommandEncoder();
     {
       const pass = enc.beginComputePass();
-      pass.setPipeline(pPrepFull); pass.setBindGroup(0, tbg ? tbg.full : bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
+      if (direct) {
+        if (sdiff) { pass.setPipeline(pDiff); pass.setBindGroup(0, tbg.diff); pass.dispatchWorkgroups(gx(w), gx(h)); }
+      } else {
+        pass.setPipeline(pPrepFull); pass.setBindGroup(0, tbg ? tbg.full : bgPrepFull); pass.dispatchWorkgroups(gx(w), gx(h));
+      }
       pass.end();
     }
     for (let i = 0; i < ts.length; i++) {
@@ -1111,6 +1241,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
       pass2.setPipeline(pFlow);
       pass2.setBindGroup(0, textureOutput ? flowBgFor(outTexs[i]) : bgFlow);
+      if (direct) pass2.setBindGroup(1, tbg.flowTex);
       pass2.dispatchWorkgroups(gx(w), gx(h));
       pass2.end();
       if (!textureOutput) enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
@@ -1141,7 +1272,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     if (tfact) {
       // the WHOLE t-free trunk runs here, once per pair
       const pass = enc.beginComputePass();
-      pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      if (sdiff) { // per-pair guard plane (replaces the old full-res prepFull)
+        pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h));
+      }
       pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
       pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
       pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(gx(W16), gx(H16), C2 / 4);
@@ -1155,7 +1288,11 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       enc.copyBufferToBuffer(f16a, 0, hbuf, 0, actBytes); // trunk features, reused per t
     } else {
       const pass = enc.beginComputePass();
-      pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      if (direct) {
+        if (sdiff) { pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h)); }
+      } else {
+        pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      }
       pass.end();
     }
     device.queue.submit([enc.finish()]);
@@ -1174,13 +1311,17 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
       pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8), 5);
       if (refi) { // quarter-res refine chain; the flowout below folds the residual in
-        pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
+        pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep);
+        pass.setBindGroup(1, curPrep.rprepTex); // source textures for the direct warp
+        pass.dispatchWorkgroups(gx(RW4), gx(RH4));
         pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
         pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
         pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / 4);
         pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
       }
-      pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex)); pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex));
+      pass.setBindGroup(1, curPrep.flowTex); // 'auto' layouts are pipeline-unique - rebind
+      pass.dispatchWorkgroups(gx(w), gx(h));
       pass.end();
       device.queue.submit([enc.finish()]);
       return;
@@ -1199,7 +1340,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
     }
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8), 5);
-    pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex)); pass2.dispatchWorkgroups(gx(w), gx(h));
+    pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex));
+    pass2.setBindGroup(1, curPrep.flowTex); // direct warp sources (runT implies texture in+out)
+    pass2.dispatchWorkgroups(gx(w), gx(h));
     pass2.end();
     device.queue.submit([enc.finish()]);
   }
