@@ -1494,7 +1494,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     syncPanel();
     F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
     const Md = panel.querySelector('#fcModel');
-    Md.onchange = () => { cfg.model = Md.value; saveCfg(); }; // rebuild rides the storage listener, like res
+    // rebuild directly, like res: the storage listener can't carry it - cfg.model
+    // is already updated by the time the onChanged event compares against it, so
+    // the originating tab never saw a "change" (other tabs did - stale cfg there)
+    Md.onchange = async () => {
+      cfg.model = Md.value; saveCfg();
+      if (running && !toggling) {
+        toggling = true;
+        try { await switchRes(); }
+        catch (e) { log('model switch', e); }
+        finally { toggling = false; }
+      }
+    };
     A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
     D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
     Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
