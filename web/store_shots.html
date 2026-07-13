@@ -12,6 +12,7 @@
   body{width:1280px;height:800px;overflow:hidden;background:var(--ink);color:var(--fg);
     font:15px/1.5 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
   body.marquee{width:1400px;height:560px}
+  body.tile{width:440px;height:280px}
   .slide{position:absolute;inset:0;display:none}
   .slide.on{display:block}
   .disp{font-family:'Space Grotesk',sans-serif}
@@ -112,6 +113,15 @@
   #s4 .cell+.cell{padding-left:28px;border-left:1px solid var(--line)}
   #s4 .cell b{display:block;font:600 30px 'Space Grotesk';margin-bottom:6px}
   #s4 .cell span{color:var(--mut);font-size:15px}
+
+  /* ---- slide 7: small tile 440x280 ---- */
+  #s7 .twrap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px}
+  #s7 .brand{display:flex;align-items:center;gap:12px}
+  #s7 .brand img{width:44px;height:44px;border-radius:11px}
+  #s7 .brand span{font:600 26px 'Space Grotesk'}
+  #s7 .tag2{font:500 17px 'Space Grotesk';color:#c7cad0}
+  #s7 .tag2 em{font-style:normal;color:var(--grn)}
+  #s7 .ruler{height:30px;margin-top:2px}
 
   /* ---- slide 6: marquee 1400x560 ---- */
   #s6 .mwrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 90px}
@@ -216,6 +226,15 @@
   </div>
 </section>
 
+<section class="slide" id="s7">
+  <div class="vig"></div>
+  <div class="twrap">
+    <div class="brand"><img src="../docs/media/logo.png" alt=""><span>Framegen</span></div>
+    <div class="tag2">Any video. <em>2&ndash;6&times;</em> smoother.</div>
+    <div class="ruler"><svg width="330" height="30" id="rulerSvg7"></svg></div>
+  </div>
+</section>
+
 <section class="slide" id="s6">
   <div class="vig"></div>
   <div class="mwrap">
@@ -251,6 +270,7 @@
 <script type="module">
 const N = +(new URLSearchParams(location.search).get('slide') || 1);
 if (N === 6) document.body.classList.add('marquee');
+if (N === 7) document.body.classList.add('tile');
 document.getElementById('s' + N).classList.add('on');
 
 // frame ruler: tick density ramps 24 -> 144 left to right
@@ -272,6 +292,20 @@ document.getElementById('s' + N).classList.add('on');
     }
     svg.innerHTML = parts.join('');
   }
+}
+
+// slide 7 small tile: mini ruler
+if (N === 7) {
+  const svg = document.getElementById('rulerSvg7');
+  const W = 330, H = 30;
+  let x = 0, parts = [], gap = 16;
+  while (x < W) {
+    const t = x / W;
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(H - 20) / 2}" width="1.6" height="20" fill="${t > 0.82 ? '#19C37D' : '#F2F3F5'}" opacity="${(0.3 + 0.65 * t).toFixed(2)}"/>`);
+    gap = 16 - 13 * Math.pow(t, 1.35);
+    x += gap;
+  }
+  svg.innerHTML = parts.join('');
 }
 
 // slide 6 marquee: same hero ruler, sized to the banner
