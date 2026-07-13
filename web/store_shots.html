@@ -79,13 +79,20 @@
   #s3 .head h2{font:600 50px 'Space Grotesk';letter-spacing:-0.01em}
   #s3 .head p{margin-top:10px;font-size:17px;color:var(--mut)}
   #s3 .cmp{position:absolute;left:110px;right:110px;top:212px;height:460px;border-radius:16px;overflow:hidden;
-    border:1px solid var(--line);display:flex}
-  #s3 .half{position:relative;width:50%;height:100%;overflow:hidden}
-  #s3 canvas{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);image-rendering:pixelated}
-  #s3 .half .tag{position:absolute;left:16px;bottom:14px;font:600 12px 'JetBrains Mono';letter-spacing:.06em;
-    background:rgba(0,0,0,.66);padding:5px 10px;border-radius:7px;color:#cfd3d9}
-  #s3 .half.b .tag{color:var(--grn)}
-  #s3 .seam{width:2px;background:#fff;opacity:.9;position:relative;z-index:2}
+    border:1px solid var(--line)}
+  #s3 canvas{position:absolute;inset:0;width:100%;height:100%}
+  #s3 .wipe{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff;z-index:2}
+  #s3 .wipe .knob{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:34px;height:34px;border-radius:50%;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.5);
+    display:block}
+  #s3 .wipe .knob::before{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    border-style:solid;border-width:5px 7px 5px 0;border-color:transparent #0B0C0E transparent transparent;margin-left:-5px}
+  #s3 .wipe .knob::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    border-style:solid;border-width:5px 0 5px 7px;border-color:transparent transparent transparent #0B0C0E;margin-left:6px}
+  #s3 .tag{position:absolute;bottom:14px;font:600 12px 'JetBrains Mono';letter-spacing:.06em;
+    background:rgba(0,0,0,.66);padding:5px 10px;border-radius:7px;color:#cfd3d9;z-index:3}
+  #s3 .tag.ta{left:16px}
+  #s3 .tag.tb{right:16px;color:var(--grn)}
   #s3 .note{position:absolute;left:0;right:0;bottom:44px;text-align:center;font:500 13px 'JetBrains Mono';color:var(--mut)}
 
   /* ---- slide 4: instrument ---- */
@@ -164,10 +171,11 @@
     <h2>Upscale that cleans as it scales</h2>
     <p>Real detail back from low-res streams - trained on compressed video, so it cleans instead of amplifying noise.</p>
   </div>
-  <div class="cmp">
-    <div class="half a"><canvas id="cvA"></canvas><span class="tag">360p SOURCE, STRETCHED BY THE PLAYER</span></div>
-    <div class="seam"></div>
-    <div class="half b"><canvas id="cvB"></canvas><span class="tag">FRAMEGEN RESOLUTION BOOST</span></div>
+  <div class="cmp" id="cmpBox">
+    <canvas id="cvW"></canvas>
+    <div class="wipe"><span class="knob"></span></div>
+    <span class="tag ta">360p, STRETCHED BY THE PLAYER</span>
+    <span class="tag tb">FRAMEGEN RESOLUTION BOOST</span>
   </div>
   
 </section>
@@ -283,24 +291,26 @@ if (N === 3) {
   for (let y = 0; y < h * 2; y++) srImg.data.set(rows.subarray(y * bpr, y * bpr + w * 2 * 4), y * w * 2 * 4);
   rb.unmap();
 
-  // dragon head crop (in full-res coords)
-  const CX = 350, CY = 90, CW = 380, CH = 310;
-  const zoom = 1.7;
-  const paint = (cv, draw) => {
-    cv.width = CW; cv.height = CH;
-    cv.style.width = (CW * zoom) + 'px'; cv.style.height = (CH * zoom) + 'px';
-    draw(cv.getContext('2d'));
-  };
-  paint(document.getElementById('cvB'), (c) => {
-    const full = document.createElement('canvas'); full.width = w * 2; full.height = h * 2;
-    full.getContext('2d').putImageData(srImg, 0, 0);
-    c.drawImage(full, CX, CY, CW, CH, 0, 0, CW, CH);
-  });
-  paint(document.getElementById('cvA'), (c) => {
-    // the player's plain smooth stretch of the 360p frame - soft, blurry
-    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'medium';
-    c.drawImage(small, CX / 2, CY / 2, CW / 2, CH / 2, 0, 0, CW, CH);
-  });
+  // one continuous crop, wipe at 50%: left = player stretch, right = our output
+  const box = document.getElementById('cmpBox');
+  const BW = box.clientWidth, BH = box.clientHeight;
+  const zoom = 2.1;                       // magnification so the delta reads at thumbnail size
+  const CW = Math.round(BW / zoom), CH = Math.round(BH / zoom);
+  const CX = 330, CY = 120;               // eyes/hair region of the closeup
+  const cv = document.getElementById('cvW');
+  cv.width = BW; cv.height = BH;
+  const c = cv.getContext('2d');
+  const fullSR = document.createElement('canvas'); fullSR.width = w * 2; fullSR.height = h * 2;
+  fullSR.getContext('2d').putImageData(srImg, 0, 0);
+  c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'medium';
+  // left half: the 360p frame smoothly stretched (what the player does)
+  c.drawImage(small, CX / 2, CY / 2, CW / 2, CH / 2, 0, 0, BW, BH);
+  // right of the seam: our model's output of the SAME input
+  c.save();
+  c.beginPath(); c.rect(BW / 2, 0, BW / 2, BH); c.clip();
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(fullSR, CX, CY, CW, CH, 0, 0, BW, BH);
+  c.restore();
 }
 
 await document.fonts.ready;
