@@ -82,7 +82,8 @@
   #s3 .cmp{position:absolute;left:110px;right:110px;top:212px;height:460px;border-radius:16px;overflow:hidden;
     border:1px solid var(--line)}
   #s3 canvas{position:absolute;inset:0;width:100%;height:100%}
-  #s3 .wipe{position:absolute;top:0;bottom:0;left:50%;width:2px;background:#fff;z-index:2}
+  #s3 .wipe{position:absolute;top:50%;left:50%;width:2px;height:700px;background:#fff;z-index:2;
+    transform:translate(-50%,-50%) rotate(45deg)}
   #s3 .wipe .knob{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
     width:34px;height:34px;border-radius:50%;background:#fff;box-shadow:0 2px 14px rgba(0,0,0,.5);
     display:block}
@@ -180,8 +181,8 @@
   <div class="cmp" id="cmpBox">
     <canvas id="cvW"></canvas>
     <div class="wipe"><span class="knob"></span></div>
-    <span class="tag ta">360p, STRETCHED BY THE PLAYER</span>
-    <span class="tag tb">FRAMEGEN RESOLUTION BOOST</span>
+    <span class="tag ta">360p &middot; 230K PIXELS</span>
+    <span class="tag tb">FRAMEGEN 2&times; &middot; 920K PIXELS</span>
   </div>
   <div class="cred">Sintel &mdash; &copy; Blender Foundation (CC-BY)</div>
   
@@ -335,20 +336,25 @@ if (N === 3) {
   // one continuous crop, wipe at 50%: left = player stretch, right = our output
   const box = document.getElementById('cmpBox');
   const BW = box.clientWidth, BH = box.clientHeight;
-  const zoom = 2.1;                       // magnification so the delta reads at thumbnail size
+  const zoom = 3.4;                       // both halves magnified equally: the 360p side runs out of pixels and goes soft, ours holds shape
   const CW = Math.round(BW / zoom), CH = Math.round(BH / zoom);
-  const CX = 300, CY = 110;               // hair strands and the eye straddle the 50% seam
+  const CX = 404, CY = 166;               // eye strip: one eye each side of the seam
   const cv = document.getElementById('cvW');
   cv.width = BW; cv.height = BH;
   const c = cv.getContext('2d');
   const fullSR = document.createElement('canvas'); fullSR.width = w * 2; fullSR.height = h * 2;
   fullSR.getContext('2d').putImageData(srImg, 0, 0);
   c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'medium';
-  // left half: the 360p frame smoothly stretched (what the player does)
+  // left half: the raw 360p pixel grid, shown as-is (nearest) - 4x fewer pixels
+  c.imageSmoothingEnabled = false;
   c.drawImage(small, CX / 2, CY / 2, CW / 2, CH / 2, 0, 0, BW, BH);
+  c.imageSmoothingEnabled = true;
   // right of the seam: our model's output of the SAME input
   c.save();
-  c.beginPath(); c.rect(BW / 2, 0, BW / 2, BH); c.clip();
+  c.beginPath(); // 45-degree split: right of the line x = cx + (cy - y)
+  c.moveTo(BW / 2 + BH / 2, 0);
+  c.lineTo(BW / 2 - BH / 2, BH);
+  c.lineTo(BW, BH); c.lineTo(BW, 0); c.closePath(); c.clip();
   c.imageSmoothingQuality = 'high';
   c.drawImage(fullSR, CX, CY, CW, CH, 0, 0, BW, BH);
   c.restore();
