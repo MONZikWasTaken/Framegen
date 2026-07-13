@@ -1,0 +1,310 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>store shots</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0B0C0E; --panel:rgba(14,15,17,.96); --line:rgba(255,255,255,.10);
+    --fg:#F2F3F5; --mut:#8A8F98; --grn:#19C37D;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{width:1280px;height:800px;overflow:hidden;background:var(--ink);color:var(--fg);
+    font:15px/1.5 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  .slide{position:absolute;inset:0;display:none}
+  .slide.on{display:block}
+  .disp{font-family:'Space Grotesk',sans-serif}
+  .mono{font-family:'JetBrains Mono',monospace}
+  .vig{position:absolute;inset:0;background:radial-gradient(120% 90% at 50% 0%,rgba(255,255,255,.045),transparent 55%),
+    radial-gradient(90% 70% at 85% 100%,rgba(25,195,125,.05),transparent 60%);pointer-events:none}
+
+  /* ---- frame ruler: sparse 24fps ticks densifying to 144 ---- */
+  .ruler{position:relative;height:72px}
+  .ruler svg{display:block}
+  .ruler .lab{position:absolute;top:100%;margin-top:10px;font:600 13px 'JetBrains Mono',monospace;color:var(--mut);letter-spacing:.08em}
+
+  /* ---- slide 1: hero ---- */
+  #s1 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
+  #s1 .brand{display:flex;align-items:center;gap:18px;margin-bottom:44px}
+  #s1 .brand img{width:56px;height:56px;border-radius:14px}
+  #s1 .brand span{font:600 24px 'Space Grotesk';letter-spacing:.01em}
+  #s1 h1{font:600 84px/1.06 'Space Grotesk';letter-spacing:-0.015em;max-width:900px}
+  #s1 h1 em{font-style:normal;color:var(--grn)}
+  #s1 p{margin-top:26px;font-size:20px;color:var(--mut);max-width:600px}
+  #s1 .ruler{margin-top:70px}
+
+  /* ---- shared player chrome ---- */
+  .player{position:absolute;inset:0;overflow:hidden}
+  .player img.bg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;filter:brightness(.55) saturate(.9)}
+  .player .shade{position:absolute;inset:0;background:linear-gradient(180deg,rgba(11,12,14,.25),rgba(11,12,14,.05) 40%,rgba(11,12,14,.55))}
+  .hud{position:absolute;left:0;top:0;color:#fff;font:11px/1.5 'JetBrains Mono',monospace;
+    background:rgba(0,0,0,.72);padding:4px 10px}
+  .hud b{color:var(--grn);font-weight:600}
+  .fgbtn{position:absolute;width:44px;height:44px;border-radius:50%;background:rgba(18,18,20,.88);
+    display:flex;align-items:center;justify-content:center;font:600 13px system-ui;color:#fff;
+    box-shadow:0 2px 12px rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.06)}
+  .fcbar{position:absolute;display:flex;align-items:center;gap:12px;background:rgba(16,17,20,.88);
+    border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:10px 16px;font:11px system-ui;color:#fff}
+  .fcbar .tl{flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,.18);position:relative}
+  .fcbar .tl i{position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--grn);border-radius:2px}
+  .fcbar .tl b{position:absolute;left:38%;top:50%;width:12px;height:12px;border-radius:50%;background:#fff;transform:translate(-6px,-6px)}
+
+  /* ---- panel (recreated from the real extension CSS) ---- */
+  .fcpanel{position:absolute;width:290px;background:var(--panel);border:1px solid rgba(255,255,255,.14);
+    border-radius:14px;box-shadow:0 8px 32px rgba(0,0,0,.5);padding:16px 18px;font:12.5px/1.5 system-ui;color:#ddd}
+  .fcpanel .t{font:600 15px system-ui;color:#fff;display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .fcpanel .t::before{content:'';width:8px;height:8px;border-radius:50%;background:var(--grn)}
+  .fcpanel .t small{color:#667;font:400 10px system-ui}
+  .row{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:9px 0}
+  .row+.row{border-top:1px solid rgba(255,255,255,.06)}
+  .row .l{flex:1}
+  .row .l small{display:block;color:#8a8f98;font-size:10.5px;line-height:1.35;margin-top:1px}
+  .sw{width:34px;height:20px;border-radius:10px;background:rgba(255,255,255,.16);position:relative;flex:none}
+  .sw.on{background:var(--grn)}
+  .sw::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.15s}
+  .sw.on::after{left:16px}
+  .sel{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:#fff;
+    border-radius:8px;padding:4px 10px;font:12px system-ui}
+  .stat{margin-top:10px;padding-top:9px;border-top:1px solid rgba(255,255,255,.06);
+    font:10.5px 'JetBrains Mono',monospace;color:#8a8f98}
+  .stat b{color:var(--grn);font-weight:600}
+
+  /* ---- slide 2 ---- */
+  #s2 .capt{position:absolute;left:70px;top:64px;max-width:520px}
+  #s2 .capt h2{font:600 54px/1.1 'Space Grotesk';letter-spacing:-0.01em}
+  #s2 .capt p{margin-top:16px;font-size:18px;color:#c7cad0}
+
+  /* ---- slide 3: before/after ---- */
+  #s3 .head{position:absolute;left:0;right:0;top:56px;text-align:center;z-index:3}
+  #s3 .head h2{font:600 50px 'Space Grotesk';letter-spacing:-0.01em}
+  #s3 .head p{margin-top:10px;font-size:17px;color:var(--mut)}
+  #s3 .cmp{position:absolute;left:110px;right:110px;top:212px;height:460px;border-radius:16px;overflow:hidden;
+    border:1px solid var(--line);display:flex}
+  #s3 .half{position:relative;width:50%;height:100%;overflow:hidden}
+  #s3 canvas{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);image-rendering:pixelated}
+  #s3 .half .tag{position:absolute;left:16px;bottom:14px;font:600 12px 'JetBrains Mono';letter-spacing:.06em;
+    background:rgba(0,0,0,.66);padding:5px 10px;border-radius:7px;color:#cfd3d9}
+  #s3 .half.b .tag{color:var(--grn)}
+  #s3 .seam{width:2px;background:#fff;opacity:.9;position:relative;z-index:2}
+  #s3 .note{position:absolute;left:0;right:0;bottom:44px;text-align:center;font:500 13px 'JetBrains Mono';color:var(--mut)}
+
+  /* ---- slide 4: instrument ---- */
+  #s4 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
+  #s4 .big{font:600 150px/1 'JetBrains Mono';letter-spacing:-0.04em}
+  #s4 .big small{font:500 26px 'Space Grotesk';color:var(--mut);letter-spacing:0;display:block;margin-top:10px}
+  #s4 .big em{font-style:normal;color:var(--grn)}
+  #s4 .grid{display:flex;gap:0;margin-top:78px;border-top:1px solid var(--line)}
+  #s4 .cell{flex:1;padding:26px 28px 0 0}
+  #s4 .cell+.cell{padding-left:28px;border-left:1px solid var(--line)}
+  #s4 .cell b{display:block;font:600 30px 'Space Grotesk';margin-bottom:6px}
+  #s4 .cell span{color:var(--mut);font-size:15px}
+
+  /* ---- slide 5: everywhere ---- */
+  #s5 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
+  #s5 h2{font:600 60px/1.1 'Space Grotesk';letter-spacing:-0.012em;max-width:760px}
+  #s5 .sites{display:flex;flex-wrap:wrap;gap:14px;margin-top:46px;max-width:860px}
+  #s5 .site{border:1px solid var(--line);border-radius:12px;padding:12px 22px;font:500 17px 'Space Grotesk';color:#d6d9de}
+  #s5 .site.more{color:var(--mut);border-style:dashed}
+  #s5 .ladder{margin-top:66px;display:flex;align-items:baseline;gap:26px;font-family:'JetBrains Mono'}
+  #s5 .ladder .from{font:500 30px 'JetBrains Mono';color:var(--mut)}
+  #s5 .ladder .arr{color:var(--mut);font-size:24px}
+  #s5 .ladder .to{font:600 44px 'JetBrains Mono';color:var(--fg)}
+  #s5 .ladder .to em{font-style:normal;color:var(--grn)}
+  #s5 .ladder .cap{font:400 15px Inter;color:var(--mut);margin-left:8px}
+</style>
+<body>
+
+<section class="slide" id="s1">
+  <div class="vig"></div>
+  <div class="wrap">
+    <div class="brand"><img src="../docs/media/logo.png" alt=""><span>Framegen</span></div>
+    <h1>Any video.<br><em>2&ndash;6&times;</em> smoother.</h1>
+    <p>Neural frame generation for every video site &mdash; running on your GPU, inside your browser.</p>
+    <div class="ruler">
+      <svg width="1060" height="72" id="rulerSvg"></svg>
+      <span class="lab" style="left:0">24 FPS</span>
+      <span class="lab" style="right:0">144 FPS</span>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s2">
+  <div class="player">
+    <img class="bg" id="bg2" alt="">
+    <div class="shade"></div>
+    <div class="hud" style="left:14px;top:14px">FG <b>120fps</b> &times;5 &middot; 0.8ms &middot; 720p</div>
+    <div class="fgbtn" style="left:26px;top:330px">FG</div>
+    <div class="fgbtn" style="left:26px;top:384px">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </div>
+    <div class="fcbar" style="left:110px;right:110px;bottom:36px">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff"><polygon points="6,4 20,12 6,20"/></svg>
+      <span class="mono">12:41</span>
+      <div class="tl"><i></i><b></b></div>
+      <span class="mono">33:05</span>
+    </div>
+    <div class="fcpanel" style="right:64px;top:150px">
+      <div class="t">Framegen <small>v1.3.4</small></div>
+      <div class="row"><span class="l">Smoothness<small>neural frame generation</small></span><span class="sw on"></span></div>
+      <div class="row"><span class="l">Resolution boost<small>2x neural upscale</small></span><span class="sw on"></span></div>
+      <div class="row"><span class="l">HDR<small>brightness expansion</small></span><span class="sw"></span></div>
+      <div class="row"><span class="l">Quality<small>GPU load</small></span><span class="sel">max</span></div>
+      <div class="stat">status: <b>running</b> &middot; 0.8 ms/frame &middot; RTX 4060 Ti</div>
+    </div>
+  </div>
+  <div class="capt">
+    <h2>One switch on any player</h2>
+    <p>Hover a video, press FG. Frames are generated in real time and paced to your display.</p>
+  </div>
+</section>
+
+<section class="slide" id="s3">
+  <div class="vig"></div>
+  <div class="head">
+    <h2>Upscale that cleans as it scales</h2>
+    <p>Real detail back from low-res streams - trained on compressed video, so it cleans instead of amplifying noise.</p>
+  </div>
+  <div class="cmp">
+    <div class="half a"><canvas id="cvA"></canvas><span class="tag">360p SOURCE, STRETCHED BY THE PLAYER</span></div>
+    <div class="seam"></div>
+    <div class="half b"><canvas id="cvB"></canvas><span class="tag">FRAMEGEN RESOLUTION BOOST</span></div>
+  </div>
+  
+</section>
+
+<section class="slide" id="s4">
+  <div class="vig"></div>
+  <div class="wrap">
+    <div class="big"><em>0.8</em> ms<small>per generated frame &middot; 720p, mid-range GPU</small></div>
+    <div class="grid">
+      <div class="cell"><b>3 MB</b><span>neural model, loads once</span></div>
+      <div class="cell"><b>100% on-device</b><span>nothing leaves your machine</span></div>
+      <div class="cell"><b>Any GPU</b><span>WebGPU kernels, auto-tuned to your card</span></div>
+    </div>
+  </div>
+</section>
+
+<section class="slide" id="s5">
+  <div class="vig"></div>
+  <div class="wrap">
+    <h2>Works where you watch</h2>
+    <div class="sites">
+      <span class="site">YouTube</span><span class="site">Twitch</span><span class="site">TikTok</span>
+      <span class="site">Vimeo</span><span class="site">anime sites</span><span class="site">course platforms</span>
+      <span class="site more">any &lt;video&gt;</span>
+    </div>
+    <div class="ladder">
+      <span class="from">24 fps</span><span class="arr">&rarr;</span>
+      <span class="to">60 &middot; 120 &middot; <em>144</em></span>
+      <span class="cap">auto-matched to your display refresh</span>
+    </div>
+  </div>
+</section>
+
+<script type="module">
+const N = +(new URLSearchParams(location.search).get('slide') || 1);
+document.getElementById('s' + N).classList.add('on');
+
+// frame ruler: tick density ramps 24 -> 144 left to right
+{
+  const svg = document.getElementById('rulerSvg');
+  if (svg) {
+    const W = 1060, H = 72;
+    let x = 0, parts = [];
+    let gap = 34;
+    while (x < W) {
+      const t = x / W;
+      const major = gap > 14;
+      const h = major ? 44 : 30 + 8 * (1 - t);
+      const op = 0.35 + 0.6 * t;
+      const col = t > 0.82 ? '#19C37D' : '#F2F3F5';
+      parts.push(`<rect x="${x.toFixed(1)}" y="${(H - h) / 2}" width="2" height="${h}" fill="${col}" opacity="${op.toFixed(2)}"/>`);
+      gap = 34 - 29 * Math.pow(t, 1.35);
+      x += gap;
+    }
+    svg.innerHTML = parts.join('');
+  }
+}
+
+// grab a pretty BBB frame for the player backdrop
+async function bbbFrame(t) {
+  const v = document.createElement('video');
+  v.src = '../assets/bbb_720_10s.mp4'; v.muted = true; v.preload = 'auto';
+  await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; });
+  v.currentTime = t;
+  await new Promise(res => { v.onseeked = res; });
+  const cv = document.createElement('canvas');
+  cv.width = v.videoWidth; cv.height = v.videoHeight;
+  cv.getContext('2d').drawImage(v, 0, 0);
+  return cv;
+}
+
+if (N === 2) {
+  const cv = await bbbFrame(6.2);
+  document.getElementById('bg2').src = cv.toDataURL('image/png');
+}
+
+if (N === 3) {
+  // honest split: ONE 360p-class source feeds both halves. Left = what the
+  // player does (smooth stretch - soft), right = our model on the same input.
+  const { createSR } = await import('./rt/sr.js?ss=' + Date.now());
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const device = await adapter.requestDevice({ requiredFeatures: ['shader-f16'] });
+  const [bin, man] = await Promise.all([
+    fetch('../assets/rt_sr.bin?t=' + Date.now()).then(r => r.arrayBuffer()),
+    fetch('../assets/rt_sr.json?t=' + Date.now()).then(r => r.json())]);
+  const sr = await createSR(device, { weightsBin: bin, weightsManifest: man,
+    convTune: { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
+
+  const img = new Image();
+  img.src = '../assets/tmp_sintel.jpg';
+  await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+  const W2 = img.naturalWidth & ~3, H2 = img.naturalHeight & ~3; // 1280x544
+  const w = W2 / 2, h = H2 / 2;                                  // 640x272 "360p-class"
+  const small = document.createElement('canvas'); small.width = w; small.height = h;
+  { const c = small.getContext('2d'); c.imageSmoothingQuality = 'high'; c.drawImage(img, 0, 0, W2, H2, 0, 0, w, h); }
+
+  const srcTex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  const dstTex = device.createTexture({ size: [w * 2, h * 2], format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+  device.queue.copyExternalImageToTexture({ source: await createImageBitmap(small) }, { texture: srcTex }, [w, h]);
+  for (let tries = 0; tries < 100 && !sr.process(srcTex, dstTex, w, h); tries++) {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  const bpr = Math.ceil(w * 2 * 4 / 256) * 256;
+  const rb = device.createBuffer({ size: bpr * h * 2, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: dstTex }, { buffer: rb, bytesPerRow: bpr }, [w * 2, h * 2]);
+  device.queue.submit([enc.finish()]);
+  await rb.mapAsync(GPUMapMode.READ);
+  const rows = new Uint8Array(rb.getMappedRange());
+  const srImg = new ImageData(w * 2, h * 2);
+  for (let y = 0; y < h * 2; y++) srImg.data.set(rows.subarray(y * bpr, y * bpr + w * 2 * 4), y * w * 2 * 4);
+  rb.unmap();
+
+  // dragon head crop (in full-res coords)
+  const CX = 350, CY = 90, CW = 380, CH = 310;
+  const zoom = 1.7;
+  const paint = (cv, draw) => {
+    cv.width = CW; cv.height = CH;
+    cv.style.width = (CW * zoom) + 'px'; cv.style.height = (CH * zoom) + 'px';
+    draw(cv.getContext('2d'));
+  };
+  paint(document.getElementById('cvB'), (c) => {
+    const full = document.createElement('canvas'); full.width = w * 2; full.height = h * 2;
+    full.getContext('2d').putImageData(srImg, 0, 0);
+    c.drawImage(full, CX, CY, CW, CH, 0, 0, CW, CH);
+  });
+  paint(document.getElementById('cvA'), (c) => {
+    // the player's plain smooth stretch of the 360p frame - soft, blurry
+    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'medium';
+    c.drawImage(small, CX / 2, CY / 2, CW / 2, CH / 2, 0, 0, CW, CH);
+  });
+}
+
+await document.fonts.ready;
+await new Promise(r => setTimeout(r, 300));
+document.title = 'SHOT READY ' + N;
+</script>
+</body>
