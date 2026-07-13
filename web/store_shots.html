@@ -11,6 +11,7 @@
   *{margin:0;padding:0;box-sizing:border-box}
   body{width:1280px;height:800px;overflow:hidden;background:var(--ink);color:var(--fg);
     font:15px/1.5 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+  body.marquee{width:1400px;height:560px}
   .slide{position:absolute;inset:0;display:none}
   .slide.on{display:block}
   .disp{font-family:'Space Grotesk',sans-serif}
@@ -112,6 +113,18 @@
   #s4 .cell b{display:block;font:600 30px 'Space Grotesk';margin-bottom:6px}
   #s4 .cell span{color:var(--mut);font-size:15px}
 
+  /* ---- slide 6: marquee 1400x560 ---- */
+  #s6 .mwrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 90px}
+  #s6 .brand{display:flex;align-items:center;gap:14px;margin-bottom:26px}
+  #s6 .brand img{width:44px;height:44px;border-radius:11px}
+  #s6 .brand span{font:600 20px 'Space Grotesk';letter-spacing:.01em}
+  #s6 h1{font:600 64px/1.05 'Space Grotesk';letter-spacing:-0.015em}
+  #s6 h1 em{font-style:normal;color:var(--grn)}
+  #s6 h1 .x{font-size:.94em}
+  #s6 p{margin-top:14px;font-size:19px;color:var(--mut)}
+  #s6 .ruler{margin-top:44px;height:52px}
+  #s6 .ruler .lab{font-size:15px}
+
   /* ---- slide 5: everywhere ---- */
   #s5 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
   #s5 h2{font:600 66px/1.1 'Space Grotesk';letter-spacing:-0.012em}
@@ -203,6 +216,20 @@
   </div>
 </section>
 
+<section class="slide" id="s6">
+  <div class="vig"></div>
+  <div class="mwrap">
+    <div class="brand"><img src="../docs/media/logo.png" alt=""><span>Framegen</span></div>
+    <h1>Any video. <em>2&ndash;6<span class="x">&times;</span></em> smoother.</h1>
+    <p>Neural frame generation + upscaling &mdash; on your GPU, inside your browser.</p>
+    <div class="ruler">
+      <svg width="1220" height="52" id="rulerSvg6"></svg>
+      <span class="lab" style="left:0">24 fps</span>
+      <span class="lab" style="right:0">144 fps</span>
+    </div>
+  </div>
+</section>
+
 <section class="slide" id="s5">
   <div class="vig"></div>
   <div class="wrap">
@@ -223,6 +250,7 @@
 
 <script type="module">
 const N = +(new URLSearchParams(location.search).get('slide') || 1);
+if (N === 6) document.body.classList.add('marquee');
 document.getElementById('s' + N).classList.add('on');
 
 // frame ruler: tick density ramps 24 -> 144 left to right
@@ -244,6 +272,21 @@ document.getElementById('s' + N).classList.add('on');
     }
     svg.innerHTML = parts.join('');
   }
+}
+
+// slide 6 marquee: same hero ruler, sized to the banner
+if (N === 6) {
+  const svg = document.getElementById('rulerSvg6');
+  const W = 1220, H = 52;
+  let x = 0, parts = [], gap = 34;
+  while (x < W) {
+    const t = x / W;
+    const h = (gap > 14 ? 34 : 24 + 6 * (1 - t));
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(H - h) / 2}" width="2" height="${h}" fill="${t > 0.82 ? '#19C37D' : '#F2F3F5'}" opacity="${(0.35 + 0.6 * t).toFixed(2)}"/>`);
+    gap = 34 - 29 * Math.pow(t, 1.35);
+    x += gap;
+  }
+  svg.innerHTML = parts.join('');
 }
 
 // slide 4: dimmed ruler motif echoing the hero
