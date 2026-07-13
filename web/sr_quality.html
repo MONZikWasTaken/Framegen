@@ -11,6 +11,8 @@ const { createSR } = await import('./rt/sr.js?q=' + Date.now());
 const Q = new URLSearchParams(location.search);
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
 const NF = +(Q.get('frames') || 5);
+const WSTEM = Q.get('w') || 'rt_sr';
+const JQ = +(Q.get('q') || 0); // JPEG-degrade the low-res input (field-report mode)
 
 function psnr(a, b) { // rgb over rgba u8
   let se = 0, n = 0;
@@ -74,8 +76,9 @@ async function main() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const device = await adapter.requestDevice({ requiredFeatures: ['shader-f16'] });
   const [bin, man] = await Promise.all([
-    fetch('../assets/rt_sr.bin').then(r => r.arrayBuffer()),
-    fetch('../assets/rt_sr.json').then(r => r.json())]);
+    fetch(`../assets/${WSTEM}.bin?t=` + Date.now()).then(r => r.arrayBuffer()),
+    fetch(`../assets/${WSTEM}.json?t=` + Date.now()).then(r => r.json())]);
+  log(`weights: ${WSTEM}, input JPEG q=${JQ || 'off'}`);
   const sr = await createSR(device, { weightsBin: bin, weightsManifest: man,
     convTune: { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
 
@@ -103,8 +106,14 @@ async function main() {
     }
     prevData = origData;
     // degrade: high-quality 2x downscale
-    const small = new OffscreenCanvas(w, h);
+    let small = new OffscreenCanvas(w, h);
     { const c = small.getContext('2d'); c.imageSmoothingQuality = 'high'; c.drawImage(orig, 0, 0, w, h); }
+    if (JQ) { // recompress the degraded input like a low-bitrate stream
+      const blob = await small.convertToBlob({ type: 'image/jpeg', quality: JQ / 100 });
+      const bmp2 = await createImageBitmap(blob);
+      small = new OffscreenCanvas(w, h);
+      small.getContext('2d').drawImage(bmp2, 0, 0);
+    }
     // bicubic-ish reference up (canvas high-quality resampling)
     const bic = new OffscreenCanvas(W, H);
     { const c = bic.getContext('2d'); c.imageSmoothingQuality = 'high'; c.drawImage(small, 0, 0, W, H); }
