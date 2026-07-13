@@ -506,8 +506,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         const key = tex.width + 'x' + tex.height;
         let out = srOut.get(key);
         if (!out) {
+          const sc = sr.scale || 2; // weights decide: 2x today, 4x/1x when they ship
           out = device.createTexture({ label: 'fcsr' + key,
-            size: [tex.width * 2, tex.height * 2], format: 'rgba8unorm',
+            size: [tex.width * sc, tex.height * sc], format: 'rgba8unorm',
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
           srOut.set(key, out);
           if (srOut.size > 4) {
@@ -1462,7 +1463,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       <div class="fc-title">Framegen <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
       <label class="fc-row"><span>Smoothness<small>neural frame generation</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <label class="fc-row"><span>Sharpness<small>2x upscale of inserted frames</small></span>
+      <label class="fc-row"><span>Resolution boost<small>2x neural upscale - generated frames, or the whole video when Smoothness is off</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
       <label class="fc-row"><span>HDR<small>brightness expansion (needs an HDR display)</small></span>
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
@@ -1674,7 +1675,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.3.1';
+  const VERSION = '1.3.2';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {

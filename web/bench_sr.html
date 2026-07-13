@@ -11,15 +11,17 @@ const Q = new URLSearchParams(location.search);
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
 const RESES = (Q.get('res') || '480,720,1080').split(',').map(Number);
 const WIDTHS = (Q.get('c') || '16,24,32').split(',').map(Number);
-const DIMS = { 480: [854, 480], 720: [1280, 720], 1080: [1920, 1080] };
+const SCALE = +(Q.get('scale') || 2);   // 1 = restore/deblock, 2, 4
+const DIMS = { 360: [640, 360], 480: [854, 480], 720: [1280, 720], 1080: [1920, 1080] };
 
 // fabricate an rt_sr-shaped manifest at width C with random weights
 function fakeSR(C) {
+  const C4 = 3 * SCALE * SCALE;
   const shapes = {
     'c1.weight': [C, 3, 3, 3], 'c1.bias': [C], 'a1.weight': [C],
     'c2.weight': [C, C, 3, 3], 'c2.bias': [C], 'a2.weight': [C],
     'c3.weight': [C, C, 3, 3], 'c3.bias': [C], 'a3.weight': [C],
-    'c4.weight': [12, C, 3, 3], 'c4.bias': [12],
+    'c4.weight': [C4, C, 3, 3], 'c4.bias': [C4],
   };
   const man = {}; let off = 0;
   for (const [k, sh] of Object.entries(shapes)) {
@@ -39,7 +41,7 @@ async function main() {
   const results = {};
   for (const C of WIDTHS) {
     let bin, man;
-    if (C === 16 && Q.get('real') !== '0') { // real shipped weights for the baseline
+    if (C === 16 && SCALE === 2 && Q.get('real') !== '0') { // real shipped weights for the baseline
       [bin, man] = await Promise.all([
         fetch('../assets/rt_sr.bin').then(r => r.arrayBuffer()),
         fetch('../assets/rt_sr.json').then(r => r.json())]);
@@ -53,7 +55,7 @@ async function main() {
       const [w, h] = DIMS[R];
       const src = device.createTexture({ size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
-      const dst = device.createTexture({ size: [w * 2, h * 2], format: 'rgba8unorm',
+      const dst = device.createTexture({ size: [w * SCALE, h * SCALE], format: 'rgba8unorm',
         usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
       // per-size pipelines build async on first call - poll until live
       for (let tries = 0; tries < 100 && !sr.process(src, dst, w, h); tries++) {
@@ -69,8 +71,8 @@ async function main() {
       }
       const ms = +median(reps).toFixed(3);
       const tag = tune ? 'w4v2' : 'legacy';
-      results[`c${C} ${tag} ${R}p->${R * 2}p`] = ms;
-      log(`c=${C} ${tag} ${w}x${h} -> ${w * 2}x${h * 2}: ${ms} ms/frame`);
+      results[`c${C} ${tag} x${SCALE} ${R}p`] = ms;
+      log(`c=${C} ${tag} ${w}x${h} -> x${SCALE}: ${ms} ms/frame`);
       src.destroy(); dst.destroy();
     }
     }

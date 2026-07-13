@@ -52,10 +52,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // 3.5x more at c=32. The out conv computes ALL 12 pixel-shuffle outputs per
 // low-res pixel in one thread - four 2x-quadrant threads would re-read the
 // same CxHxW window four times.
-function wgslShuffle(W, H) {
+function wgslShuffle(W, H, S) {
+  // S = upscale factor: 4 (det [48,H,W]), 2 (det [12,H,W]), or 1 - pure
+  // restore/deblock, det is a plain [3,H,W] residual on the source
+  const S2 = S * S;
   return /* wgsl */`
 enable f16;
-@group(0) @binding(0) var<storage, read> det: array<f16>;    // [12,H,W] conv output
+@group(0) @binding(0) var<storage, read> det: array<f16>;    // [${3 * S2},${H},${W}] conv output
 @group(0) @binding(1) var srcTex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
 @group(0) @binding(3) var outTex: texture_storage_2d<rgba8unorm, write>;
@@ -63,15 +66,15 @@ enable f16;
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ox = i32(gid.x); let oy = i32(gid.y);
-  if (ox >= ${W * 2} || oy >= ${H * 2}) { return; }
-  let x = ox / 2; let y = oy / 2;
-  let sub = (oy & 1) * 2 + (ox & 1);
-  let p = y * ${W} + x;
-  // detail channels [b,g,r] live at co = ch*4 + sub (torch PixelShuffle layout)
-  let db = f32(det[u32(sub) * ${H * W}u + u32(p)]);
-  let dg = f32(det[(u32(sub) + 4u) * ${H * W}u + u32(p)]);
-  let dr = f32(det[(u32(sub) + 8u) * ${H * W}u + u32(p)]);
-  let uv = (vec2<f32>(f32(ox), f32(oy)) + 0.5) / vec2<f32>(${W * 2}.0, ${H * 2}.0);
+  if (ox >= ${W * S} || oy >= ${H * S}) { return; }
+  let x = ox / ${S}; let y = oy / ${S};
+  let sub = u32((oy % ${S}) * ${S} + ox % ${S});
+  let p = u32(y * ${W} + x);
+  // detail channels [b,g,r] live at co = ch*${S2} + sub (torch PixelShuffle layout)
+  let db = f32(det[sub * ${H * W}u + p]);
+  let dg = f32(det[(sub + ${S2}u) * ${H * W}u + p]);
+  let dr = f32(det[(sub + ${2 * S2}u) * ${H * W}u + p]);
+  let uv = (vec2<f32>(f32(ox), f32(oy)) + 0.5) / vec2<f32>(${W * S}.0, ${H * S}.0);
   let base = textureSampleLevel(srcTex, samp, uv, 0.0).rgb;
   let b = clamp(base.b + db, 0.0, 1.0);
   let g = clamp(base.g + dg, 0.0, 1.0);
@@ -86,6 +89,9 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   // matter here more than anywhere (these grids are ~256x the trunk's)
   // channel width lives in the weights: c1 is the 3->C input conv
   const C = channels || (weightsManifest['c1.weight'] ? weightsManifest['c1.weight'].shape[0] : 16);
+  // upscale factor lives in the out conv: 3*S^2 pixel-shuffle channels
+  const C4 = weightsManifest['c4.weight'].shape[0];      // 12 (2x), 48 (4x), 3 (1x restore)
+  const SCALE = C4 === 48 ? 4 : C4 === 3 ? 1 : 2;
   const bufN = (bytes) => device.createBuffer({
     size: Math.ceil(bytes / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
 
@@ -138,8 +144,8 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     }
     device.queue.submit([enc.finish()]);
   }
-  const onesAlpha = bufN(12 * 4);
-  device.queue.writeBuffer(onesAlpha, 0, new Float32Array(12).fill(1));
+  const onesAlpha = bufN(C4 * 4);
+  device.queue.writeBuffer(onesAlpha, 0, new Float32Array(C4).fill(1));
 
   // per-input-size state (feature buffers + dims); keyed by "WxH". Built ASYNC:
   // the first process() call at a new size kicks the build and returns null -
@@ -157,11 +163,12 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
       device.queue.writeBuffer(dims, 0, new Uint32Array([w, h]));
       const fa = bufN(C * w * h * 2);
       const fb = bufN(C * w * h * 2);
-      const det = bufN(12 * w * h * 2);
+      const det = bufN(C4 * w * h * 2);
+      const outCoc = C4 % 8 === 0 ? 8 : C4 % 4 === 0 ? 4 : 1; // CO must divide
       const [pMid, pOutConv, pShuf] = await Promise.all([
         pipeAsync(RB(C, C, w, h, w, h, false, convTune)),
-        pipeAsync(RB(C, 12, w, h, w, h, false, convTune && { ...convTune, coc: 4 })), // CO=12: coc 8 does not divide
-        pipeAsync(wgslShuffle(w, h))]);
+        pipeAsync(RB(C, C4, w, h, w, h, false, convTune && { ...convTune, coc: outCoc })),
+        pipeAsync(wgslShuffle(w, h, SCALE))]);
       const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
         layout: pMid.getBindGroupLayout(0), entries: [
           { binding: 0, resource: { buffer: sBuf } },
@@ -233,13 +240,13 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
     pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
     pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
-    pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), 3);
+    pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), C4 / (C4 % 8 === 0 ? 8 : C4 % 4 === 0 ? 4 : 1));
     pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
-    pass.dispatchWorkgroups(gx(w * 2), gx(h * 2));
+    pass.dispatchWorkgroups(gx(w * SCALE), gx(h * SCALE));
     pass.end();
     device.queue.submit([enc.finish()]);
     return true;
   }
 
-  return { process };
+  return { process, scale: SCALE };
 }

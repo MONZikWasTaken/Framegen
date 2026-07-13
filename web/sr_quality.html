@@ -1,0 +1,154 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sr quality</title>
+<style>body{font:13px monospace;background:#111;color:#ddd;padding:12px}canvas{max-width:100%;border:1px solid #333;image-rendering:pixelated}pre{white-space:pre-wrap}</style>
+<pre id="log"></pre>
+<div id="views"></div>
+<script type="module">
+// SR quality harness: N frames of demo/test_720p.mp4, downscale 2x, upscale back
+// with SR vs bicubic, PSNR/SSIM against the original. The number training must beat.
+const { createSR } = await import('./rt/sr.js?q=' + Date.now());
+const Q = new URLSearchParams(location.search);
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const NF = +(Q.get('frames') || 5);
+
+function psnr(a, b) { // rgb over rgba u8
+  let se = 0, n = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    for (let c = 0; c < 3; c++) { const d = a[i + c] - b[i + c]; se += d * d; }
+    n += 3;
+  }
+  return 10 * Math.log10(255 * 255 / (se / n));
+}
+function ssimGray(a, b, w, h) { // global-window grayscale SSIM (coarse but honest for ranking)
+  const n = w * h; let ma = 0, mb = 0;
+  const ga = new Float32Array(n), gb = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    ga[i] = 0.299 * a[p] + 0.587 * a[p + 1] + 0.114 * a[p + 2];
+    gb[i] = 0.299 * b[p] + 0.587 * b[p + 1] + 0.114 * b[p + 2];
+    ma += ga[i]; mb += gb[i];
+  }
+  ma /= n; mb /= n;
+  let va = 0, vb = 0, cov = 0;
+  for (let i = 0; i < n; i++) { const da = ga[i] - ma, db = gb[i] - mb; va += da * da; vb += db * db; cov += da * db; }
+  va /= n; vb /= n; cov /= n;
+  const C1 = 6.5025, C2 = 58.5225;
+  return ((2 * ma * mb + C1) * (2 * cov + C2)) / ((ma * ma + mb * mb + C1) * (va + vb + C2));
+}
+
+async function grabFrames(url, n) {
+  const v = document.createElement('video');
+  v.src = url; v.muted = true; v.preload = 'auto';
+  await new Promise((res, rej) => { v.onloadeddata = res; v.onerror = rej; });
+  const D = v.duration;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    v.currentTime = D * (i + 0.5) / n; // spread across the WHOLE clip
+    await new Promise(res => { v.onseeked = res; });
+    const cv = new OffscreenCanvas(v.videoWidth, v.videoHeight);
+    cv.getContext('2d').drawImage(v, 0, 0);
+    out.push(cv);
+  }
+  log(`clip ${D.toFixed(2)}s, ${n} frames across it`);
+  return out;
+}
+// find the busiest 320x180 crop (local gradient energy) so the triptych shows detail
+function busyCrop(data, W, H) {
+  let best = { x: 0, y: 0, e: -1 };
+  for (let y = 0; y + 180 <= H; y += 90) {
+    for (let x = 0; x + 320 <= W; x += 160) {
+      let e = 0;
+      for (let yy = y; yy < y + 180; yy += 3) {
+        for (let xx = x; xx < x + 320; xx += 3) {
+          const p = (yy * W + xx) * 4;
+          e += Math.abs(data[p] - data[p + 4]) + Math.abs(data[p + 1] - data[p + W * 4 + 1]);
+        }
+      }
+      if (e > best.e) best = { x, y, e };
+    }
+  }
+  return best;
+}
+
+async function main() {
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const device = await adapter.requestDevice({ requiredFeatures: ['shader-f16'] });
+  const [bin, man] = await Promise.all([
+    fetch('../assets/rt_sr.bin').then(r => r.arrayBuffer()),
+    fetch('../assets/rt_sr.json').then(r => r.json())]);
+  const sr = await createSR(device, { weightsBin: bin, weightsManifest: man,
+    convTune: { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
+
+  const frames = await grabFrames('../demo/test_720p.mp4', NF);
+  const W = frames[0].width, H = frames[0].height;      // 1280x720 original
+  const w = W / 2, h = H / 2;                           // 640x360 degraded input
+  log(`original ${W}x${H}, input ${w}x${h}, ${NF} frames`);
+
+  const srcTex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  const dstTex = device.createTexture({ size: [W, H], format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+  const bpr = Math.ceil(W * 4 / 256) * 256;
+  const rb = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+
+  let sPsnr = 0, bPsnr = 0, sSsim = 0, bSsim = 0;
+  let firstSR = null, firstBI = null, firstORIG = null;
+  let prevData = null;
+  for (let fi = 0; fi < frames.length; fi++) {
+    const orig = frames[fi];
+    const origData = orig.getContext('2d').getImageData(0, 0, W, H).data;
+    if (prevData) { // frames must actually DIFFER or the harness is lying
+      let d = 0; for (let i = 0; i < origData.length; i += 41) d += Math.abs(origData[i] - prevData[i]);
+      log(`  frame diff vs prev: ${(d / (origData.length / 41)).toFixed(2)} (0 = seek bug)`);
+    }
+    prevData = origData;
+    // degrade: high-quality 2x downscale
+    const small = new OffscreenCanvas(w, h);
+    { const c = small.getContext('2d'); c.imageSmoothingQuality = 'high'; c.drawImage(orig, 0, 0, w, h); }
+    // bicubic-ish reference up (canvas high-quality resampling)
+    const bic = new OffscreenCanvas(W, H);
+    { const c = bic.getContext('2d'); c.imageSmoothingQuality = 'high'; c.drawImage(small, 0, 0, W, H); }
+    const bicData = bic.getContext('2d').getImageData(0, 0, W, H).data;
+    // SR up
+    const bmp = await createImageBitmap(small);
+    device.queue.copyExternalImageToTexture({ source: bmp }, { texture: srcTex }, [w, h]);
+    for (let tries = 0; tries < 100 && !sr.process(srcTex, dstTex, w, h); tries++) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const enc = device.createCommandEncoder();
+    enc.copyTextureToBuffer({ texture: dstTex }, { buffer: rb, bytesPerRow: bpr }, [W, H]);
+    device.queue.submit([enc.finish()]);
+    await rb.mapAsync(GPUMapMode.READ);
+    const rows = new Uint8Array(rb.getMappedRange());
+    const srData = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) srData.set(rows.subarray(y * bpr, y * bpr + W * 4), y * W * 4);
+    rb.unmap();
+    const ps = psnr(srData, origData), pb = psnr(bicData, origData);
+    const ss = ssimGray(srData, origData, W, H), sb = ssimGray(bicData, origData, W, H);
+    sPsnr += ps; bPsnr += pb; sSsim += ss; bSsim += sb;
+    log(`frame ${fi}: SR ${ps.toFixed(2)}dB / bicubic ${pb.toFixed(2)}dB | SSIM ${ss.toFixed(4)} / ${sb.toFixed(4)}`);
+    if (fi === 0) { firstSR = srData; firstBI = bicData; firstORIG = origData; }
+  }
+  const r = { srPsnr: +(sPsnr / NF).toFixed(2), bicPsnr: +(bPsnr / NF).toFixed(2),
+              srSsim: +(sSsim / NF).toFixed(4), bicSsim: +(bSsim / NF).toFixed(4) };
+  log(`\nMEAN: SR ${r.srPsnr}dB vs bicubic ${r.bicPsnr}dB (delta ${(r.srPsnr - r.bicPsnr).toFixed(2)}dB)`);
+  // show a crop triptych: original | bicubic | SR (center 320x180 at 2x zoom)
+  const views = document.getElementById('views');
+  const cr = busyCrop(firstORIG, W, H);
+  const crop = (data, label) => {
+    const c = document.createElement('canvas'); c.width = 320; c.height = 180; c.title = label;
+    c.style.width = '640px'; // 2x zoom for eyeballing
+    const full = new OffscreenCanvas(W, H);
+    full.getContext('2d').putImageData(new ImageData(data instanceof Uint8ClampedArray ? data : new Uint8ClampedArray(data), W, H), 0, 0);
+    c.getContext('2d').drawImage(full, cr.x, cr.y, 320, 180, 0, 0, 320, 180);
+    const d = document.createElement('div'); d.style.cssText = 'display:inline-block;margin:4px;text-align:center';
+    d.append(label, document.createElement('br'), c);
+    views.append(d);
+  };
+  crop(firstORIG, 'original'); crop(firstBI, 'bicubic 2x'); crop(firstSR, 'SR 2x');
+  window.__benchResult = r;
+  document.title = 'SRQ DONE';
+  log('== DONE == ' + JSON.stringify(r));
+}
+main().catch(e => { document.title = 'SRQ ERROR'; log('ERROR ' + e + '\n' + e.stack); });
+</script>
