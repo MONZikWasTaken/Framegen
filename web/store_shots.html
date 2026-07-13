@@ -21,7 +21,7 @@
   /* ---- frame ruler: sparse 24fps ticks densifying to 144 ---- */
   .ruler{position:relative;height:72px}
   .ruler svg{display:block}
-  .ruler .lab{position:absolute;top:100%;margin-top:10px;font:600 13px 'JetBrains Mono',monospace;color:var(--mut);letter-spacing:.08em}
+  .ruler .lab{position:absolute;top:100%;margin-top:12px;font:600 19px 'JetBrains Mono',monospace;color:#c7cad0;letter-spacing:.08em}
 
   /* ---- slide 1: hero ---- */
   #s1 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
@@ -30,6 +30,7 @@
   #s1 .brand span{font:600 24px 'Space Grotesk';letter-spacing:.01em}
   #s1 h1{font:600 84px/1.06 'Space Grotesk';letter-spacing:-0.015em;max-width:900px}
   #s1 h1 em{font-style:normal;color:var(--grn)}
+  #s1 h1 .x{font-size:.94em;vertical-align:baseline}
   #s1 p{margin-top:26px;font-size:20px;color:var(--mut);max-width:600px}
   #s1 .ruler{margin-top:70px}
 
@@ -93,6 +94,7 @@
     background:rgba(0,0,0,.66);padding:5px 10px;border-radius:7px;color:#cfd3d9;z-index:3}
   #s3 .tag.ta{left:16px}
   #s3 .tag.tb{right:16px;color:var(--grn)}
+  #s3 .cred{position:absolute;left:0;right:0;bottom:46px;text-align:center;font:400 12px Inter;color:#5c6068}
   #s3 .note{position:absolute;left:0;right:0;bottom:44px;text-align:center;font:500 13px 'JetBrains Mono';color:var(--mut)}
 
   /* ---- slide 4: instrument ---- */
@@ -100,6 +102,7 @@
   #s4 .big{font:600 150px/1 'JetBrains Mono';letter-spacing:-0.04em}
   #s4 .big small{font:500 26px 'Space Grotesk';color:var(--mut);letter-spacing:0;display:block;margin-top:10px}
   #s4 .big em{font-style:normal;color:var(--grn)}
+  #s4 .big .unit{margin-left:22px}
   #s4 .grid{display:flex;gap:0;margin-top:78px;border-top:1px solid var(--line)}
   #s4 .cell{flex:1;padding:26px 28px 0 0}
   #s4 .cell+.cell{padding-left:28px;border-left:1px solid var(--line)}
@@ -108,16 +111,19 @@
 
   /* ---- slide 5: everywhere ---- */
   #s5 .wrap{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;padding:0 110px}
-  #s5 h2{font:600 60px/1.1 'Space Grotesk';letter-spacing:-0.012em;max-width:760px}
-  #s5 .sites{display:flex;flex-wrap:wrap;gap:14px;margin-top:46px;max-width:860px}
-  #s5 .site{border:1px solid var(--line);border-radius:12px;padding:12px 22px;font:500 17px 'Space Grotesk';color:#d6d9de}
+  #s5 h2{font:600 66px/1.1 'Space Grotesk';letter-spacing:-0.012em}
+  #s5 .sites{display:flex;gap:14px;margin-top:40px}
+  #s5 .site{border:1px solid var(--line);border-radius:12px;padding:13px 24px;font:500 19px 'Space Grotesk';color:#d6d9de;white-space:nowrap}
   #s5 .site.more{color:var(--mut);border-style:dashed}
-  #s5 .ladder{margin-top:66px;display:flex;align-items:baseline;gap:26px;font-family:'JetBrains Mono'}
-  #s5 .ladder .from{font:500 30px 'JetBrains Mono';color:var(--mut)}
-  #s5 .ladder .arr{color:var(--mut);font-size:24px}
-  #s5 .ladder .to{font:600 44px 'JetBrains Mono';color:var(--fg)}
-  #s5 .ladder .to em{font-style:normal;color:var(--grn)}
-  #s5 .ladder .cap{font:400 15px Inter;color:var(--mut);margin-left:8px}
+  #s5 .trail{margin-top:58px}
+  #s5 .trow{display:flex;align-items:center;gap:26px}
+  #s5 .trow+.trow{margin-top:8px}
+  #s5 .tlab{width:230px;font:600 20px 'JetBrains Mono';color:var(--mut);text-align:right;white-space:nowrap}
+  #s5 .tlab.grn{color:var(--grn)}
+  #s5 .tcap{margin-top:12px;margin-left:256px;font:400 15px Inter;color:var(--mut)}
+  #s5 .trust{margin-top:58px;padding-top:24px;border-top:1px solid var(--line);
+    font:600 21px 'Space Grotesk';color:#d6d9de;display:flex;align-items:baseline;gap:26px}
+  #s5 .trust .drm{font:400 13px Inter;color:#5c6068;margin-left:auto}
 </style>
 <body>
 
@@ -125,12 +131,12 @@
   <div class="vig"></div>
   <div class="wrap">
     <div class="brand"><img src="../docs/media/logo.png" alt=""><span>Framegen</span></div>
-    <h1>Any video.<br><em>2&ndash;6&times;</em> smoother.</h1>
-    <p>Neural frame generation for every video site &mdash; running on your GPU, inside your browser.</p>
+    <h1>Any video.<br><em>2&ndash;6<span class="x">&times;</span></em> smoother.</h1>
+    <p>Neural frame generation for YouTube, Twitch and virtually any web video &mdash; on your GPU, inside your browser.</p>
     <div class="ruler">
       <svg width="1060" height="72" id="rulerSvg"></svg>
-      <span class="lab" style="left:0">24 FPS</span>
-      <span class="lab" style="right:0">144 FPS</span>
+      <span class="lab" style="left:0">24 fps</span>
+      <span class="lab" style="right:0">144 fps</span>
     </div>
   </div>
 </section>
@@ -139,7 +145,7 @@
   <div class="player">
     <img class="bg" id="bg2" alt="">
     <div class="shade"></div>
-    <div class="hud" style="left:14px;top:14px">FG <b>120fps</b> &times;5 &middot; 0.8ms &middot; 720p</div>
+    <div class="hud" style="left:22px;top:22px">FG <b>120 fps</b> &times;5 &middot; 0.8 ms &middot; 720p</div>
     <div class="fgbtn" style="left:26px;top:330px">FG</div>
     <div class="fgbtn" style="left:26px;top:384px">
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -156,12 +162,12 @@
       <div class="row"><span class="l">Resolution boost<small>2x neural upscale</small></span><span class="sw on"></span></div>
       <div class="row"><span class="l">HDR<small>brightness expansion</small></span><span class="sw"></span></div>
       <div class="row"><span class="l">Quality<small>GPU load</small></span><span class="sel">max</span></div>
-      <div class="stat">status: <b>running</b> &middot; 0.8 ms/frame &middot; RTX 4060 Ti</div>
+      <div class="stat">status: <b>running</b> &middot; 0.8 ms/frame</div>
     </div>
   </div>
   <div class="capt">
-    <h2>One switch on any player</h2>
-    <p>Hover a video, press FG. Frames are generated in real time and paced to your display.</p>
+    <h2>One switch<br>on any player</h2>
+    <p>Hover any video and click the FG button. Frames are generated in real time and paced to your display.</p>
   </div>
 </section>
 
@@ -169,7 +175,7 @@
   <div class="vig"></div>
   <div class="head">
     <h2>Upscale that cleans as it scales</h2>
-    <p>Real detail back from low-res streams - trained on compressed video, so it cleans instead of amplifying noise.</p>
+    <p>Sharper, cleaner detail from low-res streams &mdash; trained on compressed video, so it cleans instead of amplifying noise.</p>
   </div>
   <div class="cmp" id="cmpBox">
     <canvas id="cvW"></canvas>
@@ -177,17 +183,19 @@
     <span class="tag ta">360p, STRETCHED BY THE PLAYER</span>
     <span class="tag tb">FRAMEGEN RESOLUTION BOOST</span>
   </div>
+  <div class="cred">Sintel &mdash; &copy; Blender Foundation (CC-BY)</div>
   
 </section>
 
 <section class="slide" id="s4">
   <div class="vig"></div>
+  <svg width="520" height="60" style="position:absolute;right:90px;top:96px;opacity:.6" id="rulerSvg4"></svg>
   <div class="wrap">
-    <div class="big"><em>0.8</em> ms<small>per generated frame &middot; 720p, mid-range GPU</small></div>
+    <div class="big"><em>0.8</em><span class="unit">ms</span><small>GPU time per generated frame &middot; 720p, mid-range GPU</small></div>
     <div class="grid">
       <div class="cell"><b>3 MB</b><span>neural model, loads once</span></div>
       <div class="cell"><b>100% on-device</b><span>nothing leaves your machine</span></div>
-      <div class="cell"><b>Any GPU</b><span>WebGPU kernels, auto-tuned to your card</span></div>
+      <div class="cell"><b>Any modern GPU</b><span>WebGPU kernels, auto-tuned to your card</span></div>
     </div>
   </div>
 </section>
@@ -198,14 +206,15 @@
     <h2>Works where you watch</h2>
     <div class="sites">
       <span class="site">YouTube</span><span class="site">Twitch</span><span class="site">TikTok</span>
-      <span class="site">Vimeo</span><span class="site">anime sites</span><span class="site">course platforms</span>
-      <span class="site more">any &lt;video&gt;</span>
+      <span class="site">Crunchyroll</span><span class="site">Vimeo</span><span class="site more">any HTML5 video</span>
     </div>
-    <div class="ladder">
-      <span class="from">24 fps</span><span class="arr">&rarr;</span>
-      <span class="to">60 &middot; 120 &middot; <em>144</em></span>
-      <span class="cap">auto-matched to your display refresh</span>
+    <div class="trail">
+      <div class="trow"><span class="tlab">24 fps</span><svg width="760" height="54" id="trailA"></svg></div>
+      <div class="trow"><span class="tlab grn">Framegen &middot; 120 fps</span><svg width="760" height="54" id="trailB"></svg></div>
+      <div class="tcap">frames auto-matched to your display&rsquo;s refresh rate</div>
     </div>
+    <div class="trust">Free &middot; 100% on-device &middot; Open source (MIT)
+      <span class="drm">DRM streams (Netflix, Disney+) can&rsquo;t be processed by any extension</span></div>
   </div>
 </section>
 
@@ -232,6 +241,38 @@ document.getElementById('s' + N).classList.add('on');
     }
     svg.innerHTML = parts.join('');
   }
+}
+
+// slide 4: dimmed ruler motif echoing the hero
+if (N === 4) {
+  const svg = document.getElementById('rulerSvg4');
+  const W = 520, H = 60;
+  let x = 0, parts = [], gap = 22;
+  while (x < W) {
+    const t = x / W;
+    const h = 20 + 14 * t;
+    parts.push(`<rect x="${x.toFixed(1)}" y="${(H - h) / 2}" width="2" height="${h}" fill="${t > 0.82 ? '#19C37D' : '#F2F3F5'}" opacity="${(0.06 + 0.10 * t).toFixed(2)}"/>`);
+    gap = 22 - 18 * Math.pow(t, 1.4);
+    x += gap;
+  }
+  svg.innerHTML = parts.join('');
+}
+
+// slide 5: motion-proof frame trails (sparse 24 fps ghosts vs dense 120 fps)
+if (N === 5) {
+  const trail = (id, n, color) => {
+    const svg = document.getElementById(id);
+    const W = 760, H = 54, R = 13;
+    const parts = [`<line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" stroke="rgba(255,255,255,.07)" stroke-width="2"/>`];
+    for (let i = 0; i < n; i++) {
+      const x = 30 + (W - 60) * i / (n - 1);
+      const op = 0.18 + 0.82 * i / (n - 1);
+      parts.push(`<circle cx="${x.toFixed(1)}" cy="${H / 2}" r="${R}" fill="${color}" opacity="${op.toFixed(2)}"/>`);
+    }
+    svg.innerHTML = parts.join('');
+  };
+  trail('trailA', 5, '#9aa0a8');
+  trail('trailB', 21, '#19C37D');
 }
 
 // grab a pretty BBB frame for the player backdrop
@@ -296,7 +337,7 @@ if (N === 3) {
   const BW = box.clientWidth, BH = box.clientHeight;
   const zoom = 2.1;                       // magnification so the delta reads at thumbnail size
   const CW = Math.round(BW / zoom), CH = Math.round(BH / zoom);
-  const CX = 330, CY = 120;               // eyes/hair region of the closeup
+  const CX = 300, CY = 110;               // hair strands and the eye straddle the 50% seam
   const cv = document.getElementById('cvW');
   cv.width = BW; cv.height = BH;
   const c = cv.getContext('2d');
