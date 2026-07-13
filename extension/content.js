@@ -172,9 +172,10 @@
   let rtC2 = 0;
   async function buildRuntime() {
     if (!device) {
-      if (!navigator.gpu) throw new Error('WebGPU unavailable');
+      const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in Chrome settings (chrome://settings/system), restart Chrome, and update your GPU driver. Very old GPUs are not supported.';
+      if (!navigator.gpu) throw new Error(GPU_HELP);
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) throw new Error('no GPU adapter');
+      if (!adapter) throw new Error(GPU_HELP);
       const f16 = adapter.features.has('shader-f16');
       const feats = f16 ? ['shader-f16'] : [];
       if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
