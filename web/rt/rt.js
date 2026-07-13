@@ -213,32 +213,53 @@ ${stride === 1 ? `
 // the 64-thread default parks ~12% occupancy on Ada and stalls on latency, so the
 // tuner explores both (measured, never hardcoded).
 export function wgslConvRB(CI, CO, IW, IH, OW, OH, residual, tune, film) {
-  // tune: {coc, slab, wgx, wgy} - shared memory must fit
-  // slab*TS*2 + coc*slab*9*2 <= 16384 where TS = (2*wgx+2)*(2*wgy+2)
-  // film: fuse the FiLM affine (x*(1+scale[ci])+shift[ci], prm=[2*CI] f32) into the
-  // tile load - same arithmetic and f16 rounding as the standalone film pass, one
-  // less full-feature-map round trip per mid. Padding taps stay 0 (film applies
-  // to in-bounds texels only, matching conv zero-padding).
+  // tune: {coc, slab, wgx, wgy, w4, v2} - shared memory must fit
+  // slab*TS*2 + coc*slab*9*(w4?4:2) <= 16384 where TS = (2*wgx+2)*(2*wgy+2)
+  // w4: the thread's 4x4 input window loads into registers ONCE per ci (16 tile
+  //     ops instead of 36) and the weight slab stages as f32 - the f16->f32
+  //     converts that dominate the legacy inner loop on Ada (quarter-rate CVT)
+  //     leave the hot loop. Callers bind pre-widened weights (bit-exact
+  //     f32(f16(w)) mirrors), so values and accumulation order are unchanged.
+  // v2: on top of w4, the tile stages and reads as vec2<f16> pairs - halves the
+  //     shared load instructions (alignment holds: TW2 and lx*2 are both even).
+  // film: fuse the FiLM affine (x*(1+scale[ci])+shift[ci], prm=[2*CI] f32) into
+  //     the tile load - same arithmetic and f16 rounding as the standalone film
+  //     pass. Padding taps stay 0 (film applies to in-bounds texels only).
   const COC = (tune && tune.coc) || 4, SLAB = (tune && tune.slab) || 20;
   const WGX = (tune && tune.wgx) || 8, WGY = (tune && tune.wgy) || 8;
+  const W4 = !!(tune && tune.w4), V2 = !!(W4 && tune.v2);
+  const WT = W4 ? 'f32' : 'f16';
   const OTW = WGX * 2, OTH = WGY * 2;   // output tile
   const TW2 = OTW + 2;                  // input tile row (halo 1px each side)
   const TS = TW2 * (OTH + 2);           // input tile elems per ci
   const NT = WGX * WGY;                 // threads per wg
-  const slabW = COC * SLAB * 9;         // f16 weights in shared
+  const slabW = COC * SLAB * 9;
   const slabT = SLAB * TS;
+  const FILM = (v) => film ? `        ${v} = f16(f32(${v}) * (1.0 + prm[s + ci]) + prm[${CI} + s + ci]);` : '';
+  // window preload: 16 registers t{row}{col}, converted to f32 once per ci
+  const WIN = [0, 1, 2, 3].map(r => V2
+    ? `      let p${r}a = tile[tb2 + ${r * (TW2 / 2)}]; let p${r}b = tile[tb2 + ${r * (TW2 / 2) + 1}];
+      let t${r}0 = f32(p${r}a.x); let t${r}1 = f32(p${r}a.y); let t${r}2 = f32(p${r}b.x); let t${r}3 = f32(p${r}b.y);`
+    : `      let t${r}0 = f32(tile[tb + ${r * TW2}]); let t${r}1 = f32(tile[tb + ${r * TW2 + 1}]); let t${r}2 = f32(tile[tb + ${r * TW2 + 2}]); let t${r}3 = f32(tile[tb + ${r * TW2 + 3}]);`).join('\n');
+  const TAPS = [0, 1, 2].map(ky => [0, 1, 2].map(kx => `      {
+        let wb = ci * 9 + ${ky * 3 + kx};
+${Array.from({ length: COC }, (_, c) => `        {
+          let wv = wsh[${c} * (sl * 9) + wb];
+          a${c}0 += t${ky}${kx} * wv; a${c}1 += t${ky}${kx + 1} * wv; a${c}2 += t${ky + 1}${kx} * wv; a${c}3 += t${ky + 1}${kx + 1} * wv;
+        }`).join('\n')}
+      }`).join('\n')).join('\n');
   return /* wgsl */`
 enable f16;
 @group(0) @binding(0) var<storage, read> src: array<f16>;
-@group(0) @binding(1) var<storage, read> wgt: array<f16>;
+@group(0) @binding(1) var<storage, read> wgt: array<${WT}>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
 @group(0) @binding(3) var<storage, read> alpha: array<f32>;
 @group(0) @binding(4) var<storage, read_write> dst: array<f16>;
 ${residual ? `@group(0) @binding(5) var<storage, read> res: array<f16>;` : ``}
 ${film ? `@group(0) @binding(5) var<storage, read> prm: array<f32>; // [2*CI] FiLM scale,shift` : ``}
 
-var<workgroup> wsh: array<f16, ${slabW}>;
-var<workgroup> tile: array<f16, ${slabT}>;
+var<workgroup> wsh: array<${WT}, ${slabW}>;
+${V2 ? `var<workgroup> tile: array<vec2<f16>, ${slabT / 2}>;` : `var<workgroup> tile: array<f16, ${slabT}>;`}
 
 @compute @workgroup_size(${WGX}, ${WGY}, 1)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
@@ -263,7 +284,28 @@ ${Array.from({ length: COC }, (_, c) =>
       wsh[idx] = wgt[(cb + c) * ${CI * 9} + (s + r / 9) * 9 + r % 9];
       idx += ${NT};
     }
-    var ti = i32(li);
+${V2 ? /* vec2 pair staging: e and e+1 share ci and row because TS and TW2 are even */ `    var ti = i32(li);
+    let tn = sl * ${TS / 2};
+    while (ti < tn) {
+      let e = ti * 2;
+      let ci = e / ${TS};
+      let r = e % ${TS};
+      let ty = oy0 + r / ${TW2} - 1;
+      let tx = ox0 + r % ${TW2} - 1;
+      var va = f16(0.0); var vb = f16(0.0);
+      if (ty >= 0 && ty < ${IH}) {
+        if (tx >= 0 && tx < ${IW}) {
+          va = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
+${FILM('va')}
+        }
+        if (tx + 1 >= 0 && tx + 1 < ${IW}) {
+          vb = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx + 1];
+${FILM('vb')}
+        }
+      }
+      tile[ti] = vec2<f16>(va, vb);
+      ti += ${NT};
+    }` : `    var ti = i32(li);
     let tn = sl * ${TS};
     while (ti < tn) {
       let ci = ti / ${TS};
@@ -273,23 +315,19 @@ ${Array.from({ length: COC }, (_, c) =>
       var v = f16(0.0);
       if (ty >= 0 && ty < ${IH} && tx >= 0 && tx < ${IW}) {
         v = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
-${film ? `        v = f16(f32(v) * (1.0 + prm[s + ci]) + prm[${CI} + s + ci]);` : ''}
+${FILM('v')}
       }
       tile[ti] = v;
       ti += ${NT};
-    }
+    }`}
     workgroupBarrier();
     for (var ci = 0; ci < sl; ci++) {
-      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2; // top-left of this thread's 4x4 window
+${W4 ? `${V2 ? `      let tb2 = ci * ${TS / 2} + ly * ${TW2} + lx;` : `      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2;`}
+${WIN}
+${TAPS}` : `      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2; // top-left of this thread's 4x4 window
       for (var ky = 0; ky < 3; ky++) {
         let rb = tb + ky * ${TW2};
-${(tune && tune.rr) ? /* row-register variant: both 4-wide rows load once, kx unrolls on registers - 8 shared loads per (ci,ky) instead of 12 */ `        let r00 = f32(tile[rb]); let r01 = f32(tile[rb + 1]); let r02 = f32(tile[rb + 2]); let r03 = f32(tile[rb + 3]);
-        let r10 = f32(tile[rb + ${TW2}]); let r11 = f32(tile[rb + ${TW2 + 1}]); let r12 = f32(tile[rb + ${TW2 + 2}]); let r13 = f32(tile[rb + ${TW2 + 3}]);
-        let wr = ci * 9 + ky * 3;
-${[0, 1, 2].map(kx => Array.from({ length: COC }, (_, c) => `        {
-          let wv = f32(wsh[${c} * (sl * 9) + wr + ${kx}]);
-          a${c}0 += r0${kx} * wv; a${c}1 += r0${kx + 1} * wv; a${c}2 += r1${kx} * wv; a${c}3 += r1${kx + 1} * wv;
-        }`).join('\n')).join('\n')}` : `        for (var kx = 0; kx < 3; kx++) {
+        for (var kx = 0; kx < 3; kx++) {
           let t00 = f32(tile[rb + kx]);
           let t01 = f32(tile[rb + kx + 1]);
           let t10 = f32(tile[rb + kx + ${TW2}]);
@@ -299,8 +337,8 @@ ${Array.from({ length: COC }, (_, c) => `          {
             let wv = f32(wsh[${c} * (sl * 9) + wb]);
             a${c}0 += t00 * wv; a${c}1 += t01 * wv; a${c}2 += t10 * wv; a${c}3 += t11 * wv;
           }`).join('\n')}
-        }`}
-      }
+        }
+      }`}
     }
   }
 ${Array.from({ length: COC }, (_, c) => `  {
@@ -327,23 +365,37 @@ ${[0, 1, 2, 3].map(p => `    {
 export function wgslConvRBSg(CI, CO, IW, IH, OW, OH, residual, tune, film) {
   const COC = (tune && tune.coc) || 4, SLAB = (tune && tune.slab) || 20;
   const WGX = (tune && tune.wgx) || 8, WGY = (tune && tune.wgy) || 8;
+  const W4 = !!(tune && tune.w4), V2 = !!(W4 && tune.v2);
+  const WT = W4 ? 'f32' : 'f16';
   const OTW = WGX * 2, OTH = WGY * 2;
   const TW2 = OTW + 2;
   const TS = TW2 * (OTH + 2);
   const NT = WGX * WGY;
   const slabT = SLAB * TS;
+  const FILM = (v) => film ? `        ${v} = f16(f32(${v}) * (1.0 + prm[s + ci]) + prm[${CI} + s + ci]);` : '';
+  const WIN = [0, 1, 2, 3].map(r => V2
+    ? `      let p${r}a = tile[tb2 + ${r * (TW2 / 2)}]; let p${r}b = tile[tb2 + ${r * (TW2 / 2) + 1}];
+      let t${r}0 = f32(p${r}a.x); let t${r}1 = f32(p${r}a.y); let t${r}2 = f32(p${r}b.x); let t${r}3 = f32(p${r}b.y);`
+    : `      let t${r}0 = f32(tile[tb + ${r * TW2}]); let t${r}1 = f32(tile[tb + ${r * TW2 + 1}]); let t${r}2 = f32(tile[tb + ${r * TW2 + 2}]); let t${r}3 = f32(tile[tb + ${r * TW2 + 3}]);`).join('\n');
+  // W4 weights read straight from the pre-widened f32 buffer - no CVT in the loop
+  const TAPS = [0, 1, 2].map(ky => [0, 1, 2].map(kx => `      {
+${Array.from({ length: COC }, (_, c) => `        {
+          let wv = subgroupBroadcastFirst(wgt[(cb + ${c}) * ${CI * 9} + wrow + ${ky * 3 + kx}]);
+          a${c}0 += t${ky}${kx} * wv; a${c}1 += t${ky}${kx + 1} * wv; a${c}2 += t${ky + 1}${kx} * wv; a${c}3 += t${ky + 1}${kx + 1} * wv;
+        }`).join('\n')}
+      }`).join('\n')).join('\n');
   return /* wgsl */`
 enable f16;
 enable subgroups;
 @group(0) @binding(0) var<storage, read> src: array<f16>;
-@group(0) @binding(1) var<storage, read> wgt: array<f16>;
+@group(0) @binding(1) var<storage, read> wgt: array<${WT}>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
 @group(0) @binding(3) var<storage, read> alpha: array<f32>;
 @group(0) @binding(4) var<storage, read_write> dst: array<f16>;
 ${residual ? `@group(0) @binding(5) var<storage, read> res: array<f16>;` : ``}
 ${film ? `@group(0) @binding(5) var<storage, read> prm: array<f32>; // [2*CI] FiLM scale,shift` : ``}
 
-var<workgroup> tile: array<f16, ${slabT}>;
+${V2 ? `var<workgroup> tile: array<vec2<f16>, ${slabT / 2}>;` : `var<workgroup> tile: array<f16, ${slabT}>;`}
 
 @compute @workgroup_size(${WGX}, ${WGY}, 1)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>,
@@ -359,7 +411,28 @@ ${Array.from({ length: COC }, (_, c) =>
   for (var s = 0; s < ${CI}; s += ${SLAB}) {
     let sl = min(${SLAB}, ${CI} - s);
     workgroupBarrier();
-    var ti = i32(li);
+${V2 ? `    var ti = i32(li);
+    let tn = sl * ${TS / 2};
+    while (ti < tn) {
+      let e = ti * 2;
+      let ci = e / ${TS};
+      let r = e % ${TS};
+      let ty = oy0 + r / ${TW2} - 1;
+      let tx = ox0 + r % ${TW2} - 1;
+      var va = f16(0.0); var vb = f16(0.0);
+      if (ty >= 0 && ty < ${IH}) {
+        if (tx >= 0 && tx < ${IW}) {
+          va = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
+${FILM('va')}
+        }
+        if (tx + 1 >= 0 && tx + 1 < ${IW}) {
+          vb = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx + 1];
+${FILM('vb')}
+        }
+      }
+      tile[ti] = vec2<f16>(va, vb);
+      ti += ${NT};
+    }` : `    var ti = i32(li);
     let tn = sl * ${TS};
     while (ti < tn) {
       let ci = ti / ${TS};
@@ -369,24 +442,20 @@ ${Array.from({ length: COC }, (_, c) =>
       var v = f16(0.0);
       if (ty >= 0 && ty < ${IH} && tx >= 0 && tx < ${IW}) {
         v = src[(s + ci) * ${IH * IW} + ty * ${IW} + tx];
-${film ? `        v = f16(f32(v) * (1.0 + prm[s + ci]) + prm[${CI} + s + ci]);` : ''}
+${FILM('v')}
       }
       tile[ti] = v;
       ti += ${NT};
-    }
+    }`}
     workgroupBarrier();
     for (var ci = 0; ci < sl; ci++) {
-      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2;
       let wrow = (s + ci) * 9;
+${W4 ? `${V2 ? `      let tb2 = ci * ${TS / 2} + ly * ${TW2} + lx;` : `      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2;`}
+${WIN}
+${TAPS}` : `      let tb = ci * ${TS} + (ly * 2) * ${TW2} + lx * 2;
       for (var ky = 0; ky < 3; ky++) {
         let rb = tb + ky * ${TW2};
-${(tune && tune.rr) ? `        let r00 = f32(tile[rb]); let r01 = f32(tile[rb + 1]); let r02 = f32(tile[rb + 2]); let r03 = f32(tile[rb + 3]);
-        let r10 = f32(tile[rb + ${TW2}]); let r11 = f32(tile[rb + ${TW2 + 1}]); let r12 = f32(tile[rb + ${TW2 + 2}]); let r13 = f32(tile[rb + ${TW2 + 3}]);
-        let wk0 = wrow + ky * 3;
-${[0, 1, 2].map(kx => Array.from({ length: COC }, (_, c) => `        {
-          let wv = subgroupBroadcastFirst(f32(wgt[(cb + ${c}) * ${CI * 9} + wk0 + ${kx}]));
-          a${c}0 += r0${kx} * wv; a${c}1 += r0${kx + 1} * wv; a${c}2 += r1${kx} * wv; a${c}3 += r1${kx + 1} * wv;
-        }`).join('\n')).join('\n')}` : `        for (var kx = 0; kx < 3; kx++) {
+        for (var kx = 0; kx < 3; kx++) {
           let t00 = f32(tile[rb + kx]);
           let t01 = f32(tile[rb + kx + 1]);
           let t10 = f32(tile[rb + kx + ${TW2}]);
@@ -396,8 +465,8 @@ ${Array.from({ length: COC }, (_, c) => `          {
             let wv = subgroupBroadcastFirst(f32(wgt[(cb + ${c}) * ${CI * 9} + wk]));
             a${c}0 += t00 * wv; a${c}1 += t01 * wv; a${c}2 += t10 * wv; a${c}3 += t11 * wv;
           }`).join('\n')}
-        }`}
-      }
+        }
+      }`}
     }
   }
 ${Array.from({ length: COC }, (_, c) => `  {
@@ -738,25 +807,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // (copy then warp) - sharper mids for less bandwidth. Filter precision is the
 // sampler's (~8-bit subtexel) - same +-1 LSB class as the rgba8 store above.
 function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false) {
-  const TW = W / 8, TH = H / 8, RW = W / 4, RH = H / 4;
-  const RES_DECL = withRes ? /* wgsl */`
-@group(0) @binding(2) var<storage, read> res: array<f32>; // [3,${RH},${RW}]
-fn rtap(c: i32, x: i32, y: i32) -> f32 {
-  return res[c * ${RH * RW} + clamp(y, 0, ${RH - 1}) * ${RW} + clamp(x, 0, ${RW - 1})];
-}
-fn rup(c: i32, sx: f32, sy: f32) -> f32 {
-  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
-  let fx = sx - f32(x0);   let fy = sy - f32(y0);
-  return mix(mix(rtap(c, x0, y0), rtap(c, x0 + 1, y0), fx),
-             mix(rtap(c, x0, y0 + 1), rtap(c, x0 + 1, y0 + 1), fx), fy);
-}` : '';
+  // v2: tmp8 lives in two rgba16float textures (flow 4ch + mask) written by the
+  // deconv - ONE hw bilinear sample replaces the 4-tap software up() per plane
+  // (20 buffer reads -> 2 samples), and the refine residual is a texture too.
+  // uv is shared: the /8, /4 and full-res grids all map the pixel center to
+  // ((x,y)+0.5)/(W,H). Precision: f16 texel storage + ~8-bit subtexel filtering -
+  // same +-1 LSB class as the direct-warp and rgba8-store deviations.
   const RES_ADD = withRes ? /* wgsl */`
-  let rx = (f32(x) + 0.5) / 4.0 - 0.5;
-  let ry = (f32(y) + 0.5) / 4.0 - 0.5;
-  bgr = bgr + vec3<f32>(rup(0, rx, ry), rup(1, rx, ry), rup(2, rx, ry));` : '';
-  // static-region protection: d comes from the per-pair sdiff plane (9 taps of one
-  // plane instead of 9x6 image reads); the untouched-source blend samples the pair
-  // at the pixel center - identical values to the old imgs-based path
+  bgr = bgr + textureSampleLevel(resT, samp, uv8, 0.0).xyz;` : '';
   const GUARD = staticGuard ? /* wgsl */`
   var d = 0.0;
   for (var dy = -1; dy <= 1; dy++) {
@@ -771,25 +829,17 @@ fn rup(c: i32, sx: f32, sy: f32) -> f32 {
     bgr = mix(bgr, stat, wStatic);
   }` : '';
   return /* wgsl */`
-@group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
-@group(0) @binding(1) var outTex: texture_storage_2d<rgba8unorm, write>;
-${RES_DECL}
-${staticGuard ? /* wgsl */`@group(0) @binding(3) var<storage, read> sdiff: array<f32>; // [${H},${W}]
+@group(0) @binding(0) var t8f: texture_2d<f32>;  // flow/8: fx0,fy0,fx1,fy1
+@group(0) @binding(1) var t8m: texture_2d<f32>;  // mask logit in .x
+@group(0) @binding(2) var outTex: texture_storage_2d<rgba8unorm, write>;
+${withRes ? `@group(0) @binding(3) var resT: texture_2d<f32>; // refine residual b,g,r` : ''}
+${staticGuard ? /* wgsl */`@group(0) @binding(4) var<storage, read> sdiff: array<f32>; // [${H},${W}]
 fn dtap(x: i32, y: i32) -> f32 {
   return sdiff[clamp(y, 0, ${H - 1}) * ${W} + clamp(x, 0, ${W - 1})];
 }` : ''}
 @group(1) @binding(0) var tex0: texture_2d<f32>;
 @group(1) @binding(1) var tex1: texture_2d<f32>;
 @group(1) @binding(2) var samp: sampler;
-fn tap(c: i32, x: i32, y: i32) -> f32 {
-  return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
-}
-fn up(c: i32, sx: f32, sy: f32) -> f32 {
-  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
-  let fx = sx - f32(x0);   let fy = sy - f32(y0);
-  return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
-             mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
-}
 // grid_sample bilinear/border via the sampler: clamp-to-edge + hw filtering
 fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
   let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
@@ -800,15 +850,11 @@ fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
   if (x >= ${W} || y >= ${H}) { return; }
-  let sx = (f32(x) + 0.5) / 8.0 - 0.5;
-  let sy = (f32(y) + 0.5) / 8.0 - 0.5;
-  let fx0 = up(0, sx, sy) * 8.0;
-  let fy0 = up(1, sx, sy) * 8.0;
-  let fx1 = up(2, sx, sy) * 8.0;
-  let fy1 = up(3, sx, sy) * 8.0;
-  let m = 1.0 / (1.0 + exp(-up(4, sx, sy)));
-  let w0 = warpT(tex0, f32(x) + fx0, f32(y) + fy0);
-  let w1 = warpT(tex1, f32(x) + fx1, f32(y) + fy1);
+  let uv8 = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  let fl = textureSampleLevel(t8f, samp, uv8, 0.0) * 8.0;
+  let m = 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uv8, 0.0).x));
+  let w0 = warpT(tex0, f32(x) + fl.x, f32(y) + fl.y);
+  let w1 = warpT(tex1, f32(x) + fl.z, f32(y) + fl.w);
   var bgr = w0 * m + w1 * (1.0 - m);
 ${RES_ADD}
   bgr = clamp(bgr, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -823,27 +869,19 @@ ${GUARD}
 // 4x+1.5 - i.e. the mean of the CENTER 2x2 of each 4x4 block; we warp those
 // four full-res positions and average, matching the trainer exactly.
 function wgslRefinePrep(W, H, f16, sparse) {
-  const TW = W / 8, TH = H / 8, HW = W / 4, HH = H / 4;
+  const HW = W / 4, HH = H / 4;
   const TXT = Math.ceil(HW / 8);
   const T = f16 ? 'f16' : 'f32';
   return /* wgsl */`
 ${f16 ? 'enable f16;' : ''}
-@group(0) @binding(0) var<storage, read> tmp8: array<f32>;  // [5,${TH},${TW}]
-@group(0) @binding(1) var<storage, read_write> rin: array<${T}>; // [11,${HH},${HW}]
-${sparse ? `@group(0) @binding(2) var<storage, read_write> tstat: array<atomic<u32>>; // [tiles] max warp disagreement (f32 bits)` : ''}
+@group(0) @binding(0) var t8f: texture_2d<f32>;  // flow/8 (see deconv texOut)
+@group(0) @binding(1) var t8m: texture_2d<f32>;  // mask logit
+@group(0) @binding(2) var<storage, read_write> rin: array<${T}>; // [11,${HH},${HW}]
+${sparse ? `@group(0) @binding(3) var<storage, read_write> tstat: array<atomic<u32>>; // [tiles] max warp disagreement (f32 bits)` : ''}
 @group(1) @binding(0) var tex0: texture_2d<f32>;
 @group(1) @binding(1) var tex1: texture_2d<f32>;
 @group(1) @binding(2) var samp: sampler;
 
-fn tap(c: i32, x: i32, y: i32) -> f32 {
-  return tmp8[c * ${TH * TW} + clamp(y, 0, ${TH - 1}) * ${TW} + clamp(x, 0, ${TW - 1})];
-}
-fn up(c: i32, sx: f32, sy: f32) -> f32 {
-  let x0 = i32(floor(sx)); let y0 = i32(floor(sy));
-  let fx = sx - f32(x0);   let fy = sy - f32(y0);
-  return mix(mix(tap(c, x0, y0), tap(c, x0 + 1, y0), fx),
-             mix(tap(c, x0, y0 + 1), tap(c, x0 + 1, y0 + 1), fx), fy);
-}
 // direct warp: sample the source texture (see wgslFlowOutTexDirect)
 fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
   let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
@@ -859,14 +897,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var sy = 1; sy <= 2; sy++) {
     for (var sxp = 1; sxp <= 2; sxp++) {
       let X = hx * 4 + sxp; let Y = hy * 4 + sy; // center 2x2 of the 4x4 block
-      let gx8 = (f32(X) + 0.5) / 8.0 - 0.5;
-      let gy8 = (f32(Y) + 0.5) / 8.0 - 0.5;
-      let fx0 = up(0, gx8, gy8) * 8.0; let fy0 = up(1, gx8, gy8) * 8.0;
-      let fx1 = up(2, gx8, gy8) * 8.0; let fy1 = up(3, gx8, gy8) * 8.0;
-      mk += 1.0 / (1.0 + exp(-up(4, gx8, gy8)));
-      w0 += warpT(tex0, f32(X) + fx0, f32(Y) + fy0);
-      w1 += warpT(tex1, f32(X) + fx1, f32(Y) + fy1);
-      fl += vec4<f32>(fx0, fy0, fx1, fy1);
+      let uvS = (vec2<f32>(f32(X), f32(Y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+      let f4 = textureSampleLevel(t8f, samp, uvS, 0.0) * 8.0;
+      mk += 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uvS, 0.0).x));
+      w0 += warpT(tex0, f32(X) + f4.x, f32(Y) + f4.y);
+      w1 += warpT(tex1, f32(X) + f4.z, f32(Y) + f4.w);
+      fl += f4;
     }
   }
 ${sparse ? /* wgsl */`
@@ -930,7 +966,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-// final refine conv (C->3) + sigmoid*2-1 residual, half res, f32 out
+// final refine conv (C->3) + sigmoid*2-1 residual into an rgba16float texture
+// (flowout samples it with hw bilinear). One pass over ci feeds all 3 output
+// channels - the per-co outer loop re-read the whole window 3x.
 function wgslRefineOut(C, HW, HH, f16, sparse) {
   const T = f16 ? 'f16' : 'f32';
   return /* wgsl */`
@@ -938,7 +976,7 @@ ${f16 ? 'enable f16;' : ''}
 @group(0) @binding(0) var<storage, read> src: array<${T}>;  // [${C},${HH},${HW}]
 @group(0) @binding(1) var<storage, read> wgt: array<f32>;   // [3,${C},3,3]
 @group(0) @binding(2) var<storage, read> bias: array<f32>;  // [3]
-@group(0) @binding(3) var<storage, read_write> dst: array<f32>; // [3,${HH},${HW}]
+@group(0) @binding(3) var outT: texture_storage_2d<rgba16float, write>;
 ${sparse ? `@group(0) @binding(4) var<storage, read> tiles: array<u32>;` : ``}
 
 @compute @workgroup_size(${WG}, ${WG})
@@ -953,23 +991,40 @@ ${sparse ? /* wgsl */`
   let x = i32(gid.x); let y = i32(gid.y);
 `}
   if (x >= ${HW} || y >= ${HH}) { return; }
-  for (var co = 0; co < 3; co++) {
-    var acc = bias[co];
-    for (var ci = 0; ci < ${C}; ci++) {
-      let sb = ci * ${HH * HW};
-      let wb = (co * ${C} + ci) * 9;
-      for (var ky = 0; ky < 3; ky++) {
-        let sy = clamp(y + ky - 1, 0, ${HH - 1});
-        for (var kx = 0; kx < 3; kx++) {
-          let sx = clamp(x + kx - 1, 0, ${HW - 1});
-          acc += f32(src[sb + sy * ${HW} + sx]) * wgt[wb + ky * 3 + kx];
-        }
+  var a0 = bias[0]; var a1 = bias[1]; var a2 = bias[2];
+  for (var ci = 0; ci < ${C}; ci++) {
+    let sb = ci * ${HH * HW};
+    let wb = ci * 9;
+    for (var ky = 0; ky < 3; ky++) {
+      let sy = clamp(y + ky - 1, 0, ${HH - 1});
+      for (var kx = 0; kx < 3; kx++) {
+        let sx = clamp(x + kx - 1, 0, ${HW - 1});
+        let sv = f32(src[sb + sy * ${HW} + sx]);
+        let wk = wb + ky * 3 + kx;
+        a0 += sv * wgt[wk];
+        a1 += sv * wgt[${C * 9} + wk];
+        a2 += sv * wgt[${2 * C * 9} + wk];
       }
     }
-    dst[co * ${HH * HW} + y * ${HW} + x] = 2.0 / (1.0 + exp(-acc)) - 1.0;
   }
+  textureStore(outT, vec2<i32>(x, y), vec4<f32>(
+    2.0 / (1.0 + exp(-a0)) - 1.0,
+    2.0 / (1.0 + exp(-a1)) - 1.0,
+    2.0 / (1.0 + exp(-a2)) - 1.0, 0.0));
 }`;
 }
+
+// one-shot f16 -> f32 widening (w4 kernels read pre-widened weights: the CVT
+// leaves the hot loop, values stay bit-exact f32(f16(w)))
+export const WGSL_TO_F32 = /* wgsl */`
+enable f16;
+@group(0) @binding(0) var<storage, read> src: array<f16>;
+@group(0) @binding(1) var<storage, read_write> dst: array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let i = gid.x;
+  if (i < arrayLength(&src)) { dst[i] = f32(src[i]); }
+}`;
 
 // one-shot f32 -> f16 conversion (weights at init)
 export const WGSL_TO_F16 = /* wgsl */`
@@ -989,7 +1044,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // CI*CO*16 elems - slabbed only if it outgrows the 16KB budget). Stride-2
 // parity picks the 2x2 valid taps of the 4x4 kernel up front. Accumulation
 // order matches v1 (ky, kx ascending, ci inner) - bit-exact when CI fits one slab.
-function wgslDeconv(CI, CO, IW, IH, OW, OH, f16src) {
+function wgslDeconv(CI, CO, IW, IH, OW, OH, f16src, texOut) {
+  // texOut (direct mode): flow (a0..a3) and mask (a4) store into rgba16float
+  // textures so flowout/rprep upsample through the hardware bilinear unit
   const T = f16src ? 'f16' : 'f32';
   const SLAB = Math.min(CI, Math.floor(16384 / (CO * 16 * (f16src ? 2 : 4))));
   const accs = Array.from({ length: CO }, (_, c) => c);
@@ -998,7 +1055,9 @@ ${f16src ? 'enable f16;' : ''}
 @group(0) @binding(0) var<storage, read> src: array<${T}>;
 @group(0) @binding(1) var<storage, read> wgt: array<${T}>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
-@group(0) @binding(3) var<storage, read_write> dst: array<f32>;
+${texOut ? `@group(0) @binding(3) var outFlow: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(4) var outMask: texture_storage_2d<rgba16float, write>;`
+: `@group(0) @binding(3) var<storage, read_write> dst: array<f32>;`}
 
 var<workgroup> wsh: array<${T}, ${SLAB * CO * 16}>; // [slab, CO, 4, 4] contiguous
 
@@ -1041,8 +1100,10 @@ ${accs.map(c => `                a${c} += sv * f32(wsh[wb + ${c * 16}]);`).join(
     }
   }
   if (!inb) { return; }
-  let o = y * ${OW} + x;
-${accs.map(c => `  dst[${c} * ${OH * OW} + o] = a${c};`).join('\n')}
+${texOut ? `  textureStore(outFlow, vec2<i32>(x, y), vec4<f32>(a0, a1, a2, a3));
+  textureStore(outMask, vec2<i32>(x, y), vec4<f32>(a4, 0.0, 0.0, 0.0));`
+: `  let o = y * ${OW} + x;
+${accs.map(c => `  dst[${c} * ${OH * OW} + o] = a${c};`).join('\n')}`}
 }`;
 }
 
@@ -1151,6 +1212,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   }
   // one pipeline shared by all weight conversions
   const pToF16 = useF16 ? pipe(WGSL_TO_F16) : null;
+  const needW4 = useF16 && convTune && convTune.w4;
+  const pToF32 = needW4 ? pipe(WGSL_TO_F32) : null;
   const convW = (name) => {
     if (!useF16) return wbuf[name];
     const n = man[name].shape.reduce((a, b) => a * b, 1);
@@ -1169,6 +1232,24 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     wbuf[name] = null;
     return half;
   };
+  // convblock weights for w4 kernels: widen the f16 copy back to f32 (bit-exact
+  // f32(f16(w)) - the same values the legacy kernel computes with, minus the
+  // per-use CVT). The f16 intermediate is released once widened.
+  const cbW = (name) => {
+    const half = convW(name);
+    if (!needW4) return half;
+    const n = man[name].shape.reduce((a, b) => a * b, 1);
+    const wide = bufBytes(n * 4);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pToF32);
+    pass.setBindGroup(0, bg(pToF32, [half, wide]));
+    pass.dispatchWorkgroups(Math.ceil(n / 256));
+    pass.end();
+    device.queue.submit([enc.finish()]);
+    half.destroy();
+    return wide;
+  };
 
   // activations (f16 when supported), fixed f32 elsewhere
   const tbuf = buf(1);
@@ -1180,7 +1261,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const f8 = abuf(C1 * H8 * W8);
   const actBytes = C2 * H16 * W16 * (useF16 ? 2 : 4);
   const f16a = bufBytes(actBytes), f16b = bufBytes(actBytes), f16r = bufBytes(actBytes);
-  const tmp8 = buf(5 * H8 * W8);
+  const tmp8 = direct ? null : buf(5 * H8 * W8);
+  // direct mode: deconv output lives in two filterable rgba16float textures
+  const mkT8 = () => device.createTexture({ size: [W8, H8], format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+  const t8f = direct ? mkT8() : null, t8m = direct ? mkT8() : null;
+  const t8fV = direct ? t8f.createView() : null, t8mV = direct ? t8m.createView() : null;
   // readback plumbing exists only for the buffer-output path (rt_test harness);
   // texture-output callers never read back - ~7*w*h*4 bytes of MAP_READ saved
   const outp = textureOutput ? null : buf(w * h);
@@ -1218,7 +1304,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     pipeAsync(useF16
       ? (sgTuned ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, true, convTune)
       : wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false)),
-    pipeAsync(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16)),
+    pipeAsync(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16, direct)),
     pipeAsync(textureOutput
       ? (direct ? wgslFlowOutTexDirect(w, h, staticGuard, refi) : wgslFlowOutTex(w, h, staticGuard, refi))
       : wgslFlowOut(w, h)),
@@ -1236,16 +1322,17 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       // evict BEFORE inserting - clearing after would wipe the fresh entry and
       // hand setBindGroup an undefined (latent until a caller rings >24 textures)
       if (flowBgCache.size > 24) flowBgCache.clear();
-      // direct layout: 0 tmp8, 1 outTex, 2 res?, 3 sdiff? (textures ride group 1);
+      // direct layout: 0 t8f, 1 t8m, 2 outTex, 3 resT?, 4 sdiff? (sources ride group 1);
       // legacy layout: 0 tmp8, 1 imgs, 2 outTex, 3 res?
       const entries = direct
-        ? [{ binding: 0, resource: { buffer: tmp8 } },
-           { binding: 1, resource: tex.createView() }]
+        ? [{ binding: 0, resource: t8fV },
+           { binding: 1, resource: t8mV },
+           { binding: 2, resource: tex.createView() }]
         : [{ binding: 0, resource: { buffer: tmp8 } },
            { binding: 1, resource: { buffer: imgs } },
            { binding: 2, resource: tex.createView() }];
-      if (refi) entries.push({ binding: direct ? 2 : 3, resource: { buffer: rRes } }); // tfact2 residual
-      if (sdiff) entries.push({ binding: 3, resource: { buffer: sdiff } });
+      if (refi) entries.push(direct ? { binding: 3, resource: rResV } : { binding: 3, resource: { buffer: rRes } });
+      if (sdiff) entries.push({ binding: 4, resource: { buffer: sdiff } });
       flowBgCache.set(tex, device.createBindGroup({ layout: pFlow.getBindGroupLayout(0), entries }));
     }
     return flowBgCache.get(tex);
@@ -1314,7 +1401,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const RW4 = w / 4, RH4 = h / 4;
   let pRPrep = null, pRC0 = null, pRC1 = null, pRC2 = null, pROut = null, pRTiles = null;
   let bgRPrep = null, bgRC0 = null, bgRC1 = null, bgRC2 = null, bgROut = null, bgRTiles = null;
-  let RC = 0, RCOC = 4, rRes = null, rStat = null, rInd = null;
+  let RC = 0, RCOC = 4, rRes = null, rResT = null, rResV = null, rStat = null, rInd = null;
   // sparse refine: the occlusion-repair head only matters where the two warps
   // DISAGREE. rprep tags 8x8 tiles by max disagreement, a tiny scheduler pass
   // thresholds + dilates the set (halo validity per chained conv) and writes the
@@ -1332,7 +1419,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     const rIn = abuf(11 * RH4 * RW4);
     const rA2 = abuf(RC * RH4 * RW4);
     const rB2 = abuf(RC * RH4 * RW4);
-    rRes = buf(3 * RH4 * RW4);
+    rResT = device.createTexture({ size: [RW4, RH4], format: 'rgba16float',
+      usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
+    rResV = rResT.createView();
     const sp = (l) => rSparse ? { lbase: l * RTT, txt: RTXT } : null;
     if (rSparse) {
       rStat = buf(RTT);
@@ -1348,12 +1437,24 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       rSparse ? pipeAsync(wgslRefineTiles(RTT, RTXT, RTYT, RC / RCOC, refineThr)) : null,
     ]);
     const rLists = rSparse ? buf(4 * RTT) : null;
-    bgRPrep = bg(pRPrep, rSparse ? [tmp8, rIn, rStat] : [tmp8, rIn]); // sources ride group(1) per pair (rprepTex)
+    { // rprep reads the deconv textures; sources ride group(1) per pair (rprepTex)
+      const e = [{ binding: 0, resource: t8fV }, { binding: 1, resource: t8mV },
+                 { binding: 2, resource: { buffer: rIn } }];
+      if (rSparse) e.push({ binding: 3, resource: { buffer: rStat } });
+      bgRPrep = device.createBindGroup({ layout: pRPrep.getBindGroupLayout(0), entries: e });
+    }
     const spb = (l) => rSparse ? [rLists] : [];
     bgRC0 = bg(pRC0, [rIn, convW('refine.c0.weight'), wbuf['refine.c0.bias'], wbuf['refine.a0.weight'], rA2, ...spb(0)]);
     bgRC1 = bg(pRC1, [rA2, convW('refine.c1.weight'), wbuf['refine.c1.bias'], wbuf['refine.a1.weight'], rB2, ...spb(1)]);
     bgRC2 = bg(rSparse ? pRC2 : pRC1, [rB2, convW('refine.c2.weight'), wbuf['refine.c2.bias'], wbuf['refine.a2.weight'], rA2, ...spb(2)]);
-    bgROut = bg(pROut, [rA2, wbuf['refine.c3.weight'], wbuf['refine.c3.bias'], rRes, ...spb(3)]);
+    { // rout stores the residual into the rgba16float texture
+      const e = [{ binding: 0, resource: { buffer: rA2 } },
+                 { binding: 1, resource: { buffer: wbuf['refine.c3.weight'] } },
+                 { binding: 2, resource: { buffer: wbuf['refine.c3.bias'] } },
+                 { binding: 3, resource: rResV }];
+      if (rSparse) e.push({ binding: 4, resource: { buffer: rLists } });
+      bgROut = device.createBindGroup({ layout: pROut.getBindGroupLayout(0), entries: e });
+    }
     if (rSparse) bgRTiles = bg(pRTiles, [rStat, rLists, rInd]);
   }
 
@@ -1391,13 +1492,19 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
         if (useF16) { s2 = hbuf; p = pConvB6; extra = [filmBuf]; } // FiLM fused on load
         else { s2 = f16b; }                        // fallback: film pass fills f16b
       }
-      bgB.push({ p, g: bg(p, [s2, convW(wn), wbuf[bn], wbuf[an], d2, ...extra]) });
+      bgB.push({ p, g: bg(p, [s2, cbW(wn), wbuf[bn], wbuf[an], d2, ...extra]) });
       if (i === 0) { cbSrc = f16a; cbDst = f16b; }
       else { [cbSrc, cbDst] = [cbDst, cbSrc]; }
     }
   }
   const f16out = f16b; // both chains end in f16b (see trace above)
-  const bgDeconv = bg(pDeconv, [f16out, convW('block0.lastconv.weight'), wbuf['block0.lastconv.bias'], tmp8]);
+  const bgDeconv = direct
+    ? device.createBindGroup({ layout: pDeconv.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: f16out } },
+        { binding: 1, resource: { buffer: convW('block0.lastconv.weight') } },
+        { binding: 2, resource: { buffer: wbuf['block0.lastconv.bias'] } },
+        { binding: 3, resource: t8fV }, { binding: 4, resource: t8mV }] })
+    : bg(pDeconv, [f16out, convW('block0.lastconv.weight'), wbuf['block0.lastconv.bias'], tmp8]);
   const bgFlow = textureOutput ? null : bg(pFlow, [tmp8, imgs, outp]);
 
   const gx = (n) => Math.ceil(n / WG);
@@ -1493,7 +1600,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     const qread = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
     const enc = device.createCommandEncoder();
     stages.forEach(([name, fn], i) => {
-      if (name === 'rprep' && rSparse) { enc.clearBuffer(rStat); enc.clearBuffer(rInd); enc.clearBuffer(rRes); }
+      if (name === 'rprep' && rSparse) {
+        enc.clearBuffer(rStat); enc.clearBuffer(rInd);
+        const rp = enc.beginRenderPass({ colorAttachments: [{ view: rResV,
+          loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+        rp.end();
+      }
       const pass = enc.beginComputePass({ timestampWrites: {
         querySet: qs, beginningOfPassWriteIndex: i * 2, endOfPassWriteIndex: i * 2 + 1 } });
       fn(pass);
@@ -1640,8 +1752,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     if (tfact) {
       // per-mid: FiLM(t) + convblocks 6,7 (+feat0 residual) + deconv + flow
       device.queue.writeBuffer(filmBuf, 0, filmParams(t));
-      if (rSparse) { // stats/args/residual reset per mid (encoder-level, cheap)
-        enc.clearBuffer(rStat); enc.clearBuffer(rInd); enc.clearBuffer(rRes);
+      if (rSparse) { // stats/args reset per mid; the residual texture clears via
+        // the render-pass fast path (the old clearBuffer moved 691KB per mid)
+        enc.clearBuffer(rStat); enc.clearBuffer(rInd);
+        const rp = enc.beginRenderPass({ colorAttachments: [{ view: rResV,
+          loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
+        rp.end();
       }
       const pass = enc.beginComputePass();
       if (pFilm) { // non-f16 fallback; with f16 the FiLM affine rides cb6's tile load
@@ -1707,7 +1823,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
 export async function tuneConvRB(device, { ci, co, w16, h16 }) {
   const shared = (v) => {
     const ts = ((v.wgx || 8) * 2 + 2) * ((v.wgy || 8) * 2 + 2);
-    return (v.slab * ts + (v.sg ? 0 : v.coc * v.slab * 9)) * 2;
+    return v.slab * ts * 2 + (v.sg ? 0 : v.coc * v.slab * 9 * (v.w4 ? 4 : 2));
   };
   const base = [
     { coc: 4, slab: 20 }, { coc: 8, slab: 20 }, { coc: 8, slab: 12 }, { coc: 4, slab: 12 },
@@ -1722,13 +1838,15 @@ export async function tuneConvRB(device, { ci, co, w16, h16 }) {
   const sgList = device.features.has('subgroups')
     ? [...base, ...base.map(v => ({ ...v, sg: true })).filter(v => shared(v) <= 16384)]
     : base;
-  // rr: row-register inner loop (same shared footprint, fewer shared loads) -
-  // measured, never assumed: it doubles unroll size and can lose to i-cache
-  const variants = [...sgList, ...sgList.map(v => ({ ...v, rr: true }))];
+  // w4: 4x4 window in registers + f32 weights (CVT leaves the hot loop);
+  // v2 adds vec2<f16> tile loads. Measured per GPU, never assumed.
+  const w4List = sgList.map(v => ({ ...v, w4: true })).filter(v => shared(v) <= 16384);
+  const variants = [...sgList, ...w4List, ...w4List.map(v => ({ ...v, v2: true }))];
   const buf = (bytes) => device.createBuffer({ size: Math.ceil(bytes / 4) * 4,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   const src = buf(ci * w16 * h16 * 2), dst = buf(co * w16 * h16 * 2);
-  const wgt = buf(co * ci * 9 * 2), bias = buf(co * 4), alpha = buf(co * 4);
+  const wgt = buf(co * ci * 9 * 2), wgt32 = buf(co * ci * 9 * 4);
+  const bias = buf(co * 4), alpha = buf(co * 4);
   // compile ALL variants async up front (Dawn's worker pool) - serial sync
   // compiles blocked the calling thread for the whole calibration
   const pipes = await Promise.all(variants.map(v => {
@@ -1742,7 +1860,8 @@ export async function tuneConvRB(device, { ci, co, w16, h16 }) {
     const v = variants[vi];
     const p = pipes[vi];
     const bg = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: { buffer: src } }, { binding: 1, resource: { buffer: wgt } },
+      { binding: 0, resource: { buffer: src } },
+      { binding: 1, resource: { buffer: v.w4 ? wgt32 : wgt } },
       { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
       { binding: 4, resource: { buffer: dst } }] });
     const run = (k) => {
@@ -1760,6 +1879,6 @@ export async function tuneConvRB(device, { ci, co, w16, h16 }) {
     const ms = (performance.now() - t0) / 30;
     if (!best || ms < best.ms) best = { ...v, ms };
   }
-  [src, dst, wgt, bias, alpha].forEach(b => b.destroy());
+  [src, dst, wgt, wgt32, bias, alpha].forEach(b => b.destroy());
   return best;
 }

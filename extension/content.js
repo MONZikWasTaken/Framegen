@@ -131,7 +131,7 @@
   }
   async function loadConvTune() {
     try {
-      const key = 'fcTune|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
+      const key = 'fcTune2|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // fcTune2: w4/v2 kernel generation - old tunes must recalibrate
       const st = await chrome.storage.local.get('fcTune');
       return (st.fcTune && st.fcTune[key]) || null;
     } catch { return null; }
@@ -140,7 +140,7 @@
     // one-shot per (GPU, quality): bench kernel variants on the real conv shape,
     // persist the winner - picked up on the next runtime build
     try {
-      const key = 'fcTune|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
+      const key = 'fcTune2|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // fcTune2: w4/v2 kernel generation - old tunes must recalibrate
       const st = await chrome.storage.local.get('fcTune');
       const all = st.fcTune || {};
       if (all[key]) return;
