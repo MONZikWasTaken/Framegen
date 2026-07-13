@@ -1,0 +1,175 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>rt bench</title>
+<style>body{font:13px monospace;background:#111;color:#ddd;padding:12px}pre{white-space:pre-wrap}</style>
+<pre id="log"></pre>
+<script type="module">
+// A/B bench for the Framegen runtime. Query params:
+//   res=720|480|1080   model=v7s|tfact2   scene=calm|motion   sparse=0|1  guard=0|1
+//   mods=rt            comma list of runtime modules to compare (rt -> ./rt/rt.js,
+//                      opt -> ./rt/rt_opt.js). First is the parity reference.
+//   mids=N             timesteps per pair for the per-mid wall test (default 4)
+const Q = new URLSearchParams(location.search);
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const RES = { '480': [854, 480], '720': [1280, 720], '1080': [1920, 1080] }[Q.get('res') || '720'];
+// model grid must be /16 - the extension rounds the same way
+const MW = Math.round(RES[0] / 16) * 16, MH = Math.round(RES[1] / 16) * 16;
+const MODEL = Q.get('model') || 'v7s';
+const SCENE = Q.get('scene') || 'calm';
+const SPARSE = Q.get('sparse') !== '0';
+const GUARD = Q.get('guard') !== '0';
+const MODS = (Q.get('mods') || 'rt').split(',');
+const NMIDS = +(Q.get('mids') || 4);
+
+function drawScene(ctx, w, h, phase) {
+  // detailed static background (same every frame)
+  ctx.fillStyle = '#223'; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 40; i++) {
+    ctx.fillStyle = `hsl(${(i * 47) % 360} 40% ${20 + (i * 13) % 40}%)`;
+    ctx.fillRect((i * 97) % w, (i * 61) % h, 60, 40);
+  }
+  ctx.fillStyle = '#fff'; ctx.font = '28px sans-serif';
+  ctx.fillText('static text layer for the guard', 40, h - 40);
+  if (SCENE === 'motion') {
+    // whole-frame scroll: shift a stripe pattern by phase
+    for (let y = 0; y < h; y += 24) {
+      ctx.fillStyle = `hsl(${(y + phase * 120) % 360} 60% 45%)`;
+      ctx.fillRect(((phase * 160) + y * 3) % w - w, y, w * 2, 12);
+    }
+  } else {
+    // calm: one moving object over the static bg
+    const x = w * 0.2 + phase * 120, y = h * 0.4;
+    ctx.fillStyle = '#e84'; ctx.beginPath(); ctx.arc(x, y, 60, 0, 7); ctx.fill();
+  }
+}
+
+async function makeTex(device, w, h, phase) {
+  const cv = new OffscreenCanvas(w, h);
+  drawScene(cv.getContext('2d'), w, h, phase);
+  const bmp = await createImageBitmap(cv);
+  const tex = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  device.queue.copyExternalImageToTexture({ source: bmp }, { texture: tex }, [w, h]);
+  return tex;
+}
+
+async function readTex(device, tex, w, h) {
+  const bpr = Math.ceil(w * 4 / 256) * 256;
+  const buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+  device.queue.submit([enc.finish()]);
+  await buf.mapAsync(GPUMapMode.READ);
+  const rows = new Uint8Array(buf.getMappedRange());
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) out.set(rows.subarray(y * bpr, y * bpr + w * 4), y * w * 4);
+  buf.unmap(); buf.destroy();
+  return out;
+}
+
+const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+
+async function bench() {
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const feats = ['shader-f16', 'subgroups', 'timestamp-query'].filter(f => adapter.features.has(f));
+  const device = await adapter.requestDevice({ requiredFeatures: feats });
+  const info = adapter.info || {};
+  log(`adapter: ${info.vendor || '?'} ${info.architecture || ''} | features: ${feats.join(',')}`);
+
+  const [bin, man] = await Promise.all([
+    fetch(`../assets/rt_${MODEL === 'v7s' ? 'v7s' : 'tfact2'}.bin`).then(r => r.arrayBuffer()),
+    fetch(`../assets/rt_${MODEL === 'v7s' ? 'v7s' : 'tfact2'}.json`).then(r => r.json()),
+  ]);
+  const texA = await makeTex(device, MW, MH, 0);
+  const texB = await makeTex(device, MW, MH, 1);
+  const outTexs = [];
+  for (let i = 0; i < 8; i++) outTexs.push(device.createTexture({ size: [MW, MH], format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING }));
+
+  const results = { res: `${MW}x${MH}`, model: MODEL, scene: SCENE, sparse: SPARSE, guard: GUARD, mods: {} };
+  let refBytes = null;
+
+  for (const modName of MODS) {
+    const path = modName === 'rt' ? './rt/rt.js' : `./rt/rt_${modName}.js`;
+    const mod = await import(path + '?v=' + Date.now());
+    let convTune = null;
+    if (Q.get('tune') === '1') { // what the extension runs after idle calibration - each module tunes itself
+      const C2 = man['block0.conv0.1.0.weight'].shape[0];
+      convTune = await mod.tuneConvRB(device, { ci: C2, co: C2, w16: MW / 16, h16: MH / 16 });
+      log(modName + ' convTune: ' + JSON.stringify(convTune));
+    }
+    const rt = await mod.createRT(device, { w: MW, h: MH, weightsBin: bin, weightsManifest: man,
+      textureInput: true, textureOutput: true, staticGuard: GUARD, sparseRefine: SPARSE, convTune });
+    const r = {};
+
+    // warm up (compiles, caches)
+    rt.prepPair(texA, texB);
+    for (let i = 0; i < 6; i++) rt.runT(0.5, outTexs[i % outTexs.length]);
+    await device.queue.onSubmittedWorkDone();
+
+    // per-pair wall: prepPair x30
+    {
+      const reps = [];
+      for (let rep = 0; rep < 5; rep++) {
+        const t0 = performance.now();
+        for (let i = 0; i < 30; i++) rt.prepPair(texA, texB);
+        await device.queue.onSubmittedWorkDone();
+        reps.push((performance.now() - t0) / 30);
+      }
+      r.prepPairMs = +median(reps).toFixed(3);
+    }
+    // per-mid wall: prepPair once, then runT x30 (NMIDS distinct t values cycled)
+    {
+      const ts = Array.from({ length: NMIDS }, (_, i) => (i + 1) / (NMIDS + 1));
+      const reps = [];
+      for (let rep = 0; rep < 5; rep++) {
+        rt.prepPair(texA, texB);
+        await device.queue.onSubmittedWorkDone();
+        const t0 = performance.now();
+        for (let i = 0; i < 30; i++) rt.runT(ts[i % NMIDS], outTexs[i % outTexs.length]);
+        await device.queue.onSubmittedWorkDone();
+        reps.push((performance.now() - t0) / 30);
+      }
+      r.midMs = +median(reps).toFixed(3);
+    }
+    // full 2x cycle: prepPair + 1 mid
+    {
+      const reps = [];
+      for (let rep = 0; rep < 5; rep++) {
+        const t0 = performance.now();
+        for (let i = 0; i < 20; i++) { rt.prepPair(texA, texB); rt.runT(0.5, outTexs[i % outTexs.length]); }
+        await device.queue.onSubmittedWorkDone();
+        reps.push((performance.now() - t0) / 20);
+      }
+      r.cycle2xMs = +median(reps).toFixed(3);
+    }
+    // per-stage GPU times
+    if (feats.includes('timestamp-query') && rt.profileT) {
+      rt.prepPair(texA, texB); // ensure curPrep
+      r.profile = await rt.profileT(texA, texB, 0.5, outTexs[0]);
+    }
+    // parity vs first module
+    rt.prepPair(texA, texB);
+    rt.runT(0.5, outTexs[0]);
+    await device.queue.onSubmittedWorkDone();
+    const bytes = await readTex(device, outTexs[0], MW, MH);
+    if (!refBytes) { refBytes = bytes; r.parity = 'reference'; }
+    else {
+      let maxd = 0, nd = 0, sum = 0;
+      for (let i = 0; i < bytes.length; i++) {
+        const d = Math.abs(bytes[i] - refBytes[i]);
+        if (d) { nd++; sum += d; if (d > maxd) maxd = d; }
+      }
+      r.parity = `max|d|=${maxd} diffBytes=${(100 * nd / bytes.length).toFixed(2)}% mean|d|=${(sum / bytes.length).toFixed(4)}`;
+    }
+    results.mods[modName] = r;
+    log(`${modName}: pair=${r.prepPairMs}ms mid=${r.midMs}ms 2x=${r.cycle2xMs}ms`);
+    if (r.profile) log('  ' + r.profile);
+    log('  parity: ' + r.parity);
+  }
+  window.__benchResult = results;
+  document.title = 'BENCH DONE';
+  log('== DONE ==\n' + JSON.stringify(results));
+}
+bench().catch(e => { window.__benchResult = { error: String(e), stack: e.stack }; document.title = 'BENCH ERROR'; log('ERROR ' + e + '\n' + e.stack); });
+</script>

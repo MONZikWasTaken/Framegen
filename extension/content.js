@@ -90,6 +90,7 @@
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
   let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
+  let barH = 0; // control-bar height, measured once (content is static)
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
@@ -518,9 +519,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     pass.setPipeline(blitPipe);
     if (!blitBg.has(tex)) {
+      // evict BEFORE inserting - clearing after wipes the fresh entry and the
+      // setBindGroup below gets undefined (same bug class as the rt.js caches)
+      if (blitBg.size > 48) blitBg.clear();
       blitBg.set(tex, device.createBindGroup({ layout: blitPipe.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: tex.createView() }, { binding: 1, resource: blitSampler }] }));
-      if (blitBg.size > 48) blitBg.clear();
     }
     pass.setBindGroup(0, blitBg.get(tex));
     pass.draw(3);
@@ -570,7 +573,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!running && now - uiScan > 300) { uiScan = now; uiVideo = biggestVideo(); }
     const v = running ? videoEl : uiVideo;
     if (!v || !btn) return;
-    const r = v.getBoundingClientRect();
+    // reuse pump's cached rect while running - a per-mousemove rect read forces
+    // layout up to 30x/s on heavy pages for a hit test that tolerates 250ms staleness
+    const r = (running && lastVr && now - lastVrT < 250) ? lastVr : v.getBoundingClientRect();
     if (e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom) {
       revealUntil = now + 2000;
       placeSideButtons(r);
@@ -664,6 +669,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function ensureBar() {
     if (bar) return;
+    barH = 0; // remeasure on (re)build
     // floating glass pill, same family as the side buttons
     bar = document.createElement('div');
     bar.style.cssText = 'position:fixed; z-index:2147483646; display:none; align-items:center; gap:10px;'
@@ -868,8 +874,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     if (!fixedOver && !autoOver && load < 0.92) overSince = 0;
     const show = overSince && now - overSince > 1500; // sustained, not a warmup blip
-    warnEl.style.left = (vr.left + vr.width / 2 - warnEl.offsetWidth / 2) + 'px';
-    warnEl.style.top = (vr.top + 12) + 'px';
+    if (show) { // offsetWidth forces layout - only pay it while the warning is up
+      warnEl.style.left = (vr.left + vr.width / 2 - warnEl.offsetWidth / 2) + 'px';
+      warnEl.style.top = (vr.top + 12) + 'px';
+    }
     warnEl.style.opacity = show ? '1' : '0';
     warnEl.style.transform = show ? 'translateY(0)' : 'translateY(-6px)';
   }
@@ -909,9 +917,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         const showBar = now < revealUntil;
         const m = Math.max(10, Math.min(16, vr.width * 0.02));
         bar.style.display = 'flex';
+        // bar content is static - measure once; the read-after-write forced a
+        // synchronous layout every 4th tick
+        if (!barH) barH = bar.offsetHeight;
         bar.style.left = (vr.left + m) + 'px';
         bar.style.width = (vr.width - 2 * m) + 'px';
-        bar.style.top = (vr.bottom - bar.offsetHeight - m) + 'px';
+        bar.style.top = (vr.bottom - barH - m) + 'px';
         bar.style.opacity = showBar ? '1' : '0';
         bar.style.transform = showBar ? 'translateY(0)' : 'translateY(8px)';
         bar.style.pointerEvents = showBar ? 'auto' : 'none';
