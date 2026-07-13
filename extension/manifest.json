@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Framegen - Frame Interpolation",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "action": {
     "default_title": "Framegen",
     "default_popup": "popup.html",
