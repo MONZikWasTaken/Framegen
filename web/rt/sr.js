@@ -184,7 +184,9 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
     let perSrc = bgCache.get(srcTex);
     if (!perSrc) { perSrc = new WeakMap(); bgCache.set(srcTex, perSrc); }
     let bgs = perSrc.get(dstTex);
-    if (!bgs) {
+    // bgs must belong to the CURRENT per-size state: eviction destroys fa/det,
+    // and a cached bind group referencing them fails validation forever after
+    if (!bgs || bgs.S !== S) {
       const srcView = srcTex.createView();
       bgs = {
         in: device.createBindGroup({ layout: pIn.getBindGroupLayout(0), entries: [
@@ -199,6 +201,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
           { binding: 1, resource: srcView }, { binding: 2, resource: sampler },
           { binding: 3, resource: dstTex.createView() }] }),
       };
+      bgs.S = S;
       perSrc.set(dstTex, bgs);
     }
     const enc = device.createCommandEncoder();

@@ -97,6 +97,11 @@ async function ensureSR() {
 function srDstFor(w, h) {
   const k = w + 'x' + h;
   if (!srTexs.has(k)) {
+    // ladder switches change size wholesale - old rings are never re-keyed,
+    // destroy them instead of leaking tens of MB per visited size
+    if (srTexs.size > 2) {
+      for (const [kk, st] of srTexs) { st.ring.forEach(t => t.destroy()); srTexs.delete(kk); }
+    }
     const ring = [];
     for (let i = 0; i < 4; i++) {
       ring.push(rtDevice.createTexture({ label: 'sr' + k + '#' + i, size: [w * 2, h * 2],
@@ -136,9 +141,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 }
 function blitBgFor(tex) {
   if (!blitBgCache.has(tex)) {
+    // evict BEFORE inserting - clearing after wipes the fresh entry and the
+    // present blit binds undefined on the 49th texture
+    if (blitBgCache.size > 48) blitBgCache.clear();
     blitBgCache.set(tex, rtDevice.createBindGroup({ layout: blitPipe.getBindGroupLayout(0),
       entries: [{ binding: 0, resource: tex.createView() }, { binding: 1, resource: blitSampler }] }));
-    if (blitBgCache.size > 48) blitBgCache.clear();
   }
   return blitBgCache.get(tex);
 }
@@ -146,8 +153,9 @@ function present(texIn) {
   let tex = texIn;
   if (srOn && sr) {
     const dst = srDstFor(texIn.width, texIn.height);
-    sr.process(texIn, dst, texIn.width, texIn.height);
-    tex = dst;
+    // false while the per-size pipelines compile (async) - show the raw frame
+    // instead of a zero-initialized ring texture (black flashes)
+    if (sr.process(texIn, dst, texIn.width, texIn.height)) tex = dst;
   }
   const enc = rtDevice.createCommandEncoder();
   const pass = enc.beginRenderPass({ colorAttachments: [{
