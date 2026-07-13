@@ -1,0 +1,83 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>sr bench</title>
+<style>body{font:13px monospace;background:#111;color:#ddd;padding:12px}pre{white-space:pre-wrap}</style>
+<pre id="log"></pre>
+<script type="module">
+// SR architecture envelope bench: kernel speed does not depend on weight VALUES,
+// so candidate widths run on random weights. ?res=480,720,1080&c=16,24,32
+const { createSR } = await import('./rt/sr.js?b=' + Date.now());
+const Q = new URLSearchParams(location.search);
+const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const RESES = (Q.get('res') || '480,720,1080').split(',').map(Number);
+const WIDTHS = (Q.get('c') || '16,24,32').split(',').map(Number);
+const DIMS = { 480: [854, 480], 720: [1280, 720], 1080: [1920, 1080] };
+
+// fabricate an rt_sr-shaped manifest at width C with random weights
+function fakeSR(C) {
+  const shapes = {
+    'c1.weight': [C, 3, 3, 3], 'c1.bias': [C], 'a1.weight': [C],
+    'c2.weight': [C, C, 3, 3], 'c2.bias': [C], 'a2.weight': [C],
+    'c3.weight': [C, C, 3, 3], 'c3.bias': [C], 'a3.weight': [C],
+    'c4.weight': [12, C, 3, 3], 'c4.bias': [12],
+  };
+  const man = {}; let off = 0;
+  for (const [k, sh] of Object.entries(shapes)) {
+    const n = sh.reduce((a, b) => a * b, 1);
+    man[k] = { shape: sh, offset: off }; off += n;
+  }
+  const bin = new Float32Array(off);
+  for (let i = 0; i < off; i++) bin[i] = (Math.random() - 0.5) * 0.2;
+  return { man, bin: bin.buffer };
+}
+
+const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+
+async function main() {
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const device = await adapter.requestDevice({ requiredFeatures: ['shader-f16'] });
+  const results = {};
+  for (const C of WIDTHS) {
+    let bin, man;
+    if (C === 16 && Q.get('real') !== '0') { // real shipped weights for the baseline
+      [bin, man] = await Promise.all([
+        fetch('../assets/rt_sr.bin').then(r => r.arrayBuffer()),
+        fetch('../assets/rt_sr.json').then(r => r.json())]);
+    } else {
+      const f = fakeSR(C); bin = f.bin; man = f.man;
+    }
+    for (const tune of [null, { coc: 8, slab: 12, sg: true, w4: true, v2: true }]) {
+    if (tune && C % tune.coc !== 0) continue;
+    const sr = await createSR(device, { weightsBin: bin, weightsManifest: man, convTune: tune });
+    for (const R of RESES) {
+      const [w, h] = DIMS[R];
+      const src = device.createTexture({ size: [w, h], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+      const dst = device.createTexture({ size: [w * 2, h * 2], format: 'rgba8unorm',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+      // per-size pipelines build async on first call - poll until live
+      for (let tries = 0; tries < 100 && !sr.process(src, dst, w, h); tries++) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      await device.queue.onSubmittedWorkDone();
+      const reps = [];
+      for (let rep = 0; rep < 5; rep++) {
+        const t0 = performance.now();
+        for (let i = 0; i < 30; i++) sr.process(src, dst, w, h);
+        await device.queue.onSubmittedWorkDone();
+        reps.push((performance.now() - t0) / 30);
+      }
+      const ms = +median(reps).toFixed(3);
+      const tag = tune ? 'w4v2' : 'legacy';
+      results[`c${C} ${tag} ${R}p->${R * 2}p`] = ms;
+      log(`c=${C} ${tag} ${w}x${h} -> ${w * 2}x${h * 2}: ${ms} ms/frame`);
+      src.destroy(); dst.destroy();
+    }
+    }
+  }
+  window.__benchResult = results;
+  document.title = 'SR BENCH DONE';
+  log('== DONE ==\n' + JSON.stringify(results));
+}
+main().catch(e => { document.title = 'SR BENCH ERROR'; log('ERROR ' + e + '\n' + e.stack); });
+</script>

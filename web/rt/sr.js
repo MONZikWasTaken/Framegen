@@ -3,7 +3,7 @@
 // Texture in -> texture out (2x size); everything stays on the GPU.
 // Weights: assets/rt_sr.{bin,json} (tools/export_sr_weights.py).
 
-import { wgslConvRB, WGSL_TO_F16 } from './rt.js';
+import { wgslConvRB, wgslConvRBSg, WGSL_TO_F32, WGSL_TO_F16 } from './rt.js?v=7';
 
 const WG = 8;
 
@@ -80,7 +80,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 }
 
-export async function createSR(device, { weightsBin, weightsManifest, channels }) {
+export async function createSR(device, { weightsBin, weightsManifest, channels, convTune }) {
+  // convTune: same shape dict as the interpolation runtime's tuner output -
+  // the SR convs run at FULL video resolution, so the w4/v2 kernel variants
+  // matter here more than anywhere (these grids are ~256x the trunk's)
   // channel width lives in the weights: c1 is the 3->C input conv
   const C = channels || (weightsManifest['c1.weight'] ? weightsManifest['c1.weight'].shape[0] : 16);
   const bufN = (bytes) => device.createBuffer({
@@ -100,21 +103,38 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
   const pipeAsync = (code) => device.createComputePipelineAsync({ layout: 'auto',
     compute: { module: device.createShaderModule({ code }), entryPoint: 'main' } });
   // f16 copies of the heavy conv weights (the RB kernels read f16)
-  const [pIn, pToH] = await Promise.all([pipeAsync(wgslIn(C)), pipeAsync(WGSL_TO_F16)]);
+  const sgOk = convTune && convTune.sg && device.features.has('subgroups');
+  const RB = sgOk ? wgslConvRBSg : wgslConvRB;
+  const needW4 = !!(convTune && convTune.w4);
+  const [pIn, pToH, pToF] = await Promise.all([pipeAsync(wgslIn(C)), pipeAsync(WGSL_TO_F16),
+    needW4 ? pipeAsync(WGSL_TO_F32) : null]);
   const wbufH = {};
   {
     const enc = device.createCommandEncoder();
     for (const name of ['c2.weight', 'c3.weight', 'c4.weight']) {
       const n = weightsManifest[name].shape.reduce((a, b) => a * b, 1);
-      wbufH[name] = device.createBuffer({ size: Math.ceil(n / 2) * 4,
-        usage: GPUBufferUsage.STORAGE });
+      const half = device.createBuffer({ size: Math.ceil(n / 2) * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
       const pass = enc.beginComputePass();
       pass.setPipeline(pToH);
       pass.setBindGroup(0, device.createBindGroup({ layout: pToH.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: { buffer: wbuf[name] } },
-          { binding: 1, resource: { buffer: wbufH[name] } }] }));
+          { binding: 1, resource: { buffer: half } }] }));
       pass.dispatchWorkgroups(Math.ceil(n / 256));
       pass.end();
+      if (needW4) { // widen back to f32: bit-exact f32(f16(w)), CVT leaves the hot loop
+        const wide = device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE });
+        const p2 = enc.beginComputePass();
+        p2.setPipeline(pToF);
+        p2.setBindGroup(0, device.createBindGroup({ layout: pToF.getBindGroupLayout(0),
+          entries: [{ binding: 0, resource: { buffer: half } },
+            { binding: 1, resource: { buffer: wide } }] }));
+        p2.dispatchWorkgroups(Math.ceil(n / 256));
+        p2.end();
+        wbufH[name] = wide;
+      } else {
+        wbufH[name] = half;
+      }
     }
     device.queue.submit([enc.finish()]);
   }
@@ -139,8 +159,8 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
       const fb = bufN(C * w * h * 2);
       const det = bufN(12 * w * h * 2);
       const [pMid, pOutConv, pShuf] = await Promise.all([
-        pipeAsync(wgslConvRB(C, C, w, h, w, h, false)),
-        pipeAsync(wgslConvRB(C, 12, w, h, w, h, false)),
+        pipeAsync(RB(C, C, w, h, w, h, false, convTune)),
+        pipeAsync(RB(C, 12, w, h, w, h, false, convTune && { ...convTune, coc: 4 })), // CO=12: coc 8 does not divide
         pipeAsync(wgslShuffle(w, h))]);
       const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
         layout: pMid.getBindGroupLayout(0), entries: [
@@ -207,11 +227,13 @@ export async function createSR(device, { weightsBin, weightsManifest, channels }
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(gx(w), gx(h));
+    const tw = ((convTune && convTune.wgx) || 8) * 2, th = ((convTune && convTune.wgy) || 8) * 2;
+    const midZ = C / ((convTune && convTune.coc) || 4);
     pass.setPipeline(S.pMid);
-    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), C / 4);
-    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), C / 4);
+    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
+    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
     pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
-    pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 16), 3);
+    pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), 3);
     pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
     pass.dispatchWorkgroups(gx(w * 2), gx(h * 2));
     pass.end();

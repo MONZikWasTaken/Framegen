@@ -481,8 +481,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         fetch(url('assets/rt_sr.bin')).then(r => r.arrayBuffer()),
         fetch(url('assets/rt_sr.json')).then(r => r.json())]);
       const { createSR } = await import(url('rt/sr.js'));
-      sr = await createSR(device, { weightsBin: bin, weightsManifest: man });
-      log('SR up');
+      // the SR convs run at FULL video resolution - the w4/v2 kernel variants
+      // measured ~2x there. The trunk's calibrated tune transfers well enough
+      // (w4v2 won every grid we benched); output stays bit-identical.
+      const convTune = await loadConvTune().catch(() => null);
+      // sr.js feature-gates sg itself, so the default is safe everywhere
+      sr = await createSR(device, { weightsBin: bin, weightsManifest: man,
+        convTune: convTune || { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
+      log('SR up', JSON.stringify(convTune || 'default-w4v2'));
     })();
     try { await srBuilding; } finally { srBuilding = null; }
   }
@@ -1668,7 +1674,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.3.0';
+  const VERSION = '1.3.1';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
