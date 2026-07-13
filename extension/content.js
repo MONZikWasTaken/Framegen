@@ -497,10 +497,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // the ORIGINAL cadence, independent of what the output side presents (hz mode
   // rarely presents raw sources - the left half would freeze otherwise)
   function present(tex, isMid) {
-    // interpolated frames are model-res and look soft next to native source frames;
-    // run them through TinySR (2x) when it actually adds pixels toward the canvas.
-    // With FG off, SR applies to the source frames instead (pure-upscaler mode).
-    if (cfg.sr && (isMid || !cfg.fg)) {
+    // every presented frame goes through SR when it adds pixels toward the
+    // canvas. It used to be generated-frames-only as a GPU saving, but that
+    // alternates sharp/soft at display rate - visible shimmer, worst on
+    // low-res anime (field report 2026-07-13).
+    if (cfg.sr) {
       if (!sr) { ensureSR().catch(e => log('sr', e)); }
       else if (tex.width < overlay.width) {
         const key = tex.width + 'x' + tex.height;
@@ -812,7 +813,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       <div style="position:absolute; right:14px; bottom:10px; color:#fff; font:10px system-ui;
         background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">orig.</div>
       <div style="position:absolute; left:14px; bottom:10px; color:#fff; font:10px system-ui;
-        background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FC</div>`;
+        background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FG</div>`;
     splitEl.addEventListener('pointerdown', (e) => {
       splitEl.setPointerCapture(e.pointerId);
       const move = (ev) => {
@@ -1013,7 +1014,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `diff ${lastStat ? lastStat.mean.toFixed(1) : '-'}/${lastStat ? lastStat.max : '-'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
         ].join('  ·  ');
       } else {
-        hud.textContent = `FC ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
+        hud.textContent = `FG ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
@@ -1161,7 +1162,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         log('frame error', e);
         stop();
         hud.style.display = 'block';
-        hud.textContent = 'FC error: ' + (e.message || e);
+        hud.textContent = 'FG error: ' + (e.message || e);
       }
     } finally {
       processingFrame = false;
@@ -1567,7 +1568,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (running) { stop(); return; }
       const v = biggestVideo();
       if (!v) { hud.style.display = 'block'; hud.textContent = 'FC: no video found'; return; }
-      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FC error: ' + (e.message || e); log(e); }
+      try { await start(v); } catch (e) { hud.style.display = 'block'; hud.textContent = 'FG error: ' + (e.message || e); log(e); }
     } finally { toggling = false; }
   }
 
@@ -1587,7 +1588,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       /* NO backdrop-filter on anything hovering over the RUNNING video: the
          compositor re-blurs the region every frame of a 100+fps canvas - that
          alone janks playback exactly while the cursor summons the UI */
-      .fc-side{position:fixed;z-index:2147483647;width:38px;height:38px;border-radius:50%;
+      .fc-side{position:fixed;z-index:2147483647;
+        width:38px!important;height:38px!important;
+        min-width:38px!important;min-height:38px!important;
+        max-width:38px!important;max-height:38px!important;
+        padding:0!important;margin:0!important;box-sizing:border-box!important;
+        border-radius:50%;
         border:none;background:rgba(18,18,20,.88);color:#fff;cursor:pointer;display:none;
         font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
         transition:background .15s,transform .15s}
@@ -1635,7 +1641,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       .fc-details summary::-webkit-details-marker{display:none}`;
     (document.head || document.documentElement).appendChild(css);
     btn = document.createElement('button');
-    btn.textContent = 'FC';
+    btn.textContent = 'FG';
     btn.className = 'fc-side';
     gear = document.createElement('button');
     gear.innerHTML = svgIcon('gear', 17);
@@ -1675,7 +1681,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.3.2';
+  const VERSION = '1.3.3';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
