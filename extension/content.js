@@ -131,7 +131,10 @@
   }
   async function loadConvTune() {
     try {
-      const key = 'fcTune2|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // fcTune2: w4/v2 kernel generation - old tunes must recalibrate
+      // fcTune3: earlier generations DROPPED the tuner's w4/v2 flags on persist,
+      // so every calibrated user silently ran the legacy kernels (~+30% mid,
+      // ~2x SR). New key = one recalibration, then the full tune sticks.
+      const key = 'fcTune3|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
       const st = await chrome.storage.local.get('fcTune');
       return (st.fcTune && st.fcTune[key]) || null;
     } catch { return null; }
@@ -140,13 +143,17 @@
     // one-shot per (GPU, quality): bench kernel variants on the real conv shape,
     // persist the winner - picked up on the next runtime build
     try {
-      const key = 'fcTune2|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // fcTune2: w4/v2 kernel generation - old tunes must recalibrate
+      const key = 'fcTune3|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // keep in sync with loadConvTune
       const st = await chrome.storage.local.get('fcTune');
       const all = st.fcTune || {};
       if (all[key]) return;
       const [mw, mh] = SIZES[cfg.res];
-      const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16 });
-      all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg, wgx: best.wgx || 8, wgy: best.wgy || 8 };
+      const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16, s2ci: rtC1 });
+      // persist EVERY flag the runtime reads - dropping w4/v2 here is exactly
+      // the bug that kept calibrated users on legacy kernels (fcTune2 era)
+      all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg, wgx: best.wgx || 8, wgy: best.wgy || 8,
+        w4: !!best.w4, v2: !!best.v2 };
+      if (best.s2) all[key].s2 = { coc: best.s2.coc, w4: !!best.s2.w4 };
       await chrome.storage.local.set({ fcTune: all });
       log('conv tune', cfg.res, JSON.stringify(best));
     } catch (e) { log('tune skipped', e); }
@@ -169,7 +176,7 @@
     };
     tuneTimer = setTimeout(tick, 4000);
   }
-  let rtC2 = 0;
+  let rtC1 = 0, rtC2 = 0;
   async function buildRuntime() {
     if (!device) {
       const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in Chrome settings (chrome://settings/system), restart Chrome, and update your GPU driver. Very old GPUs are not supported.';
@@ -203,6 +210,7 @@
     }
     const rtMod = await import(url('rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
+    rtC1 = man['block0.conv0.0.0.weight'].shape[0];
     rtC2 = man['block0.conv0.1.0.weight'].shape[0];
     const convTune = await loadConvTune();
     rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
