@@ -8,8 +8,8 @@
 //
 // AUTO mode: a quality ladder for the mids (originals never change). The controller
 // watches the real inference cost vs the real scene budget and walks the ladder.
-import { createRT, tuneConvRB } from './rt/rt.js?v=7';
-import { createSR } from './rt/sr.js?v=3';
+import { createRT, tuneConvRB } from './rt/rt.js?v=8';
+import { createSR } from './rt/sr.js?v=4';
 
 const DELAY_MS = 100;
 const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1072] };
@@ -43,6 +43,7 @@ async function ensureRtDevice() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
   const feats = adapter.features.has('shader-f16') ? ['shader-f16'] : [];
   if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
+  if (adapter.features.has('timestamp-query')) feats.push('timestamp-query'); // calibration measures on GPU timestamps
   rtDevice = await adapter.requestDevice({ requiredFeatures: feats });
 }
 let tunes = {}; // res -> {coc, slab, sg}; persisted by the page in localStorage

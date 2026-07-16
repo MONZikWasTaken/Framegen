@@ -3,7 +3,7 @@
 // Texture in -> texture out (2x size); everything stays on the GPU.
 // Weights: assets/rt_sr.{bin,json} (tools/export_sr_weights.py).
 
-import { wgslConvRB, wgslConvRBSg, WGSL_TO_F32, WGSL_TO_F16 } from './rt.js?v=7';
+import { wgslConvRB, wgslConvRBSg, WGSL_TO_F32, WGSL_TO_F16 } from './rt.js?v=8';
 
 const WG = 8;
 

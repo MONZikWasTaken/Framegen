@@ -1924,32 +1924,86 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
   }));
   // NOTE: a two-phase prune (short pass -> finalists) was tried and REVERTED:
   // 8-dispatch rankings are noisy enough to drop the true winner (measured
-  // picking a non-w4 kernel, +20% on the 2x cycle). The tuner runs once per
-  // (gpu, res, model) at an idle moment - correctness beats burst length.
-  let best = null;
-  for (let vi = 0; vi < variants.length; vi++) {
-    const v = variants[vi];
-    const p = pipes[vi];
-    const bgV = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
+  // picking a non-w4 kernel, +20% on the 2x cycle). Every variant gets the
+  // full 30-dispatch measurement - correctness beats burst length.
+  //
+  // measure(): GPU timestamps when the device has them - variants run in
+  // CHUNKS with ONE sync per chunk (the wall-clock path costs 2 syncs per
+  // variant, ~2.4s of the old ~3s calibration on a 4060 Ti). Each submit is
+  // budgeted to ~200ms of measured GPU work so slow adapters cannot trip the
+  // OS watchdog. Fallback: per-variant wall-clock, the 1.3.x ranking basis.
+  const record = (it, k, pass) => {
+    pass.setPipeline(it.pipe); pass.setBindGroup(0, it.bg);
+    for (let i = 0; i < k; i++) pass.dispatchWorkgroups(it.dims[0], it.dims[1], it.dims[2]);
+  };
+  const measure = async (items) => {
+    if (!device.features.has('timestamp-query')) {
+      const out = [];
+      for (const it of items) {
+        const run = (k) => {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginComputePass();
+          record(it, k, pass);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+        };
+        run(3); await device.queue.onSubmittedWorkDone(); // warm (incl pipeline compile)
+        const t0 = performance.now();
+        run(30); await device.queue.onSubmittedWorkDone();
+        out.push((performance.now() - t0) / 30);
+      }
+      return out;
+    }
+    const out = new Array(items.length);
+    let budget = 1; // variants per submit; recalibrated from each chunk's GPU time
+    for (let i = 0; i < items.length; ) {
+      const chunk = items.slice(i, i + budget);
+      const qs = device.createQuerySet({ type: 'timestamp', count: chunk.length * 2 });
+      const qbuf = device.createBuffer({ size: chunk.length * 16,
+        usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+      const qread = device.createBuffer({ size: chunk.length * 16,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const enc = device.createCommandEncoder();
+      chunk.forEach((it, j) => {
+        const warm = enc.beginComputePass(); // warm stays outside the timestamps
+        record(it, 3, warm);
+        warm.end();
+        const timed = enc.beginComputePass({ timestampWrites: {
+          querySet: qs, beginningOfPassWriteIndex: j * 2, endOfPassWriteIndex: j * 2 + 1 } });
+        record(it, 30, timed);
+        timed.end();
+      });
+      enc.resolveQuerySet(qs, 0, chunk.length * 2, qbuf, 0);
+      enc.copyBufferToBuffer(qbuf, 0, qread, 0, chunk.length * 16);
+      device.queue.submit([enc.finish()]);
+      await qread.mapAsync(GPUMapMode.READ);
+      const ts = new BigUint64Array(qread.getMappedRange().slice(0));
+      qread.unmap();
+      qs.destroy(); qbuf.destroy(); qread.destroy();
+      let sum = 0;
+      chunk.forEach((it, j) => {
+        const ms = Number(ts[j * 2 + 1] - ts[j * 2]) / 1e6 / 30;
+        out[i + j] = ms;
+        sum += ms * 33; // warm + timed dispatches
+      });
+      i += chunk.length;
+      const per = Math.max(0.5, sum / chunk.length);
+      budget = Math.max(1, Math.min(16, Math.floor(200 / per)));
+    }
+    return out;
+  };
+  const items = variants.map((v, vi) => ({
+    pipe: pipes[vi],
+    bg: device.createBindGroup({ layout: pipes[vi].getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: src } },
       { binding: 1, resource: { buffer: v.w4 ? wgt32 : wgt } },
       { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
-      { binding: 4, resource: { buffer: dst } }] });
-    const run = (k) => {
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginComputePass();
-      pass.setPipeline(p); pass.setBindGroup(0, bgV);
-      const tx = ((v.wgx || 8) * 2), ty = ((v.wgy || 8) * 2);
-      for (let i = 0; i < k; i++) pass.dispatchWorkgroups(Math.ceil(w16 / tx), Math.ceil(h16 / ty), co / v.coc);
-      pass.end();
-      device.queue.submit([enc.finish()]);
-    };
-    run(3); await device.queue.onSubmittedWorkDone(); // warm (incl pipeline compile)
-    const t0 = performance.now();
-    run(30); await device.queue.onSubmittedWorkDone();
-    const ms = (performance.now() - t0) / 30;
-    if (!best || ms < best.ms) best = { ...v, ms };
-  }
+      { binding: 4, resource: { buffer: dst } }] }),
+    dims: [Math.ceil(w16 / (((v.wgx || 8)) * 2)), Math.ceil(h16 / (((v.wgy || 8)) * 2)), co / v.coc],
+  }));
+  const msList = await measure(items);
+  let best = null;
+  msList.forEach((ms, vi) => { if (!best || ms < best.ms) best = { ...variants[vi], ms }; });
   // stride-2 sweep (conv0b shape: s2ci -> co, input 2x grid): the winner rides
   // along as best.s2. Measured on Ada: w4+coc16 took conv0b 0.77 -> 0.46ms @1080p
   // (coc16 halves the z-slices, w4 evicts the quarter-rate CVTs) - but per-GPU
@@ -1963,30 +2017,20 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
       layout: 'auto', compute: { module: device.createShaderModule({
         code: wgslConvRBs2(s2ci, co, iw, ih, w16, h16, v) }), entryPoint: 'main' } })));
     let s2best = null, s2def = null;
-    for (let vi = 0; vi < s2v.length; vi++) {
-      const v = s2v[vi];
-      const bg = device.createBindGroup({ layout: s2p[vi].getBindGroupLayout(0), entries: [
+    const s2items = s2v.map((v, vi) => ({
+      pipe: s2p[vi],
+      bg: device.createBindGroup({ layout: s2p[vi].getBindGroupLayout(0), entries: [
         { binding: 0, resource: { buffer: s2src } },
         { binding: 1, resource: { buffer: v.w4 ? wgt32 : wgt } },
         { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
-        { binding: 4, resource: { buffer: dst } }] });
-      const run = (k) => {
-        const enc = device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(s2p[vi]); pass.setBindGroup(0, bg);
-        for (let i = 0; i < k; i++) {
-          pass.dispatchWorkgroups(Math.ceil(w16 / 16), Math.ceil(h16 / 16), co / v.coc);
-        }
-        pass.end();
-        device.queue.submit([enc.finish()]);
-      };
-      run(3); await device.queue.onSubmittedWorkDone();
-      const t0 = performance.now();
-      run(30); await device.queue.onSubmittedWorkDone();
-      const ms = (performance.now() - t0) / 30;
-      if (vi === 0) s2def = { ...v, ms }; // the pre-tune default shape
-      if (!s2best || ms < s2best.ms) s2best = { ...v, ms };
-    }
+        { binding: 4, resource: { buffer: dst } }] }),
+      dims: [Math.ceil(w16 / 16), Math.ceil(h16 / 16), co / v.coc],
+    }));
+    const s2ms = await measure(s2items);
+    s2ms.forEach((ms, vi) => {
+      if (vi === 0) s2def = { ...s2v[0], ms }; // the pre-tune default shape
+      if (!s2best || ms < s2best.ms) s2best = { ...s2v[vi], ms };
+    });
     s2src.destroy();
     // incumbent rule: isolated ties do not predict in-chain behavior (measured
     // a tie-pick costing +0.2ms on the pair at 720p) - a challenger must beat

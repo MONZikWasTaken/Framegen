@@ -143,7 +143,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=26', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=27', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`creating session ${key} in the worker... (first run builds pipelines for a few seconds)`);

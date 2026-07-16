@@ -186,6 +186,7 @@
       const f16 = adapter.features.has('shader-f16');
       const feats = f16 ? ['shader-f16'] : [];
       if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
+      if (adapter.features.has('timestamp-query')) feats.push('timestamp-query'); // calibration measures on GPU timestamps (2.4x faster burst)
       device = await adapter.requestDevice({ requiredFeatures: feats });
       classifyAdapter(adapter);
     }
