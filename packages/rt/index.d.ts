@@ -6,6 +6,12 @@ export interface ConvTune {
   /** Workgroup shape (threads); output tile is (2*wgx)x(2*wgy). Default 8x8. */
   wgx?: number;
   wgy?: number;
+  /** Register 4x4 window + pre-widened f32 weights (persist it - dropping it re-runs legacy kernels). */
+  w4?: boolean;
+  /** vec2<f16> shared tile loads on top of w4. */
+  v2?: boolean;
+  /** Stride-2 conv0b shape from the s2 sweep. */
+  s2?: { coc: number; w4: boolean; ms?: number };
   ms?: number;
 }
 
@@ -62,14 +68,21 @@ export interface RT {
    * Pass outTex to include the flow stage.
    */
   profileT(a: GPUTexture, b: GPUTexture, t?: number, outTex?: GPUTexture | null): Promise<string>;
+  /** Release every buffer/texture the runtime owns (safe with work in flight). */
+  destroy(): void;
   readonly w: number;
   readonly h: number;
 }
 
 export function createRT(device: GPUDevice, opts: CreateRTOptions): Promise<RT>;
 
-/** Bench conv kernel variants on the real shape; persist the result per GPU. */
+/**
+ * Bench conv kernel variants on the real shape; persist the result per GPU.
+ * Pass s2ci (the conv0a output width) to also sweep the stride-2 conv0b shape -
+ * the winner rides along as .s2. Uses GPU timestamps when the device has
+ * timestamp-query (2.4x shorter burst), wall-clock otherwise.
+ */
 export function tuneConvRB(
   device: GPUDevice,
-  shape: { ci: number; co: number; w16: number; h16: number },
+  shape: { ci: number; co: number; w16: number; h16: number; s2ci?: number },
 ): Promise<ConvTune>;
