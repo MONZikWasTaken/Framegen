@@ -46,26 +46,35 @@ async function ensureRtDevice() {
   if (adapter.features.has('timestamp-query')) feats.push('timestamp-query'); // calibration measures on GPU timestamps
   rtDevice = await adapter.requestDevice({ requiredFeatures: feats });
 }
-let tunes = {}; // res -> {coc, slab, sg}; persisted by the page in localStorage
+let tunes = {}; // "res|stem" -> full tune; persisted by the page in localStorage
+// two rungs can share a resolution with DIFFERENT models (rt@352 vs rt60@352) -
+// the key carries the stem so their tunes never overwrite each other, and the
+// in-flight set stops the same key calibrating twice from one idle window
+// (soak caught both: 352p tuned twice, second run without the v7s s2 shape)
+const tuneKey = (rung) => rung.res + '|' + rung.stem;
+const tuning = new Set();
 async function calibrateTune(rung, man, W, H) {
   // one-shot per quality rung: bench kernel variants on the real conv shape;
   // the page saves the winner, it applies on the next session build.
   // EVERY flag the runtime reads persists (dropping w4/v2 here silently kept
   // users on legacy kernels - the extension had the same bug), plus the
   // stride-2 conv0b shape from the s2 sweep.
+  const key = tuneKey(rung);
+  if (tunes[key] || tuning.has(key)) return;
+  tuning.add(key);
   try {
-    if (tunes[rung.res]) return;
     const wk = man['block0.conv0.1.0.weight'];
     if (!wk) return; // fallback weight sets have a different layout - skip
     const c1k = man['block0.conv0.0.0.weight'];
     const best = await tuneConvRB(rtDevice, { ci: wk.shape[0], co: wk.shape[0],
       w16: W / 16, h16: H / 16, s2ci: c1k ? c1k.shape[0] : 0 });
-    tunes[rung.res] = { coc: best.coc, slab: best.slab, sg: !!best.sg,
+    tunes[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg,
       wgx: best.wgx || 8, wgy: best.wgy || 8, w4: !!best.w4, v2: !!best.v2 };
-    if (best.s2) tunes[rung.res].s2 = { coc: best.s2.coc, w4: !!best.s2.w4 };
-    postMessage({ type: 'tune', res: rung.res, tune: tunes[rung.res] });
-    postMessage({ type: 'log', msg: 'conv tune ' + rung.res + 'p: ' + JSON.stringify(tunes[rung.res]) });
-  } catch { /* tuner is best-effort */ }
+    if (best.s2) tunes[key].s2 = { coc: best.s2.coc, w4: !!best.s2.w4 };
+    postMessage({ type: 'tune', res: key, tune: tunes[key] });
+    postMessage({ type: 'log', msg: 'conv tune ' + key + ': ' + JSON.stringify(tunes[key]) });
+  } catch { /* tuner is best-effort */
+  } finally { tuning.delete(key); }
 }
 async function ensureWeights(stem) {
   if (rtWeights.has(stem)) return rtWeights.get(stem);
@@ -286,11 +295,11 @@ async function buildSession(rung) {
   const [W, H] = SIZE_RT[rung.res];
   const rt = await createRT(rtDevice, { w: W, h: H, textureInput: true, textureOutput: true,
     staticGuard: true, weightsBin: wset.bin, weightsManifest: wset.man,
-    convTune: tunes[rung.res] || null });
-  if (!tunes[rung.res]) {
+    convTune: tunes[tuneKey(rung)] || null });
+  if (!tunes[tuneKey(rung)]) {
     const t0 = performance.now();
     const tick = () => {
-      if (tunes[rung.res]) return;
+      if (tunes[tuneKey(rung)]) return;
       // idle moment (no frames for a while) or 2 minutes of nonstop playback
       if (performance.now() - lastArrival > 600 || performance.now() - t0 > 120000) {
         calibrateTune(rung, wset.man, W, H);
