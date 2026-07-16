@@ -13,13 +13,14 @@ import { createSR } from './rt/sr.js?v=3';
 
 const DELAY_MS = 100;
 const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1072] };
-// rt_tfact2 = the extension's shipping v6 model (tfact + refine head); the demo
-// must showcase what users actually get, not the superseded rt_tfact
+// rt_v7s = the extension's shipping default (faster than v6 at equal-or-better
+// quality); the demo must showcase what users actually get. ensureWeights falls
+// back to rt_tfact2 if the v7s set is missing.
 const LADDER = [
-  { key: 'rt@1080', res: 1080, est: 12, stem: 'rt_tfact2' },
-  { key: 'rt@720',  res: 720,  est: 5,  stem: 'rt_tfact2' },
-  { key: 'rt@480',  res: 480,  est: 2.5, stem: 'rt_tfact2' },
-  { key: 'rt@352',  res: 352,  est: 2,  stem: 'rt_tfact2' },
+  { key: 'rt@1080', res: 1080, est: 10, stem: 'rt_v7s' },
+  { key: 'rt@720',  res: 720,  est: 4,  stem: 'rt_v7s' },
+  { key: 'rt@480',  res: 480,  est: 2,  stem: 'rt_v7s' },
+  { key: 'rt@352',  res: 352,  est: 1.6, stem: 'rt_v7s' },
   { key: 'rt60@480', res: 480, est: 3,  stem: 'rt_slim60' },
   { key: 'rt60@352', res: 352, est: 2,  stem: 'rt_slim60' },
 ];
