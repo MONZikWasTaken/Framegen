@@ -93,9 +93,11 @@ def eval_t2(net, eval_sets, device):
         vals = []
         for f0, gt, f1 in trips:
             def prep(im):
+                # uint8 up, convert on GPU: same cast + /255 (bit-identical),
+                # 4x less H2D and no CPU float pass per eval frame
                 x = torch.zeros(1, 3, PH, PW, device=device)
                 x[0, :, :H, :W] = torch.from_numpy(
-                    im.transpose(2, 0, 1).astype(np.float32) / 255.0).to(device)
+                    np.ascontiguousarray(im.transpose(2, 0, 1))).to(device).float().div_(255.0)
                 return x
             pred, _ = net(prep(f0), prep(f1), torch.tensor([0.5], device=device))
             pred = (pred[0, :, :H, :W].clamp(0, 1) * 255).byte().cpu().numpy().transpose(1, 2, 0)

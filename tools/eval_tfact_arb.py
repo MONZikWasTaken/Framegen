@@ -47,9 +47,10 @@ def main():
     W, H, PW, PH = 1280, 720, 1280, 736
 
     def prep(im):
+        # uint8 up, convert on GPU: bit-identical values, 4x less H2D per frame
         x = torch.zeros(1, 3, PH, PW, device=device)
         x[0, :, :H, :W] = torch.from_numpy(
-            im.transpose(2, 0, 1).astype(np.float32) / 255.0).to(device)
+            np.ascontiguousarray(im.transpose(2, 0, 1))).to(device).float().div_(255.0)
         return x
 
     for clip in CLIPS:
