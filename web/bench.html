@@ -11,7 +11,7 @@
 //   mids=N             timesteps per pair for the per-mid wall test (default 4)
 const Q = new URLSearchParams(location.search);
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
-const RES = { '480': [854, 480], '720': [1280, 720], '1080': [1920, 1080] }[Q.get('res') || '720'];
+const RES = { '288': [512, 288], '360': [640, 352], '480': [854, 480], '720': [1280, 720], '1080': [1920, 1080] }[Q.get('res') || '720'];
 // model grid must be /16 - the extension rounds the same way
 const MW = Math.round(RES[0] / 16) * 16, MH = Math.round(RES[1] / 16) * 16;
 const MODEL = Q.get('model') || 'v7s';

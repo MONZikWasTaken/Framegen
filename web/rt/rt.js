@@ -1962,7 +1962,7 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
     const s2p = await Promise.all(s2v.map(v => device.createComputePipelineAsync({
       layout: 'auto', compute: { module: device.createShaderModule({
         code: wgslConvRBs2(s2ci, co, iw, ih, w16, h16, v) }), entryPoint: 'main' } })));
-    let s2best = null;
+    let s2best = null, s2def = null;
     for (let vi = 0; vi < s2v.length; vi++) {
       const v = s2v[vi];
       const bg = device.createBindGroup({ layout: s2p[vi].getBindGroupLayout(0), entries: [
@@ -1984,9 +1984,14 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
       const t0 = performance.now();
       run(30); await device.queue.onSubmittedWorkDone();
       const ms = (performance.now() - t0) / 30;
+      if (vi === 0) s2def = { ...v, ms }; // the pre-tune default shape
       if (!s2best || ms < s2best.ms) s2best = { ...v, ms };
     }
     s2src.destroy();
+    // incumbent rule: isolated ties do not predict in-chain behavior (measured
+    // a tie-pick costing +0.2ms on the pair at 720p) - a challenger must beat
+    // the default shape by a clear margin, otherwise the default ships
+    if (s2best !== s2def && s2best.ms > s2def.ms * 0.9) s2best = s2def;
     best.s2 = { coc: s2best.coc, w4: !!s2best.w4, ms: s2best.ms };
   }
   [src, dst, wgt, wgt32, bias, alpha].forEach(b => b.destroy());
