@@ -253,7 +253,7 @@
   // copyExternalImageToTexture copies 1:1 and NEVER scales - for >FHD sources a
   // plain copy grabs the top-left FHD crop of the frame. Capture the full frame
   // into a scratch texture and downscale-blit it into the pool instead.
-  let capTex = null, downPipe = null;
+  let capTex = null, downPipe = null, capBgs = new WeakMap();
   function captureFrame(dst, vw, vh) {
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
     if (fw <= 1920 && fh <= 1080) {
@@ -265,6 +265,7 @@
       capTex = device.createTexture({ label: 'fccap', size: [fw, fh], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
           | GPUTextureUsage.RENDER_ATTACHMENT });
+      capBgs = new WeakMap(); // old bind groups reference the destroyed capTex
     }
     device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: capTex }, [fw, fh]);
     if (!downPipe) {
@@ -280,9 +281,14 @@
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: dst.createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     pass.setPipeline(downPipe);
-    pass.setBindGroup(0, device.createBindGroup({ layout: downPipe.getBindGroupLayout(0),
-      entries: [{ binding: 0, resource: capTex.createView() },
-        { binding: 1, resource: blitSampler }] }));
+    let cbg = capBgs.get(dst); // per-frame createBindGroup was pure garbage-churn at >FHD
+    if (!cbg) {
+      cbg = device.createBindGroup({ layout: downPipe.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: capTex.createView() },
+          { binding: 1, resource: blitSampler }] });
+      capBgs.set(dst, cbg);
+    }
+    pass.setBindGroup(0, cbg);
     pass.draw(3);
     pass.end();
     device.queue.submit([enc.finish()]);
@@ -512,7 +518,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // low-res anime (field report 2026-07-13).
     if (cfg.sr) {
       if (!sr) { ensureSR().catch(e => log('sr', e)); }
-      else if (tex.width < overlay.width) {
+      else if (tex.width * 1.15 < overlay.width) { // marginal upscale = invisible after the canvas downsample
         const key = tex.width + 'x' + tex.height;
         let out = srOut.get(key);
         if (!out) {
@@ -1714,10 +1720,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     });
   } catch { /* messaging unavailable in some frames */ }
 
+  const bootObs = new MutationObserver(() => boot());
   const boot = () => {
-    if (btn) return;
-    if (document.querySelector('video')) injectUI();
+    if (btn) { bootObs.disconnect(); return; } // UI exists - stop watching the whole DOM
+    if (document.querySelector('video')) { injectUI(); bootObs.disconnect(); }
   };
   boot();
-  new MutationObserver(boot).observe(document.documentElement, { childList: true, subtree: true });
+  if (!btn) bootObs.observe(document.documentElement, { childList: true, subtree: true });
 })();
