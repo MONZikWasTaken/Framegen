@@ -78,18 +78,19 @@ function ensureAudioDelay() {
     (audioDelay = audioCtx.createDelay(1.0))).connect(audioCtx.destination);
 }
 
-async function onFrame() {
+function onFrame() {
   if (!running) return;
+  vid.requestVideoFrameCallback(onFrame); // re-arm FIRST: bitmap prep must not gate the capture cadence
   const ts = performance.now();
   // letterbox the frame - a GPU draw, no pixel readback on this thread
   const s = Math.min(W / vid.videoWidth, H / vid.videoHeight);
   const dw = vid.videoWidth * s, dh = vid.videoHeight * s;
   lctx.fillStyle = '#000'; lctx.fillRect(0, 0, W, H);
   lctx.drawImage(vid, (W - dw) / 2, (H - dh) / 2, dw, dh);
-  // the worker presents everything: one bitmap is all it needs
-  const bmp = await createImageBitmap(letterbox);
+  // zero-copy handoff of the letterbox backing store (createImageBitmap was an
+  // extra rasterize + await per frame; the canvas redraws fully next frame)
+  const bmp = letterbox.transferToImageBitmap();
   worker.postMessage({ type: 'frame', bmp, ts }, [bmp]);
-  vid.requestVideoFrameCallback(onFrame);
 }
 
 function onWorkerMessage(ev) {
@@ -101,9 +102,9 @@ function onWorkerMessage(ev) {
       `${m.halfRate ? ' · ½-rate' : ''} · mids: ${m.cfg || '-'}\n` +
       `shown ${m.shown} · dropped ${m.dropped} · dups ${m.dups} · cuts ${m.cuts} · ${workerKey ?? ''}`;
   } else if (m.type === 'tune') {
-    const all = JSON.parse(localStorage.getItem('framegenTune') || '{}');
+    const all = JSON.parse(localStorage.getItem('framegenTune2') || '{}');
     all[m.res] = m.tune;
-    localStorage.setItem('framegenTune', JSON.stringify(all));
+    localStorage.setItem('framegenTune2', JSON.stringify(all));
   } else if (m.type === 'log') st(m.msg);
   else if (m.type === 'error') {
     st('WORKER ERROR: ' + m.msg, true);
@@ -142,7 +143,7 @@ function ensureWorker() {
   out.replaceWith(freshOut);
   out = freshOut;
   const offscreen = out.transferControlToOffscreen();
-  worker = new Worker('player_worker.js?v=24', { type: 'module' }); // cache-bust: workers are cached aggressively
+  worker = new Worker('player_worker.js?v=25', { type: 'module' }); // cache-bust: workers are cached aggressively
   worker.onmessage = onWorkerMessage;
   workerKey = key;
   st(`creating session ${key} in the worker... (first run builds pipelines for a few seconds)`);
@@ -160,7 +161,7 @@ function ensureWorker() {
     worker.postMessage({ type: 'init', auto: res === 'auto', res: mode.res,
       animeMode: $('animeMode').checked, interpOn: $('interpOn').checked, sr: $('srOn').checked,
       factor: +$('factor').value, dispW: W, dispH: H, canvas: offscreen,
-      tunes: JSON.parse(localStorage.getItem('framegenTune') || '{}') }, [offscreen]);
+      tunes: JSON.parse(localStorage.getItem('framegenTune2') || '{}') }, [offscreen]);
   });
 }
 

@@ -8,8 +8,8 @@
 //
 // AUTO mode: a quality ladder for the mids (originals never change). The controller
 // watches the real inference cost vs the real scene budget and walks the ladder.
-import { createRT, tuneConvRB } from './rt/rt.js?v=6';
-import { createSR } from './rt/sr.js?v=2';
+import { createRT, tuneConvRB } from './rt/rt.js?v=7';
+import { createSR } from './rt/sr.js?v=3';
 
 const DELAY_MS = 100;
 const SIZE_RT = { 352: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1072] };
@@ -47,13 +47,20 @@ async function ensureRtDevice() {
 let tunes = {}; // res -> {coc, slab, sg}; persisted by the page in localStorage
 async function calibrateTune(rung, man, W, H) {
   // one-shot per quality rung: bench kernel variants on the real conv shape;
-  // the page saves the winner, it applies on the next session build
+  // the page saves the winner, it applies on the next session build.
+  // EVERY flag the runtime reads persists (dropping w4/v2 here silently kept
+  // users on legacy kernels - the extension had the same bug), plus the
+  // stride-2 conv0b shape from the s2 sweep.
   try {
     if (tunes[rung.res]) return;
     const wk = man['block0.conv0.1.0.weight'];
     if (!wk) return; // fallback weight sets have a different layout - skip
-    const best = await tuneConvRB(rtDevice, { ci: wk.shape[0], co: wk.shape[0], w16: W / 16, h16: H / 16 });
-    tunes[rung.res] = { coc: best.coc, slab: best.slab, sg: !!best.sg };
+    const c1k = man['block0.conv0.0.0.weight'];
+    const best = await tuneConvRB(rtDevice, { ci: wk.shape[0], co: wk.shape[0],
+      w16: W / 16, h16: H / 16, s2ci: c1k ? c1k.shape[0] : 0 });
+    tunes[rung.res] = { coc: best.coc, slab: best.slab, sg: !!best.sg,
+      wgx: best.wgx || 8, wgy: best.wgy || 8, w4: !!best.w4, v2: !!best.v2 };
+    if (best.s2) tunes[rung.res].s2 = { coc: best.s2.coc, w4: !!best.s2.w4 };
     postMessage({ type: 'tune', res: rung.res, tune: tunes[rung.res] });
     postMessage({ type: 'log', msg: 'conv tune ' + rung.res + 'p: ' + JSON.stringify(tunes[rung.res]) });
   } catch { /* tuner is best-effort */ }
@@ -91,28 +98,26 @@ async function ensureSR() {
   const [bin, man] = await Promise.all([
     fetch('/assets/rt_sr.bin').then(r => { if (!r.ok) throw new Error('rt_sr.bin missing'); return r.arrayBuffer(); }),
     fetch('/assets/rt_sr.json').then(r => r.json())]);
-  sr = await createSR(rtDevice, { weightsBin: bin, weightsManifest: man });
+  const anyTune = Object.values(tunes).find(t => t && t.coc) || null;
+  sr = await createSR(rtDevice, { weightsBin: bin, weightsManifest: man,
+    convTune: anyTune || { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
   postMessage({ type: 'log', msg: 'SR upscaler loaded (' + (bin.byteLength >> 10) + 'KB)' });
 }
 function srDstFor(w, h) {
   const k = w + 'x' + h;
-  if (!srTexs.has(k)) {
-    // ladder switches change size wholesale - old rings are never re-keyed,
-    // destroy them instead of leaking tens of MB per visited size
+  let t = srTexs.get(k);
+  if (!t) {
+    // ladder switches change size wholesale - destroy old sizes (and their
+    // cached blit bind groups) instead of leaking tens of MB per visited size
     if (srTexs.size > 2) {
-      for (const [kk, st] of srTexs) { st.ring.forEach(t => t.destroy()); srTexs.delete(kk); }
+      for (const [kk, tt] of srTexs) { tt.destroy(); srTexs.delete(kk); }
+      blitBgCache.clear();
     }
-    const ring = [];
-    for (let i = 0; i < 4; i++) {
-      ring.push(rtDevice.createTexture({ label: 'sr' + k + '#' + i, size: [w * 2, h * 2],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
-    }
-    srTexs.set(k, { ring, idx: 0 });
+    t = rtDevice.createTexture({ label: 'sr' + k, size: [w * 2, h * 2],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
+    srTexs.set(k, t);
   }
-  const s = srTexs.get(k);
-  const t = s.ring[s.idx];
-  s.idx = (s.idx + 1) % s.ring.length;
   return t;
 }
 
@@ -173,6 +178,7 @@ function present(texIn) {
 }
 function pump(now) {
   if (!presenting) return;
+  driveJob(now); // just-in-time mid submission
   queue.sort((a, b) => a.at - b.at);
   let due = -1;
   for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
@@ -202,15 +208,18 @@ function ensureFrameTextures(w, h) {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
   }
   texW = w; texH = h; dedupBg.clear(); blitBgCache.clear(); lastTex = null;
+  queue = []; curJob = null; pairSeq++; // queued entries reference the destroyed pool
 }
 
-let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupRead = null, dedupSampler = null;
+let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
+let dedupReads = [], dedupReadIdx = 0, pairSeq = 0;
 const DEDUP_N = 48 * 27;
 function ensureDedup() {
   if (dedupPipe) return;
   dedupSampler = rtDevice.createSampler({ magFilter: 'linear', minFilter: 'linear' });
   dedupStats = rtDevice.createBuffer({ size: 8, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
-  dedupRead = rtDevice.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  dedupReads = Array.from({ length: 3 }, () => ({ busy: false,
+    buf: rtDevice.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }) }));
   dedupPipe = rtDevice.createComputePipeline({ layout: 'auto', compute: {
     module: rtDevice.createShaderModule({ code: /* wgsl */`
 @group(0) @binding(0) var t0: texture_2d<f32>;
@@ -229,27 +238,43 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   atomicMax(&stats[1], d);
 }`}), entryPoint: 'main' } });
 }
+const DEDUP_ZERO = new Uint32Array(2);
 async function gpuIsDup(ta, tb) {
   ensureDedup();
-  const key = ta.label + '|' + tb.label;
-  if (!dedupBg.has(key)) {
-    dedupBg.set(key, rtDevice.createBindGroup({ layout: dedupPipe.getBindGroupLayout(0), entries: [
-      { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
-      { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
+  // free readback slot: classifies overlap (handleFrame does not await them);
+  // all busy = treat as ordinary motion instead of stalling the frame loop
+  let rb = null;
+  for (let i = 0; i < dedupReads.length; i++) {
+    const c = dedupReads[(dedupReadIdx + i) % dedupReads.length];
+    if (!c.busy) { rb = c; dedupReadIdx = (dedupReadIdx + i + 1) % dedupReads.length; break; }
   }
-  rtDevice.queue.writeBuffer(dedupStats, 0, new Uint32Array([0, 0]));
-  const enc = rtDevice.createCommandEncoder();
-  const pass = enc.beginComputePass();
-  pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
-  pass.dispatchWorkgroups(6, 4);
-  pass.end();
-  enc.copyBufferToBuffer(dedupStats, 0, dedupRead, 0, 8);
-  rtDevice.queue.submit([enc.finish()]);
-  await dedupRead.mapAsync(GPUMapMode.READ);
-  const s = new Uint32Array(dedupRead.getMappedRange().slice(0));
-  dedupRead.unmap();
-  const mean = s[0] / DEDUP_N;
-  return { dup: mean < 2.5 && s[1] < 45, cut: mean > 90 };
+  if (!rb) return { dup: false, cut: false };
+  rb.busy = true;
+  try {
+    const key = ta.label + '|' + tb.label;
+    if (!dedupBg.has(key)) {
+      dedupBg.set(key, rtDevice.createBindGroup({ layout: dedupPipe.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: ta.createView() }, { binding: 1, resource: tb.createView() },
+        { binding: 2, resource: dedupSampler }, { binding: 3, resource: { buffer: dedupStats } }] }));
+    }
+    // the single stats buffer is safe across overlapping classifies: zero,
+    // dispatch and the copy-out are queue-ordered per submit
+    rtDevice.queue.writeBuffer(dedupStats, 0, DEDUP_ZERO);
+    const enc = rtDevice.createCommandEncoder();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(dedupPipe); pass.setBindGroup(0, dedupBg.get(key));
+    pass.dispatchWorkgroups(6, 4);
+    pass.end();
+    enc.copyBufferToBuffer(dedupStats, 0, rb.buf, 0, 8);
+    rtDevice.queue.submit([enc.finish()]);
+    await rb.buf.mapAsync(GPUMapMode.READ);
+    const s = new Uint32Array(rb.buf.getMappedRange().slice(0));
+    rb.buf.unmap();
+    const mean = s[0] / DEDUP_N;
+    return { dup: mean < 2.5 && s[1] < 45, cut: mean > 90 };
+  } finally {
+    rb.busy = false;
+  }
 }
 
 // ---- sessions / controller ----
@@ -260,7 +285,19 @@ async function buildSession(rung) {
   const rt = await createRT(rtDevice, { w: W, h: H, textureInput: true, textureOutput: true,
     staticGuard: true, weightsBin: wset.bin, weightsManifest: wset.man,
     convTune: tunes[rung.res] || null });
-  if (!tunes[rung.res]) setTimeout(() => calibrateTune(rung, wset.man, W, H), 4000);
+  if (!tunes[rung.res]) {
+    const t0 = performance.now();
+    const tick = () => {
+      if (tunes[rung.res]) return;
+      // idle moment (no frames for a while) or 2 minutes of nonstop playback
+      if (performance.now() - lastArrival > 600 || performance.now() - t0 > 120000) {
+        calibrateTune(rung, wset.man, W, H);
+        return;
+      }
+      setTimeout(tick, 3000);
+    };
+    setTimeout(tick, 4000);
+  }
   const midTexs = [];
   for (let i = 0; i < 12; i++) { // ring: up to (factor-1) in flight + ~100ms in the queue
     midTexs.push(rtDevice.createTexture({ label: rung.key + '#' + i, size: [W, H],
@@ -316,34 +353,67 @@ function controllerTick() {
   }
 }
 
-// ---- interpolation jobs ----
-async function runPair(job) {
-  busy = true;
+// ---- interpolation jobs (lazy per-mid submission) ----
+// prepPair runs once per frame pair; each mid's compute is submitted just-in-
+// time for its display slot from the pump, so present blits interleave with
+// computes on the GPU queue instead of the first mid waiting for the whole
+// batch (the old runMulti path cost ~(n-1)*ms of extra latency at high factors).
+let curJob = null;
+function texQueued(t) {
+  for (let i = 0; i < queue.length; i++) if (queue[i].tex === t) return true;
+  return false;
+}
+function submitMid() {
+  const j = curJob, S = j.S;
+  const k = j.next;
+  let guard = S.midTexs.length; // never clobber queued mids
+  while (guard-- > 0 && texQueued(S.midTexs[S.midIdx])) S.midIdx = (S.midIdx + 1) % S.midTexs.length;
+  const out = S.midTexs[S.midIdx];
+  S.midIdx = (S.midIdx + 1) % S.midTexs.length;
+  const t0 = performance.now();
+  try { S.rt.runT(j.ts[k], out); } catch (e) {
+    curJob = null;
+    postMessage({ type: 'error', msg: 'interp: ' + (e.message || e) });
+    return;
+  }
+  // sample every 4th mid starting at k=1 (mid 0's drain also swallows the trunk
+  // prep ahead of it and inflates the estimate); single-mid jobs sample k=0
+  if ((k & 3) === 1 || j.ts.length === 1) {
+    rtDevice.queue.onSubmittedWorkDone().then(() => {
+      const ms = performance.now() - t0;
+      S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
+    });
+  }
+  queue.push({ tex: out, at: j.at + j.ts[k] * intervalMs });
+  j.next++;
+  if (j.next >= j.ts.length) curJob = null;
+}
+function flushJob() {
+  while (curJob && curJob.next < curJob.ts.length) submitMid();
+  curJob = null;
+}
+function driveJob(now) {
+  if (!curJob) return;
+  const lead = 2 * (curJob.S.ms || 10) + 8; // one compute away from the slot
+  while (curJob && curJob.next < curJob.ts.length) {
+    const disp = curJob.at + curJob.ts[curJob.next] * intervalMs;
+    if (disp - now > lead) break;
+    submitMid();
+  }
+}
+function runPair(job) {
   const S = sessions.get(job.key);
   try {
+    flushJob(); // leftovers of the previous pair go out before the new prep
     const n = job.n;
     const ts = [];
     for (let k = 1; k < n; k++) ts.push(k / n);
-    const outs = [];
-    for (let k = 0; k < ts.length; k++) {
-      outs.push(S.midTexs[S.midIdx]);
-      S.midIdx = (S.midIdx + 1) % S.midTexs.length;
-    }
-    const t0 = performance.now();
-    await S.rt.runMulti(job.a, job.b, ts, outs); // submit only - mids stay on the GPU
-    rtDevice.queue.onSubmittedWorkDone().then(() => {
-      const ms = (performance.now() - t0) / ts.length;
-      S.ms = S.ms ? S.ms * 0.85 + ms * 0.15 : ms;
-    });
+    S.rt.prepPair(job.a, job.b);
+    curJob = { S, ts, next: 0, at: job.at };
     midCfg = job.key + (n > 2 ? ' ×' + n : '');
-    for (let k = 0; k < ts.length; k++) {
-      queue.push({ tex: outs[k], at: job.at + ts[k] * intervalMs });
-    }
   } catch (e) {
     postMessage({ type: 'error', msg: 'interp: ' + (e.message || e) });
   }
-  busy = false;
-  if (pending) { const p = pending; pending = null; runPair(p); }
 }
 
 function scheduleTransition(S, job) {
@@ -360,8 +430,7 @@ function scheduleTransition(S, job) {
   const skip = halfRate && (transitionNo & 1);
   if (interpOn && !skip) {
     job.n = effN;
-    if (!busy) runPair(job);
-    else { if (pending) dropped++; pending = job; }
+    runPair(job);
   }
 }
 
@@ -373,6 +442,11 @@ async function handleFrame(m) {
   const S = sessions.get(activeKey);
   if (!S || !presenting) { m.bmp.close(); return; }
   ensureFrameTextures(m.bmp.width, m.bmp.height);
+  // never overwrite a texture still queued for presentation or the pair input
+  let guard = frameTex.length;
+  while (guard-- > 0 && (frameTex[frameTexIdx] === lastTex || texQueued(frameTex[frameTexIdx]))) {
+    frameTexIdx = (frameTexIdx + 1) % frameTex.length;
+  }
   const tex = frameTex[frameTexIdx];
   frameTexIdx = (frameTexIdx + 1) % frameTex.length;
   rtDevice.queue.copyExternalImageToTexture({ source: m.bmp }, { texture: tex },
@@ -381,15 +455,22 @@ async function handleFrame(m) {
   queue.push({ tex, at: arrival + DELAY_MS }); // the original presents itself here
   const prevTex = lastTex;
   if (prevTex) {
-    const { dup, cut } = await gpuIsDup(prevTex, tex);
-    if (cut) { cuts++; lastUniqueTs = arrival; }
-    else if (animeMode && dup) { dups++; }
-    else {
-      // mids sit between the previous original (on screen at ~arrival-interval+DELAY)
-      // and this one (at arrival+DELAY)
-      scheduleTransition(S, { a: prevTex, b: tex, ts: arrival,
-                              at: arrival - intervalMs + DELAY_MS, key: activeKey });
-    }
+    // the dedup readback is a GPU->CPU roundtrip and must not block the frame
+    // loop (awaiting it starved 120fps sources of every other input frame).
+    // The continuation lands a few ms later, well inside the display buffer;
+    // pairSeq guards against a newer pair / pool realloc superseding this one.
+    const seq = ++pairSeq;
+    gpuIsDup(prevTex, tex).then(({ dup, cut }) => {
+      if (!presenting || seq !== pairSeq) return;
+      if (cut) { cuts++; lastUniqueTs = arrival; }
+      else if (animeMode && dup) { dups++; }
+      else {
+        // mids sit between the previous original (on screen at ~arrival-interval+DELAY)
+        // and this one (at arrival+DELAY)
+        scheduleTransition(S, { a: prevTex, b: tex, ts: arrival,
+                                at: arrival - intervalMs + DELAY_MS, key: activeKey });
+      }
+    }).catch(e => postMessage({ type: 'error', msg: 'dedup: ' + (e.message || e) }));
   } else {
     lastUniqueTs = arrival;
   }
@@ -438,7 +519,7 @@ onmessage = async (ev) => {
     return;
   }
   if (m.type === 'flush') {
-    lastTex = null; pending = null; queue = [];
+    lastTex = null; pending = null; queue = []; curJob = null; pairSeq++;
     return;
   }
   if (m.type === 'frame') {
