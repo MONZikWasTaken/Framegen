@@ -8,6 +8,7 @@
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import cv2
 import numpy as np
@@ -45,6 +46,11 @@ def infer(a, b, ts):
 
 total_done = 0
 t00 = time.time()
+# reader prefetch + async JPEG writes: imread/imwrite release the GIL, so the
+# GPU no longer idles through 15-30% of each trip's wall (per-file encodes are
+# deterministic - outputs stay byte-identical)
+readers = ThreadPoolExecutor(max_workers=2)
+writers = ThreadPoolExecutor(max_workers=4)
 for stem in sorted(os.listdir(DATA)):
     d = os.path.join(DATA, stem)
     idx_file = os.path.join(d, 'triplets.txt')
@@ -52,32 +58,45 @@ for stem in sorted(os.listdir(DATA)):
         continue
     od = os.path.join(OUT, stem)
     os.makedirs(od, exist_ok=True)
+    have = set(os.listdir(od))  # one listdir beats 4 isfile probes per triplet
     idxs = [int(l) for l in open(idx_file) if l.strip()]
     mx = max(idxs) + 1  # frames 0..mx+1 exist
     rd = lambda k: cv2.imread(os.path.join(d, f'{k:06d}.jpg'))
-    for n, i in enumerate(idxs):
-        # resume: skip fully-done triplets
-        s2 = os.path.join(od, f'{i:06d}_s2.jpg')
+
+    def todo(i):
         s4ok = (i - 2 < 0 or i + 2 > mx + 1) or all(
-            os.path.isfile(os.path.join(od, f'{i:06d}_s4t{k}.jpg')) for k in (1, 2, 3))
-        if os.path.isfile(s2) and s4ok:
-            continue
+            f'{i:06d}_s4t{k}.jpg' in have for k in (1, 2, 3))
+        return not (f'{i:06d}_s2.jpg' in have and s4ok)
+
+    def prefetch(i):
         a, b = rd(i - 1), rd(i + 1)
+        ab4 = None
+        if i - 2 >= 0 and i + 2 <= mx + 1:
+            ab4 = (rd(i - 2), rd(i + 2))
+        return a, b, ab4
+
+    work = [i for i in idxs if todo(i)]
+    nxt = readers.submit(prefetch, work[0]) if work else None
+    for n, i in enumerate(work):
+        cur = nxt.result()
+        nxt = readers.submit(prefetch, work[n + 1]) if n + 1 < len(work) else None
+        a, b, ab4 = cur
         if a is None or b is None:
             continue
         out = infer(a, b, [0.5])[0]
-        cv2.imwrite(s2, out, [cv2.IMWRITE_JPEG_QUALITY, 97])
-        if i - 2 >= 0 and i + 2 <= mx + 1:
-            a4, b4 = rd(i - 2), rd(i + 2)
-            if a4 is not None and b4 is not None:
-                outs = infer(a4, b4, [0.25, 0.5, 0.75])
-                for k, o in enumerate(outs, 1):
-                    cv2.imwrite(os.path.join(od, f'{i:06d}_s4t{k}.jpg'), o,
-                                [cv2.IMWRITE_JPEG_QUALITY, 97])
+        writers.submit(cv2.imwrite, os.path.join(od, f'{i:06d}_s2.jpg'), out,
+                       [cv2.IMWRITE_JPEG_QUALITY, 97])
+        if ab4 is not None and ab4[0] is not None and ab4[1] is not None:
+            outs = infer(ab4[0], ab4[1], [0.25, 0.5, 0.75])
+            for k, o in enumerate(outs, 1):
+                writers.submit(cv2.imwrite, os.path.join(od, f'{i:06d}_s4t{k}.jpg'), o,
+                               [cv2.IMWRITE_JPEG_QUALITY, 97])
         total_done += 1
         if total_done % 100 == 0:
             el = time.time() - t00
-            print(f'{stem} {n}/{len(idxs)} | total {total_done} trips '
+            print(f'{stem} {n}/{len(work)} | total {total_done} trips '
                   f'| {el / total_done:.2f} s/trip', flush=True)
+writers.shutdown(wait=True)
+readers.shutdown(wait=True)
 
 print(f'ALL_DONE {total_done} triplets in {(time.time() - t00) / 3600:.2f} h', flush=True)

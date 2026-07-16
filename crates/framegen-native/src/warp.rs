@@ -138,26 +138,36 @@ impl CustomOp2 for BackwardWarpOp {
         let out = unsafe { dev.alloc_uninit(&out_shape, DType::F32)? };
         let out_slice = out.as_cuda_slice::<f32>()?;
 
-        let ptx = cudarc::nvrtc::safe::compile_ptx_with_opts(
-            WARP_CUDA,
-            cudarc::nvrtc::CompileOptions {
-                use_fast_math: Some(true),
-                ..Default::default()
-            },
-        )
-        .map_err(|e| candle_core::Error::Cuda(e.to_string().into()))?;
-        let ptx_src = ptx.to_src();
+        // NVRTC once per process: the kernel source never changes, but this used
+        // to recompile on EVERY call (~10-40ms of host compiler work x 14 warps
+        // per interpolated frame). get_or_load_custom_func caches the loaded
+        // module; the PTX itself caches here.
+        static WARP_PTX: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let ptx_src = if let Some(p) = WARP_PTX.get() {
+            p
+        } else {
+            let ptx = cudarc::nvrtc::safe::compile_ptx_with_opts(
+                WARP_CUDA,
+                cudarc::nvrtc::CompileOptions {
+                    use_fast_math: Some(true),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| candle_core::Error::Cuda(e.to_string().into()))?;
+            WARP_PTX.get_or_init(|| ptx.to_src())
+        };
 
         let func = dev.get_or_load_custom_func(
             "backward_warp_bilinear",
             "backward_warp_bilinear",
-            &ptx_src,
+            ptx_src,
         )?;
 
         let elem = b * c * h * w;
         let cfg = LaunchConfig {
-            grid_dim: (((elem + 255) / 255) as u32, 1, 1),
-            block_dim: (255, 1, 1),
+            // 256 threads: a full warp multiple (255 wasted a lane per group)
+            grid_dim: (((elem + 255) / 256) as u32, 1, 1),
+            block_dim: (256, 1, 1),
             shared_mem_bytes: 0,
         };
 

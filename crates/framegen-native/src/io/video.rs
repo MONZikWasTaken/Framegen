@@ -124,6 +124,10 @@ pub fn interpolate_video(
     in_frames += 1;
 
     let mut buf_cur = vec![0u8; frame_bytes];
+    // cur's tensor becomes next iteration's prev: planarizing + uploading BOTH
+    // frames per pair redid ~11MB of CPU work and H2D for a tensor built last
+    // iteration
+    let mut t_prev: Option<candle_core::Tensor> = None;
     loop {
         let Some(_) = read_exact_or_eof(&mut dec_out, &mut buf_cur)? else {
             break;
@@ -135,7 +139,10 @@ pub fn interpolate_video(
         out_frames += 1;
 
         // emit (times-1) intermediates between prev and cur
-        let t0 = imgutil::raw_rgb24_to_tensor(&buf_prev, w, h, device)?;
+        let t0 = match t_prev.take() {
+            Some(t) => t,
+            None => imgutil::raw_rgb24_to_tensor(&buf_prev, w, h, device)?,
+        };
         let t1 = imgutil::raw_rgb24_to_tensor(&buf_cur, w, h, device)?;
         for k in 1..times {
             let timestep = k as f64 / times as f64;
@@ -154,6 +161,7 @@ pub fn interpolate_video(
             }
         }
         std::mem::swap(&mut buf_prev, &mut buf_cur);
+        t_prev = Some(t1);
     }
     // emit last frame
     enc_in.write_all(&buf_prev)?;

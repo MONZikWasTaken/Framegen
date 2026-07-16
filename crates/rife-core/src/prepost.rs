@@ -12,16 +12,30 @@ pub fn to_input_into(rgb: &[u8], w: u32, h: u32, pw: u32, ph: u32, dst: &mut [f3
     let (w, h) = (w as usize, h as usize);
     let ew = pw as usize; // row stride in the padded plane
     let plane = ph as usize * ew;
-    dst.fill(0.0);
+    // zero the PAD only - the interior is fully overwritten below, and the old
+    // full-plane fill was an ~11MB memset per 720p frame. Contract unchanged:
+    // pad right columns + bottom rows are 0 on return.
+    if w < ew || (h as u32) < ph {
+        for p in 0..3 {
+            let base = p * plane;
+            for y in 0..h {
+                dst[base + y * ew + w..base + (y + 1) * ew].fill(0.0);
+            }
+            dst[base + h * ew..base + plane].fill(0.0);
+        }
+    }
+    // /255 through a 256-entry table: same single-rounded f32 values, the
+    // per-pixel convert+divide leaves the hot loop
+    let lut: [f32; 256] = std::array::from_fn(|v| v as f32 / 255.0);
     for y in 0..h {
         let row = y * ew;
         let srow = y * w * 3;
         for x in 0..w {
             let s = srow + x * 3;
             let o = row + x;
-            dst[o] = rgb[s + 2] as f32 / 255.0; // B
-            dst[plane + o] = rgb[s + 1] as f32 / 255.0; // G
-            dst[2 * plane + o] = rgb[s] as f32 / 255.0; // R
+            dst[o] = lut[rgb[s + 2] as usize]; // B
+            dst[plane + o] = lut[rgb[s + 1] as usize]; // G
+            dst[2 * plane + o] = lut[rgb[s] as usize]; // R
         }
     }
 }

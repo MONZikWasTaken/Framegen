@@ -144,8 +144,11 @@ class V7Data(Dataset):
         if random.random() < 0.5:
             f = [f[2], f[1], f[0], f[3]]
             t = 1.0 - t
+        # uint8 out of the worker: the f32 conversion runs on the GPU after H2D
+        # (same cast + same /255 = bit-identical values), so collate/pin/upload
+        # move 4x fewer bytes per batch
         frames = torch.from_numpy(
-            np.ascontiguousarray(np.stack(f).transpose(0, 3, 1, 2))).float() / 255.0
+            np.ascontiguousarray(np.stack(f).transpose(0, 3, 1, 2)))
         return frames, torch.tensor(t, dtype=torch.float32)
 
 
@@ -217,7 +220,12 @@ def main():
         f"{len(data)} samples ({n_real} real x{args.real_oversample}), {args.steps} steps")
     best = sum(base.values())
 
-    step, t0, run = start_step, time.time(), 0.0
+    step, t0 = start_step, time.time()
+    # loss accumulates as a GPU f64 scalar: .item() every step blocked the CPU
+    # behind the whole step graph (~3-4ms of kernel enqueue the GPU then idles
+    # through). f64 accumulation of f32 losses matches the old Python-float sum
+    # bit for bit; only the logging boundary syncs now.
+    run_t = torch.zeros((), device=device, dtype=torch.float64)
     net.train()
     while step < args.steps:
         for batch, bt in loader:
@@ -225,7 +233,7 @@ def main():
                 break
             for g in opt.param_groups:
                 g["lr"] = lr_at(step)
-            batch = batch.to(device, non_blocking=True)
+            batch = batch.to(device, non_blocking=True).float().div_(255.0)
             t = bt.to(device, non_blocking=True).view(-1, 1, 1, 1)
             img0, gt, img1, tea = batch[:, 0], batch[:, 1], batch[:, 2], batch[:, 3]
             pred, _ = net(img0, img1, t)
@@ -234,13 +242,13 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(net.parameters(), 1.0)
             opt.step()
-            run += loss.item()
+            run_t += loss.detach()
             step += 1
             if step % 200 == 0:
-                log(f"step {step}/{args.steps} loss={run / 200:.4f} "
+                log(f"step {step}/{args.steps} loss={run_t.item() / 200:.4f} "
                     f"lr={lr_at(step):.2e} "
                     f"{(step - start_step) * args.batch / (time.time() - t0):.1f} img/s")
-                run = 0.0
+                run_t.zero_()
             if step % args.eval_every == 0:
                 net.eval()
                 scores = eval_t2(net, eval_sets, device)

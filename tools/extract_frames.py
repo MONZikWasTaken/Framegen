@@ -11,6 +11,7 @@ and the index to  <out>/frames/<stem>/triplets.txt (one frame number per line).
 """
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 
 import cv2
@@ -48,13 +49,21 @@ for movie in movies:
     small_prev = []  # ring of last two 1/4-scale grays
     keep = []
     i = 0
+    # the ~15-25ms/frame JPEG encode capped ingestion at ~45fps on one thread;
+    # imwrite releases the GIL and each frame is a fresh buffer, so a bounded
+    # pool overlaps encodes with the pipe reads + PSNR filter. Per-file encodes
+    # are deterministic - files and triplets.txt come out identical.
+    enc = ThreadPoolExecutor(max_workers=8)
+    inflight = []
     while True:
         buf = proc.stdout.read(W * H * 3)
         if len(buf) < W * H * 3:
             break
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
-        cv2.imwrite(os.path.join(frame_dir, f"{i:06d}.jpg"), frame,
-                    [cv2.IMWRITE_JPEG_QUALITY, 95])
+        inflight.append(enc.submit(cv2.imwrite, os.path.join(frame_dir, f"{i:06d}.jpg"),
+                                   frame, [cv2.IMWRITE_JPEG_QUALITY, 95]))
+        if len(inflight) > 16:  # bound memory: each queued frame holds ~6MB
+            inflight.pop(0).result()
         small = cv2.cvtColor(cv2.resize(frame, (W // 4, H // 4)), cv2.COLOR_BGR2GRAY)
         if len(small_prev) == 2:
             p = psnr_small(small_prev[0], small)  # f[i-2] vs f[i] -> triplet centered at i-1
@@ -62,6 +71,9 @@ for movie in movies:
                 keep.append(i - 1)
         small_prev = (small_prev + [small])[-2:]
         i += 1
+    for f in inflight:
+        f.result()
+    enc.shutdown(wait=True)
     proc.wait()
 
     with open(os.path.join(frame_dir, "triplets.txt"), "w") as f:

@@ -156,8 +156,10 @@ class TripletData(Dataset):
         if random.random() < 0.5:
             f = [f[2], f[1], f[0]]
             t = 1.0 - t  # temporal swap mirrors the timestep
+        # uint8 out of the worker: f32/255 happens on the GPU after H2D
+        # (identical cast + divide = bit-identical), 4x fewer bytes to move
         frames = torch.from_numpy(
-            np.ascontiguousarray(np.stack(f).transpose(0, 3, 1, 2))).float() / 255.0  # [3,C,c,c]
+            np.ascontiguousarray(np.stack(f).transpose(0, 3, 1, 2)))  # [3,C,c,c] u8
         return frames, torch.tensor(t, dtype=torch.float32)
 
 
@@ -295,7 +297,9 @@ def main():
 
     step = 0
     t0 = time.time()
-    run_loss = 0.0
+    # GPU f64 loss accumulator: per-step .item() stalled the CPU behind the
+    # whole step graph; f64 matches the old Python-float sum bit for bit
+    run_t = torch.zeros((), device=device, dtype=torch.float64)
     student.train()
     while step < args.steps:
         for batch, bt in loader:
@@ -303,7 +307,7 @@ def main():
                 break
             for g in opt.param_groups:
                 g["lr"] = lr_at(step)
-            batch = batch.to(device, non_blocking=True)
+            batch = batch.to(device, non_blocking=True).float().div_(255.0)
             t = bt.to(device, non_blocking=True).view(-1, 1, 1, 1)
             img0, gt, img1 = batch[:, 0], batch[:, 1], batch[:, 2]
             tea_out, tea_flow = teacher_forward(teacher, img0, img1, t)
@@ -315,14 +319,14 @@ def main():
             loss.backward()
             torch.nn.utils.clip_grad_norm_(train_params, 1.0)
             opt.step()
-            run_loss += loss.item()
+            run_t += loss.detach()
             step += 1
 
             if step % 100 == 0:
                 ips = step * args.batch / (time.time() - t0)
-                log(f"step {step}/{args.steps} loss={run_loss / 100:.4f} "
+                log(f"step {step}/{args.steps} loss={run_t.item() / 100:.4f} "
                     f"lr={lr_at(step):.2e} {ips:.1f} img/s")
-                run_loss = 0.0
+                run_t.zero_()
             if step % args.eval_every == 0:
                 student.eval()
                 scores = eval_psnr(student, eval_sets, device, scales)

@@ -159,8 +159,10 @@ class MixData(Dataset):
             lo = mid[y // 2:(y + c) // 2, x // 2:(x + c) // 2]
         if rng.random() < 0.5:
             lo, gt = lo[:, ::-1], gt[:, ::-1]
-        to = lambda a: torch.from_numpy(
-            np.ascontiguousarray(a.transpose(2, 0, 1))).float() / 255.0
+        # uint8 out of the worker: the f32/255 conversion runs on the GPU after
+        # H2D (identical cast + divide = bit-identical), 4x fewer bytes through
+        # collate/pin/upload
+        to = lambda a: torch.from_numpy(np.ascontiguousarray(a.transpose(2, 0, 1)))
         return to(lo), to(gt)
 
 
@@ -212,16 +214,22 @@ def build_evals(pairs_root, anime_root, device):
             "anime": sr_pairs(anime, 40), "mid": mids}
 
 
+_BASE_PSNR = {}  # bilinear baselines are weight-independent: compute once
+
+
 @torch.no_grad()
 def evaluate(net, evals):
     res = {}
     for name, pairs in evals.items():
-        sn, sb = [], []
+        sn = []
         for lo, gt in pairs:
             sn.append(psnr_t(net(lo).clamp(0, 1), gt))
-            sb.append(psnr_t(F.interpolate(lo, scale_factor=2, mode="bilinear",
-                                           align_corners=False).clamp(0, 1), gt))
-        res[name] = (float(np.mean(sn)), float(np.mean(sb)))
+        if name not in _BASE_PSNR:
+            _BASE_PSNR[name] = float(np.mean([
+                psnr_t(F.interpolate(lo, scale_factor=2, mode="bilinear",
+                                     align_corners=False).clamp(0, 1), gt)
+                for lo, gt in pairs]))
+        res[name] = (float(np.mean(sn)), _BASE_PSNR[name])
     return res
 
 
@@ -284,7 +292,10 @@ def main():
         f" | {args.steps} steps c={args.channels} mids={args.mid_convs}")
     best = score(r0)
 
-    step, t0, run = 0, time.time(), 0.0
+    step, t0 = 0, time.time()
+    # .item() per step stalled the CPU behind the whole step graph; a GPU f64
+    # scalar accumulates the same sum bit for bit, syncing only at log time
+    run_t = torch.zeros((), device=device, dtype=torch.float64)
     while step < args.steps:
         for lo, gt in loader:
             if step >= args.steps:
@@ -292,18 +303,18 @@ def main():
             lr = 1e-5 + 0.5 * (args.lr - 1e-5) * (1 + math.cos(math.pi * step / args.steps))
             for g in opt.param_groups:
                 g["lr"] = lr
-            lo = lo.to(device, non_blocking=True)
-            gt = gt.to(device, non_blocking=True)
+            lo = lo.to(device, non_blocking=True).float().div_(255.0)
+            gt = gt.to(device, non_blocking=True).float().div_(255.0)
             loss = F.l1_loss(net(lo), gt)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            run += loss.item()
+            run_t += loss.detach()
             step += 1
             if step % 200 == 0:
-                log(f"step {step}/{args.steps} loss={run / 200:.5f} "
+                log(f"step {step}/{args.steps} loss={run_t.item() / 200:.5f} "
                     f"{step * args.batch / (time.time() - t0):.0f} img/s")
-                run = 0.0
+                run_t.zero_()
             if step % args.eval_every == 0:
                 r = evaluate(net, evals)
                 save = as_shipped_state(net) if args.mid_convs == 2 else net.state_dict()
