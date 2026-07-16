@@ -492,6 +492,13 @@ ${[0, 1, 2, 3].map(p => `    {
 // z-slice). Accumulation order (s, ci, ky, kx) matches wgslConv - bit-exact.
 export function wgslConvRBs2(CI, CO, IW, IH, OW, OH, tune) {
   const COC = (tune && tune.coc) || (CO % 8 === 0 ? 8 : 4);
+  // w4 (same insight as wgslConvRB): the thread's 5x5 stride-2 input window
+  // converts to f32 registers ONCE per ci (25 CVTs instead of 36) and weights
+  // stage as pre-widened f32 (0 CVTs instead of 9*COC per ci) - Ada's
+  // quarter-rate f16->f32 CVT leaves the hot loop. Bit-exact: window values
+  // are the same f32(f16) numbers, accumulation order (s, ci, ky, kx) unchanged.
+  const W4 = !!(tune && tune.w4);
+  const WT = W4 ? 'f32' : 'f16';
   const WGX = 8, WGY = 8;
   const OTW = WGX * 2, OTH = WGY * 2;      // 16x16 output tile
   const TW2 = OTW * 2 + 1;                 // input tile row: stride 2 + 3-tap halo
@@ -499,18 +506,28 @@ export function wgslConvRBs2(CI, CO, IW, IH, OW, OH, tune) {
   const NT = WGX * WGY;
   // tile is the shared hog at stride 2 (33x33/ci) - slab down to fit 16KB
   let SLAB = (tune && tune.slab) || 7;
-  while (SLAB > 1 && (SLAB * TS + COC * SLAB * 9) * 2 > 16384) SLAB--;
+  while (SLAB > 1 && SLAB * TS * 2 + COC * SLAB * 9 * (W4 ? 4 : 2) > 16384) SLAB--;
   const slabW = COC * SLAB * 9;
   const slabT = SLAB * TS;
+  // 5x5 window registers u{r}{c}: outputs (p0..p3) read rows/cols {r,r+2}
+  const WIN = Array.from({ length: 5 }, (_, r) =>
+    `      let u${r}0 = f32(tile[tb + ${r * TW2}]); let u${r}1 = f32(tile[tb + ${r * TW2 + 1}]); let u${r}2 = f32(tile[tb + ${r * TW2 + 2}]); let u${r}3 = f32(tile[tb + ${r * TW2 + 3}]); let u${r}4 = f32(tile[tb + ${r * TW2 + 4}]);`).join('\n');
+  const TAPS = [0, 1, 2].map(ky => [0, 1, 2].map(kx => `      {
+        let wb = ci * 9 + ${ky * 3 + kx};
+${Array.from({ length: COC }, (_, c) => `        {
+          let wv = wsh[${c} * (sl * 9) + wb];
+          a${c}0 += u${ky}${kx} * wv; a${c}1 += u${ky}${kx + 2} * wv; a${c}2 += u${ky + 2}${kx} * wv; a${c}3 += u${ky + 2}${kx + 2} * wv;
+        }`).join('\n')}
+      }`).join('\n')).join('\n');
   return /* wgsl */`
 enable f16;
 @group(0) @binding(0) var<storage, read> src: array<f16>;
-@group(0) @binding(1) var<storage, read> wgt: array<f16>;
+@group(0) @binding(1) var<storage, read> wgt: array<${WT}>;
 @group(0) @binding(2) var<storage, read> bias: array<f32>;
 @group(0) @binding(3) var<storage, read> alpha: array<f32>;
 @group(0) @binding(4) var<storage, read_write> dst: array<f16>;
 
-var<workgroup> wsh: array<f16, ${slabW}>;
+var<workgroup> wsh: array<${WT}, ${slabW}>;
 var<workgroup> tile: array<f16, ${slabT}>;
 
 @compute @workgroup_size(${WGX}, ${WGY}, 1)
@@ -555,7 +572,8 @@ ${Array.from({ length: COC }, (_, c) =>
       // this thread's 2x2 outputs read input rows ly*4+ky and ly*4+ky+2,
       // cols lx*4+kx and lx*4+kx+2 (stride-2 neighbors)
       let tb = ci * ${TS} + (ly * 4) * ${TW2} + lx * 4;
-      for (var ky = 0; ky < 3; ky++) {
+${W4 ? `${WIN}
+${TAPS}` : `      for (var ky = 0; ky < 3; ky++) {
         let rb = tb + ky * ${TW2};
         for (var kx = 0; kx < 3; kx++) {
           let t00 = f32(tile[rb + kx]);
@@ -568,7 +586,7 @@ ${Array.from({ length: COC }, (_, c) => `          {
             a${c}0 += t00 * wv; a${c}1 += t01 * wv; a${c}2 += t10 * wv; a${c}3 += t11 * wv;
           }`).join('\n')}
         }
-      }
+      }`}
     }
   }
 ${Array.from({ length: COC }, (_, c) => `  {
@@ -1213,7 +1231,11 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // one pipeline shared by all weight conversions
   const pToF16 = useF16 ? pipe(WGSL_TO_F16) : null;
   const needW4 = useF16 && convTune && convTune.w4;
-  const pToF32 = needW4 ? pipe(WGSL_TO_F32) : null;
+  // conv0b's stride-2 shape is tuned separately (convTune.s2); tunes persisted
+  // before the s2 sweep existed fall back to mirroring the cb w4 flag
+  const s2Tune = useF16 ? ((convTune && convTune.s2) || (needW4 ? { w4: true } : null)) : null;
+  const s2W4 = !!(s2Tune && s2Tune.w4);
+  const pToF32 = (needW4 || s2W4) ? pipe(WGSL_TO_F32) : null;
   const convW = (name) => {
     if (!useF16) return wbuf[name];
     const n = man[name].shape.reduce((a, b) => a * b, 1);
@@ -1235,9 +1257,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // convblock weights for w4 kernels: widen the f16 copy back to f32 (bit-exact
   // f32(f16(w)) - the same values the legacy kernel computes with, minus the
   // per-use CVT). The f16 intermediate is released once widened.
-  const cbW = (name) => {
+  const cbW = (name, widen = needW4) => {
     const half = convW(name);
-    if (!needW4) return half;
+    if (!widen) return half;
     const n = man[name].shape.reduce((a, b) => a * b, 1);
     const wide = bufBytes(n * 4);
     const enc = device.createCommandEncoder();
@@ -1296,7 +1318,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     pipeAsync(tfact ? wgslPrepQuarterTex6(w, h, useF16)
       : (textureInput ? wgslPrepQuarterTex(w, h, useF16) : wgslPrepQuarter(w, h, useF16))),
     pipeAsync(wgslConv(CI0, C1, QW, QH, W8, H8, 2, false, useF16)),
-    pipeAsync(useF16 ? wgslConvRBs2(C1, C2, W8, H8, W16, H16, null)
+    pipeAsync(useF16 ? wgslConvRBs2(C1, C2, W8, H8, W16, H16, s2Tune)
                      : wgslConv(C1, C2, W8, H8, W16, H16, 2, false, false)),
     pipeAsync(useF16
       ? (sgTuned ? wgslConvRBSg : wgslConvRB)(C2, C2, W16, H16, W16, H16, false, convTune)
@@ -1478,7 +1500,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // snapshotted with a per-pair copy; cb7 reads it untouched (the a/b ping-pong
   // never writes f16r). Likewise tfact's cb5 stashes the trunk straight into
   // hbuf - both copyBufferToBuffer round trips of the old wiring are gone.
-  const bgConv0b = bg(pConv0b, [f8, convW('block0.conv0.1.0.weight'), wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16r]);
+  // w4 conv0b reads pre-widened f32 weights (cbW == convW when s2 w4 is off)
+  const bgConv0b = bg(pConv0b, [f8, cbW('block0.conv0.1.0.weight', s2W4), wbuf['block0.conv0.1.0.bias'], wbuf['block0.conv0.1.1.weight'], f16r]);
   const bgB = [];
   {
     let cbSrc = f16r, cbDst = f16a;
@@ -1514,10 +1537,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const cbX = useF16 ? Math.ceil(W16 / cbTX) : gx(W16);
   const cbY = useF16 ? Math.ceil(H16 / cbTY) : gx(H16);
   const cbZ = useF16 ? C2 / ((convTune && convTune.coc) || 4) : C2 / 4;
-  // stride-2 RB conv0b covers a 16x16 output tile per wg with COC=8 blocks
+  // stride-2 RB conv0b covers a 16x16 output tile per wg; COC comes from the tune
   const c0bX = useF16 ? Math.ceil(W16 / 16) : gx(W16);
   const c0bY = useF16 ? Math.ceil(H16 / 16) : gx(H16);
-  const c0bZ = useF16 ? C2 / (C2 % 8 === 0 ? 8 : 4) : C2 / 4;
+  const c0bZ = useF16 ? C2 / ((s2Tune && s2Tune.coc) || (C2 % 8 === 0 ? 8 : 4)) : C2 / 4;
 
   // per-stage GPU times via timestamp queries (needs 'timestamp-query' on the device)
   async function profile(rgbaA, rgbaB) {
@@ -1820,7 +1843,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
 // Returns the fastest {coc, slab, ms}. ~200-400ms of GPU time; call it once per
 // (adapter, model width, resolution) and persist the answer - relative ranking
 // is what matters, so light background load is tolerable.
-export async function tuneConvRB(device, { ci, co, w16, h16 }) {
+export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
   const shared = (v) => {
     const ts = ((v.wgx || 8) * 2 + 2) * ((v.wgy || 8) * 2 + 2);
     return v.slab * ts * 2 + (v.sg ? 0 : v.coc * v.slab * 9 * (v.w4 ? 4 : 2));
@@ -1831,6 +1854,9 @@ export async function tuneConvRB(device, { ci, co, w16, h16 }) {
     // ~12% SM occupancy (shared-limited) - these trade tile reuse for latency hiding
     { coc: 4, slab: 12, wgx: 16, wgy: 8 }, { coc: 8, slab: 8, wgx: 16, wgy: 8 },
     { coc: 8, slab: 10, wgx: 16, wgy: 8 }, { coc: 4, slab: 6, wgx: 16, wgy: 16 },
+    // coc16: halves the z-slices re-staging the same tile - on Ada it beat coc8
+    // by 12% at 1080p (0.408 -> 0.353 isolated); coc24 spills registers, skip
+    { coc: 16, slab: 8 }, { coc: 16, slab: 8, wgx: 16, wgy: 8 },
   ].filter(v => co % v.coc === 0 && shared(v) <= 16384);
   // subgroup variants (weights via subgroupBroadcastFirst, no shared staging):
   // measured +20% at the 360p grid and -19% at 720p/coc8 on a 4060 Ti - exactly
@@ -1878,6 +1904,45 @@ export async function tuneConvRB(device, { ci, co, w16, h16 }) {
     run(30); await device.queue.onSubmittedWorkDone();
     const ms = (performance.now() - t0) / 30;
     if (!best || ms < best.ms) best = { ...v, ms };
+  }
+  // stride-2 sweep (conv0b shape: s2ci -> co, input 2x grid): the winner rides
+  // along as best.s2. Measured on Ada: w4+coc16 took conv0b 0.77 -> 0.46ms @1080p
+  // (coc16 halves the z-slices, w4 evicts the quarter-rate CVTs) - but per-GPU
+  // truth comes from here, never hardcoded.
+  if (s2ci && co % 8 === 0) {
+    const iw = w16 * 2, ih = h16 * 2;
+    const s2src = buf(s2ci * iw * ih * 2);
+    const s2v = [{ coc: 8 }, { coc: 16 }, { coc: 8, w4: true }, { coc: 16, w4: true }]
+      .filter(v => co % v.coc === 0);
+    const s2p = await Promise.all(s2v.map(v => device.createComputePipelineAsync({
+      layout: 'auto', compute: { module: device.createShaderModule({
+        code: wgslConvRBs2(s2ci, co, iw, ih, w16, h16, v) }), entryPoint: 'main' } })));
+    let s2best = null;
+    for (let vi = 0; vi < s2v.length; vi++) {
+      const v = s2v[vi];
+      const bg = device.createBindGroup({ layout: s2p[vi].getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: s2src } },
+        { binding: 1, resource: { buffer: v.w4 ? wgt32 : wgt } },
+        { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
+        { binding: 4, resource: { buffer: dst } }] });
+      const run = (k) => {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(s2p[vi]); pass.setBindGroup(0, bg);
+        for (let i = 0; i < k; i++) {
+          pass.dispatchWorkgroups(Math.ceil(w16 / 16), Math.ceil(h16 / 16), co / v.coc);
+        }
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      };
+      run(3); await device.queue.onSubmittedWorkDone();
+      const t0 = performance.now();
+      run(30); await device.queue.onSubmittedWorkDone();
+      const ms = (performance.now() - t0) / 30;
+      if (!s2best || ms < s2best.ms) s2best = { ...v, ms };
+    }
+    s2src.destroy();
+    best.s2 = { coc: s2best.coc, w4: !!s2best.w4, ms: s2best.ms };
   }
   [src, dst, wgt, wgt32, bias, alpha].forEach(b => b.destroy());
   return best;

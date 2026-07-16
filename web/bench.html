@@ -94,8 +94,9 @@ async function bench() {
     const mod = await import(path + '?v=' + Date.now());
     let convTune = null;
     if (Q.get('tune') === '1') { // what the extension runs after idle calibration - each module tunes itself
+      const C1 = man['block0.conv0.0.0.weight'].shape[0];
       const C2 = man['block0.conv0.1.0.weight'].shape[0];
-      convTune = await mod.tuneConvRB(device, { ci: C2, co: C2, w16: MW / 16, h16: MH / 16 });
+      convTune = await mod.tuneConvRB(device, { ci: C2, co: C2, w16: MW / 16, h16: MH / 16, s2ci: C1 });
       log(modName + ' convTune: ' + JSON.stringify(convTune));
     }
     const rt = await mod.createRT(device, { w: MW, h: MH, weightsBin: bin, weightsManifest: man,
