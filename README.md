@@ -16,7 +16,7 @@ your GPU. No servers, no accounts, nothing leaves your computer.
 <img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framegen x4 interpolation, side by side">
 
 *Real output of the shipped model (v7 small), not a mockup. In the browser
-this runs in real time: 3.75 ms per generated frame at 720p on an RTX 4060 Ti.*
+this runs in real time: 2.0 ms per generated frame at 720p on an RTX 4060 Ti.*
 
 https://github.com/user-attachments/assets/87fe417d-e161-40d9-8007-ac83edafcbb1
 
@@ -42,7 +42,7 @@ HUD - recorded at 60 fps on an RTX 4060 Ti.
 - **Private by construction** - the whole pipeline runs on your GPU; we collect
   literally nothing
 
-An interpolated frame costs ~3 ms on a mid-range GPU (RTX 4060 Ti) - the
+An interpolated frame costs ~2 ms on a mid-range GPU (RTX 4060 Ti) - the
 model and inference runtime are custom-built for this (a 2.9 MB network on
 hand-written WebGPU kernels; details in [docs/TECHNICAL.md](docs/TECHNICAL.md)).
 
@@ -157,8 +157,8 @@ Full API and notes: [packages/rt](packages/rt). Working example: [framegen-fps-b
 A distilled RIFE-family student (2.9 MB) runs on a hand-written WGSL runtime -
 raw WebGPU compute shaders, no ML framework, matching the PyTorch reference to
 1 LSB. The pipeline is fully GPU-resident: frames never cross to the CPU. From
-the first naive browser attempt to today is a **×200-330 speedup**
-(1957 ms → 2.6-3.75 ms per frame).
+the first naive browser attempt to today is a **×500-980 speedup**
+(1957 ms → 2.0-3.75 ms per frame, 720p-1080p).
 
 Full story, numbers, model ladder and training instructions:
 **[docs/TECHNICAL.md](docs/TECHNICAL.md)**
