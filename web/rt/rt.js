@@ -824,7 +824,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // pass disappear, and the source is resampled ONCE (warp) instead of twice
 // (copy then warp) - sharper mids for less bandwidth. Filter precision is the
 // sampler's (~8-bit subtexel) - same +-1 LSB class as the rgba8 store above.
-function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false) {
+function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 16, WGY = 8) {
   // v2: tmp8 lives in two rgba16float textures (flow 4ch + mask) written by the
   // deconv - ONE hw bilinear sample replaces the 4-tap software up() per plane
   // (20 buffer reads -> 2 samples), and the refine residual is a texture too.
@@ -864,7 +864,7 @@ fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
   return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r like the buffer path
 }
 
-@compute @workgroup_size(${WG}, ${WG})
+@compute @workgroup_size(${WGX}, ${WGY})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
   if (x >= ${W} || y >= ${H}) { return; }
@@ -1207,9 +1207,14 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const direct = textureInput && textureOutput;
   const Z0A = C1 % 4 === 0 ? C1 / 4 : C1; // conv0a kernel packs 4 channels only when C1 is /4
 
-  const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => device.createBuffer({
-    size: Math.ceil(bytes / 4) * 4,
-    usage: usage | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+  const allBufs = []; // everything bufBytes made - destroy() releases the lot
+  const bufBytes = (bytes, usage = GPUBufferUsage.STORAGE) => {
+    const b = device.createBuffer({
+      size: Math.ceil(bytes / 4) * 4,
+      usage: usage | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
+    allBufs.push(b);
+    return b;
+  };
   const buf = (n) => bufBytes(n * 4);
   const abuf = (n) => bufBytes(n * (useF16 ? 2 : 4)); // activation dtype
 
@@ -1236,21 +1241,35 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const s2Tune = useF16 ? ((convTune && convTune.s2) || (needW4 ? { w4: true } : null)) : null;
   const s2W4 = !!(s2Tune && s2Tune.w4);
   const pToF32 = (needW4 || s2W4) ? pipe(WGSL_TO_F32) : null;
+  // ALL weight conversions record into one encoder and go out in ONE submit
+  // (convFlush below) - the old one-submit-per-tensor pattern cost ~60 driver
+  // round-trips at init. Retired intermediates are released after that submit.
+  let convEnc = null, convPass = null;
+  const convRetire = [];
+  const convDispatch = (p, srcB, dstB, n) => {
+    if (!convEnc) { convEnc = device.createCommandEncoder(); convPass = convEnc.beginComputePass(); }
+    convPass.setPipeline(p);
+    convPass.setBindGroup(0, bg(p, [srcB, dstB]));
+    convPass.dispatchWorkgroups(Math.ceil(n / 256));
+  };
+  const convFlush = () => {
+    if (!convEnc) return;
+    convPass.end();
+    device.queue.submit([convEnc.finish()]);
+    convEnc = null; convPass = null;
+    // destroy AFTER the submit that consumes them (destroy before submit would
+    // invalidate the recorded encoder)
+    convRetire.forEach(b => b.destroy());
+    convRetire.length = 0;
+  };
   const convW = (name) => {
     if (!useF16) return wbuf[name];
     const n = man[name].shape.reduce((a, b) => a * b, 1);
     const half = bufBytes(n * 2);
-    const p = pToF16;
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(p);
-    pass.setBindGroup(0, bg(p, [wbuf[name], half]));
-    pass.dispatchWorkgroups(Math.ceil(n / 256));
-    pass.end();
-    device.queue.submit([enc.finish()]);
-    // the f32 original is never bound again - release it (destroy is deferred
-    // past the submitted conversion by the spec). ~3MB (v7s) to 18MB (full) VRAM.
-    wbuf[name].destroy();
+    convDispatch(pToF16, wbuf[name], half, n);
+    // the f32 original is never bound again - release it after the conversion
+    // submit. ~3MB (v7s) to 18MB (full) VRAM.
+    convRetire.push(wbuf[name]);
     wbuf[name] = null;
     return half;
   };
@@ -1262,14 +1281,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     if (!widen) return half;
     const n = man[name].shape.reduce((a, b) => a * b, 1);
     const wide = bufBytes(n * 4);
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pToF32);
-    pass.setBindGroup(0, bg(pToF32, [half, wide]));
-    pass.dispatchWorkgroups(Math.ceil(n / 256));
-    pass.end();
-    device.queue.submit([enc.finish()]);
-    half.destroy();
+    convDispatch(pToF32, half, wide, n);
+    convRetire.push(half);
     return wide;
   };
 
@@ -1294,6 +1307,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const outp = textureOutput ? null : buf(w * h);
   const staging = textureOutput ? null
     : device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  if (staging) allBufs.push(staging);
   // slots for batched multi-t runs (factor N: upload once, N-1 mids in ONE submit)
   const MAXT = 5;
   const tbufs = [], stagings = [];
@@ -1301,6 +1315,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     tbufs.push(buf(1));
     if (!textureOutput) {
       stagings.push(device.createBuffer({ size: w * h * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }));
+      allBufs.push(stagings[stagings.length - 1]);
     }
   }
 
@@ -1313,6 +1328,28 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const pipeAsync = (code, entry = 'main') => device.createComputePipelineAsync({
     layout: 'auto', compute: { module: mod(code), entryPoint: entry } });
   const sgTuned = convTune && convTune.sg && device.features.has('subgroups');
+  // refine head geometry (needed by the pipeline batch below)
+  const RW4 = w / 4, RH4 = h / 4;
+  const rSparse = refi && sparseRefine;
+  const RTXT = Math.ceil(RW4 / 8), RTYT = Math.ceil(RH4 / 8), RTT = RTXT * RTYT;
+  let RC = 0, RCOC = 4;
+  let refinePipesP = null;
+  if (refi) {
+    RC = man['refine.c0.weight'].shape[0];
+    RCOC = RC % 8 === 0 ? 8 : 4; // wider block halves tile re-staging
+    // the refine convs are dispatched with z = RC/RCOC below, and wgslConv only
+    // packs 4-wide when CO % 4 == 0 - a non-/4 head would silently mis-dispatch
+    if (RC % 4 !== 0) throw new Error('rt: refine channels must be a multiple of 4, got ' + RC);
+    const sp = (l) => rSparse ? { lbase: l * RTT, txt: RTXT } : null;
+    refinePipesP = Promise.all([
+      pipeAsync(wgslRefinePrep(w, h, useF16, rSparse)),
+      pipeAsync(wgslConv(11, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(0), RCOC)),
+      pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(1), RCOC)),
+      rSparse ? pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(2), RCOC)) : null,
+      pipeAsync(wgslRefineOut(RC, RW4, RH4, useF16, sp(3))),
+      rSparse ? pipeAsync(wgslRefineTiles(RTT, RTXT, RTYT, RC / RCOC, refineThr)) : null,
+    ]);
+  }
   const [pPrepFull, pPrepQ, pConv0a, pConv0b, pConvB, pConvBR, pDeconv, pFlow, pDiff, pConvB6] = await Promise.all([
     direct ? null : pipeAsync(textureInput ? wgslPrepFullTex(w, h) : wgslPrepFull(w, h)),
     pipeAsync(tfact ? wgslPrepQuarterTex6(w, h, useF16)
@@ -1419,45 +1456,31 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
               w2: f32('film.2.weight'), b2: f32('film.2.bias') };
   }
   // tfact2 refine head: occlusion repair at QUARTER res; the residual is folded
-  // into the flowout pass (withRes)
-  const RW4 = w / 4, RH4 = h / 4;
+  // into the flowout pass (withRes). Geometry + pipeline kicks live above the
+  // main await; only buffers/bind groups build here.
   let pRPrep = null, pRC0 = null, pRC1 = null, pRC2 = null, pROut = null, pRTiles = null;
   let bgRPrep = null, bgRC0 = null, bgRC1 = null, bgRC2 = null, bgROut = null, bgRTiles = null;
-  let RC = 0, RCOC = 4, rRes = null, rResT = null, rResV = null, rStat = null, rInd = null;
+  let rRes = null, rResT = null, rResV = null, rStat = null, rInd = null;
   // sparse refine: the occlusion-repair head only matters where the two warps
   // DISAGREE. rprep tags 8x8 tiles by max disagreement, a tiny scheduler pass
   // thresholds + dilates the set (halo validity per chained conv) and writes the
   // dispatchWorkgroupsIndirect args - the conv chain then runs on active tiles
   // only, all GPU-side. Calm scene => the refine convs dispatch ZERO workgroups.
   // rRes is cleared per mid, so skipped tiles get residual 0 == "no repair".
-  const rSparse = refi && sparseRefine;
-  const RTXT = Math.ceil(RW4 / 8), RTYT = Math.ceil(RH4 / 8), RTT = RTXT * RTYT;
   if (refi) {
-    RC = man['refine.c0.weight'].shape[0];
-    RCOC = RC % 8 === 0 ? 8 : 4; // wider block halves tile re-staging
-    // the refine convs are dispatched with z = RC/4 below, and wgslConv only
-    // packs 4-wide when CO % 4 == 0 - a non-/4 head would silently mis-dispatch
-    if (RC % 4 !== 0) throw new Error('rt: refine channels must be a multiple of 4, got ' + RC);
     const rIn = abuf(11 * RH4 * RW4);
     const rA2 = abuf(RC * RH4 * RW4);
     const rB2 = abuf(RC * RH4 * RW4);
     rResT = device.createTexture({ size: [RW4, RH4], format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
     rResV = rResT.createView();
-    const sp = (l) => rSparse ? { lbase: l * RTT, txt: RTXT } : null;
     if (rSparse) {
       rStat = buf(RTT);
       rInd = device.createBuffer({ size: 64, // [4][x,y,z,pad] dispatch args
         usage: GPUBufferUsage.INDIRECT | GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      allBufs.push(rInd);
     }
-    [pRPrep, pRC0, pRC1, pRC2, pROut, pRTiles] = await Promise.all([
-      pipeAsync(wgslRefinePrep(w, h, useF16, rSparse)),
-      pipeAsync(wgslConv(11, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(0), RCOC)),
-      pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(1), RCOC)),
-      rSparse ? pipeAsync(wgslConv(RC, RC, RW4, RH4, RW4, RH4, 1, false, useF16, sp(2), RCOC)) : null,
-      pipeAsync(wgslRefineOut(RC, RW4, RH4, useF16, sp(3))),
-      rSparse ? pipeAsync(wgslRefineTiles(RTT, RTXT, RTYT, RC / RCOC, refineThr)) : null,
-    ]);
+    [pRPrep, pRC0, pRC1, pRC2, pROut, pRTiles] = await refinePipesP;
     const rLists = rSparse ? buf(4 * RTT) : null;
     { // rprep reads the deconv textures; sources ride group(1) per pair (rprepTex)
       const e = [{ binding: 0, resource: t8fV }, { binding: 1, resource: t8mV },
@@ -1531,6 +1554,10 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   const bgFlow = textureOutput ? null : bg(pFlow, [tmp8, imgs, outp]);
 
   const gx = (n) => Math.ceil(n / WG);
+  // direct flowout runs 16x8 (128 threads): the pure-bandwidth full-res pass
+  // hides memory latency better than the 64-thread square on Ada
+  const fgx = direct ? Math.ceil(w / 16) : gx(w);
+  const fgy = direct ? Math.ceil(h / 8) : gx(h);
   // register-blocked convblock kernel covers a (2*wgx)x(2*wgy) output tile per wg
   const cbTX = ((convTune && convTune.wgx) || 8) * 2;
   const cbTY = ((convTune && convTune.wgy) || 8) * 2;
@@ -1587,6 +1614,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     if (!device.features.has('timestamp-query')) return 'no timestamp-query feature';
     const tp = texPrepBgs(texA, texB);
     device.queue.writeBuffer(filmBuf, 0, filmParams(t));
+    lastFilmT = t;
     const stages = [];
     const st = (name, fn) => stages.push([name, fn]);
     if (sdiff) st('diff', (p) => { p.setPipeline(pDiff); p.setBindGroup(0, tp.diff); p.dispatchWorkgroups(gx(w), gx(h)); });
@@ -1616,7 +1644,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       }
     }
     if (outTex) {
-      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(gx(w), gx(h)); });
+      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(fgx, fgy); });
     }
     const qs = device.createQuerySet({ type: 'timestamp', count: stages.length * 2 });
     const qbuf = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
@@ -1716,7 +1744,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pass2.setPipeline(pFlow);
       pass2.setBindGroup(0, textureOutput ? flowBgFor(outTexs[i]) : bgFlow);
       if (direct) pass2.setBindGroup(1, tbg.flowTex);
-      pass2.dispatchWorkgroups(gx(w), gx(h));
+      pass2.dispatchWorkgroups(fgx, fgy);
       pass2.end();
       if (!textureOutput) enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
     }
@@ -1739,6 +1767,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // just-in-time so present blits interleave with computes - the required
   // presentation delay shrinks from ~2x batch time to ~one mid time.
   let curPrep = null;
+  let lastFilmT = NaN; // filmBuf holds this t's params; x2 runs hit 0.5 every mid
   function prepPair(a, b) {
     if (!textureInput) throw new Error('prepPair: texture-input mode only');
     curPrep = texPrepBgs(a, b);
@@ -1774,7 +1803,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     const enc = device.createCommandEncoder();
     if (tfact) {
       // per-mid: FiLM(t) + convblocks 6,7 (+feat0 residual) + deconv + flow
-      device.queue.writeBuffer(filmBuf, 0, filmParams(t));
+      if (t !== lastFilmT) { device.queue.writeBuffer(filmBuf, 0, filmParams(t)); lastFilmT = t; }
       if (rSparse) { // stats/args reset per mid; the residual texture clears via
         // the render-pass fast path (the old clearBuffer moved 691KB per mid)
         enc.clearBuffer(rStat); enc.clearBuffer(rInd);
@@ -1810,7 +1839,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       }
       pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex));
       pass.setBindGroup(1, curPrep.flowTex); // 'auto' layouts are pipeline-unique - rebind
-      pass.dispatchWorkgroups(gx(w), gx(h));
+      pass.dispatchWorkgroups(fgx, fgy);
       pass.end();
       device.queue.submit([enc.finish()]);
       return;
@@ -1830,12 +1859,24 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8));
     pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex));
     pass2.setBindGroup(1, curPrep.flowTex); // direct warp sources (runT implies texture in+out)
-    pass2.dispatchWorkgroups(gx(w), gx(h));
+    pass2.dispatchWorkgroups(fgx, fgy);
     pass2.end();
     device.queue.submit([enc.finish()]);
   }
 
-  return { run, runMulti, prepPair, runT, profile, profileT, w, h };
+  convFlush(); // all weight conversions leave in one submit
+  // explicit release: a res/model rebuild otherwise doubles ~10-20MB of VRAM
+  // until GC finds the old runtime (buffer destroy is safe while submitted
+  // work is still in flight - the spec defers the actual free)
+  function destroy() {
+    convFlush();
+    allBufs.forEach(b => b.destroy());
+    allBufs.length = 0;
+    [t8f, t8m, rResT].forEach(t => { if (t) t.destroy(); });
+    flowBgCache.clear();
+    texBgCache.clear();
+  }
+  return { run, runMulti, prepPair, runT, profile, profileT, destroy, w, h };
 }
 
 
@@ -1881,11 +1922,15 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
       module: device.createShaderModule({ code: gen(ci, co, w16, h16, w16, h16, false, v) }),
       entryPoint: 'main' } });
   }));
+  // NOTE: a two-phase prune (short pass -> finalists) was tried and REVERTED:
+  // 8-dispatch rankings are noisy enough to drop the true winner (measured
+  // picking a non-w4 kernel, +20% on the 2x cycle). The tuner runs once per
+  // (gpu, res, model) at an idle moment - correctness beats burst length.
   let best = null;
   for (let vi = 0; vi < variants.length; vi++) {
     const v = variants[vi];
     const p = pipes[vi];
-    const bg = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
+    const bgV = device.createBindGroup({ layout: p.getBindGroupLayout(0), entries: [
       { binding: 0, resource: { buffer: src } },
       { binding: 1, resource: { buffer: v.w4 ? wgt32 : wgt } },
       { binding: 2, resource: { buffer: bias } }, { binding: 3, resource: { buffer: alpha } },
@@ -1893,7 +1938,7 @@ export async function tuneConvRB(device, { ci, co, w16, h16, s2ci }) {
     const run = (k) => {
       const enc = device.createCommandEncoder();
       const pass = enc.beginComputePass();
-      pass.setPipeline(p); pass.setBindGroup(0, bg);
+      pass.setPipeline(p); pass.setBindGroup(0, bgV);
       const tx = ((v.wgx || 8) * 2), ty = ((v.wgy || 8) * 2);
       for (let i = 0; i < k; i++) pass.dispatchWorkgroups(Math.ceil(w16 / tx), Math.ceil(h16 / ty), co / v.coc);
       pass.end();

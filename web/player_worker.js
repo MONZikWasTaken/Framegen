@@ -306,6 +306,14 @@ async function buildSession(rung) {
   }
   return { rt, W, H, ms: 0, midTexs, midIdx: 0 };
 }
+function destroySession(key) {
+  const S = sessions.get(key);
+  if (!S) return;
+  sessions.delete(key);
+  if (S.rt.destroy) S.rt.destroy();
+  S.midTexs.forEach(t => t.destroy());
+  blitBgCache.clear(); // cached blit bind groups may reference destroyed mids
+}
 async function ensureRung(key) {
   if (sessions.has(key) || buildingKey === key) return;
   buildingKey = key;
@@ -313,6 +321,20 @@ async function ensureRung(key) {
   try {
     sessions.set(key, await buildSession(rung));
     postMessage({ type: 'log', msg: 'rung ' + key + ' ready' });
+    // evict idle rungs: >4 sessions alive is tens of MB of VRAM going nowhere.
+    // Only rungs untouched for 5s+ qualify - their mids are long out of the
+    // display queue, so destroying textures cannot hit an in-flight present.
+    if (sessions.size > 4) {
+      const now = performance.now();
+      for (const [k, S] of sessions) {
+        if (k === key || k === activeKey) continue;
+        if ((S.lastUsed || 0) < now - 5000 && (!curJob || curJob.S !== S)) {
+          destroySession(k);
+          postMessage({ type: 'log', msg: 'rung ' + k + ' evicted (idle)' });
+          break;
+        }
+      }
+    }
   } catch (e) {
     postMessage({ type: 'log', msg: 'rung ' + key + ' unavailable: ' + String(e.message || e).slice(0, 120) });
     rung.est = 1e9;
@@ -409,6 +431,7 @@ function runPair(job) {
     const ts = [];
     for (let k = 1; k < n; k++) ts.push(k / n);
     S.rt.prepPair(job.a, job.b);
+    S.lastUsed = performance.now();
     curJob = { S, ts, next: 0, at: job.at };
     midCfg = job.key + (n > 2 ? ' ×' + n : '');
   } catch (e) {

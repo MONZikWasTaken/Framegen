@@ -190,6 +190,10 @@
       classifyAdapter(adapter);
     }
     if (rt && rtRes === cfg.res && rtModel === cfg.model) return;
+    if (rt && rt.destroy) { // free the old runtime's VRAM now, not at GC time
+      try { rt.destroy(); } catch {}
+      rt = null;
+    }
     const url = (p) => chrome.runtime.getURL(p);
     // tfact2 family: t-factored student + quarter-res refine head; the runtime
     // autodetects the trunk width from the manifest, so models are weight swaps
