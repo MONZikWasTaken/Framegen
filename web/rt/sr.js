@@ -152,6 +152,44 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   // the caller keeps presenting un-upscaled frames until the pipelines are ready
   // (a sync build here froze the page right as SR engaged).
   const states = new Map();
+  // the trunk's convTune was measured at the TRUNK shape (96-240ch, H/16 grid);
+  // the SR convs run 16ch at FULL video res where wider channel blocks win
+  // (fewer z-slices re-staging the same tile: mid coc16 -11%, out z=1 -34%
+  // measured on Ada). Candidates are few - bench them on the real size during
+  // the async state build (kernel speed does not depend on weight values) and
+  // keep the winner. Same kernel family, same accumulation order: bit-exact.
+  async function pickConv(cands, srcB, dstB, wName, w, h) {
+    const pipes = await Promise.all(cands.map(v => pipeAsync(
+      (v.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(
+        v.ci, v.co, w, h, w, h, false, v.tune))));
+    let best = null;
+    for (let i = 0; i < cands.length; i++) {
+      const v = cands[i];
+      const bgB = device.createBindGroup({ layout: pipes[i].getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: srcB } },
+        { binding: 1, resource: { buffer: wbufH[wName] } },
+        { binding: 2, resource: { buffer: wbuf[wName.replace('.weight', '.bias')] } },
+        { binding: 3, resource: { buffer: v.alpha } },
+        { binding: 4, resource: { buffer: dstB } }] });
+      const tx = ((v.tune.wgx || 8) * 2), ty = ((v.tune.wgy || 8) * 2);
+      const run = (k) => {
+        const enc = device.createCommandEncoder();
+        const pass = enc.beginComputePass();
+        pass.setPipeline(pipes[i]); pass.setBindGroup(0, bgB);
+        for (let j = 0; j < k; j++) {
+          pass.dispatchWorkgroups(Math.ceil(w / tx), Math.ceil(h / ty), v.co / v.tune.coc);
+        }
+        pass.end();
+        device.queue.submit([enc.finish()]);
+      };
+      run(3); await device.queue.onSubmittedWorkDone();
+      const t0 = performance.now();
+      run(20); await device.queue.onSubmittedWorkDone();
+      const ms = (performance.now() - t0) / 20;
+      if (!best || ms < best.ms) best = { pipe: pipes[i], tune: v.tune, ms };
+    }
+    return best;
+  }
   function stateFor(w, h) {
     const k = w + 'x' + h;
     const st = states.get(k);
@@ -165,10 +203,29 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
       const fb = bufN(C * w * h * 2);
       const det = bufN(C4 * w * h * 2);
       const outCoc = C4 % 8 === 0 ? 8 : C4 % 4 === 0 ? 4 : 1; // CO must divide
-      const [pMid, pOutConv, pShuf] = await Promise.all([
-        pipeAsync(RB(C, C, w, h, w, h, false, convTune)),
-        pipeAsync(RB(C, C4, w, h, w, h, false, convTune && { ...convTune, coc: outCoc })),
+      const baseT = convTune || { coc: Math.min(8, C), slab: C, w4: false, v2: false };
+      // slab must fit the 16KB shared budget at this tune's workgroup shape
+      const fit = (t, sg) => {
+        const ts = (t.wgx || 8) * 2 + 2, th2 = (t.wgy || 8) * 2 + 2;
+        let slab = t.slab;
+        while (slab > 1 && slab * ts * th2 * 2 + (sg ? 0 : t.coc * slab * 9 * (t.w4 ? 4 : 2)) > 16384) slab--;
+        return { ...t, slab };
+      };
+      const cand = (co, alpha, sg, t) => ({ ci: C, co, sg, alpha, tune: fit(t, sg && device.features.has('subgroups')) });
+      const midCands = [cand(C, wbuf['a2.weight'], !!baseT.sg, { ...baseT, slab: C })];
+      if (C % 16 === 0) {
+        midCands.push(cand(C, wbuf['a2.weight'], !!baseT.sg, { ...baseT, coc: 16, slab: C }));
+        midCands.push(cand(C, wbuf['a2.weight'], false, { ...baseT, coc: 16, slab: 8, wgx: 16, wgy: 8 }));
+      }
+      const outCands = [cand(C4, onesAlpha, !!baseT.sg, { ...baseT, coc: outCoc, slab: C })];
+      if (C4 <= 16 && C4 !== outCoc) { // z=1: every channel in one block
+        outCands.push(cand(C4, onesAlpha, !!baseT.sg, { ...baseT, coc: C4, slab: C }));
+      }
+      const [mid, out, pShuf] = await Promise.all([
+        pickConv(midCands, fa, fb, 'c2.weight', w, h),
+        pickConv(outCands, fa, det, 'c4.weight', w, h),
         pipeAsync(wgslShuffle(w, h, SCALE))]);
+      const pMid = mid.pipe, pOutConv = out.pipe;
       const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
         layout: pMid.getBindGroupLayout(0), entries: [
           { binding: 0, resource: { buffer: sBuf } },
@@ -176,7 +233,9 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
           { binding: 2, resource: { buffer: wbuf[wname.replace('.weight', '.bias')] } },
           { binding: 3, resource: { buffer: wbuf[aname] } },
           { binding: 4, resource: { buffer: dBuf } }] });
+      const dd = (t, co) => [Math.ceil(w / ((t.wgx || 8) * 2)), Math.ceil(h / ((t.wgy || 8) * 2)), co / t.coc];
       Object.assign(building, {
+        midDims: dd(mid.tune, C), outDims: dd(out.tune, C4),
         dims, fa, fb, det, pMid, pOutConv, pShuf,
         bgM2: midBg('c2.weight', 'a2.weight', fa, fb),
         bgM3: midBg('c3.weight', 'a3.weight', fb, fa),
@@ -234,13 +293,11 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
     pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(gx(w), gx(h));
-    const tw = ((convTune && convTune.wgx) || 8) * 2, th = ((convTune && convTune.wgy) || 8) * 2;
-    const midZ = C / ((convTune && convTune.coc) || 4);
     pass.setPipeline(S.pMid);
-    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
-    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), midZ);
+    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
+    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
     pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
-    pass.dispatchWorkgroups(Math.ceil(w / tw), Math.ceil(h / th), C4 / (C4 % 8 === 0 ? 8 : C4 % 4 === 0 ? 4 : 1));
+    pass.dispatchWorkgroups(S.outDims[0], S.outDims[1], S.outDims[2]);
     pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
     pass.dispatchWorkgroups(gx(w * SCALE), gx(h * SCALE));
     pass.end();

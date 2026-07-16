@@ -4,14 +4,16 @@
 <style>body{font:13px monospace;background:#111;color:#ddd;padding:12px}pre{white-space:pre-wrap}</style>
 <pre id="log"></pre>
 <script type="module">
-// SR architecture envelope bench: kernel speed does not depend on weight VALUES,
-// so candidate widths run on random weights. ?res=480,720,1080&c=16,24,32
-const { createSR } = await import('./rt/sr.js?b=' + Date.now());
+// SR bench: architecture envelope (random weights per width) + module A/B with
+// byte parity. ?res=480,720,1080&c=16,24,32&scale=2&mods=sr[,opt]
+//   mods: comma list of modules to compare (sr -> ./rt/sr.js, opt -> ./rt/sr_opt.js).
+//   First is the parity reference; parity runs on real weights + a real image.
 const Q = new URLSearchParams(location.search);
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
 const RESES = (Q.get('res') || '480,720,1080').split(',').map(Number);
 const WIDTHS = (Q.get('c') || '16,24,32').split(',').map(Number);
 const SCALE = +(Q.get('scale') || 2);   // 1 = restore/deblock, 2, 4
+const MODS = (Q.get('mods') || 'sr').split(',');
 const DIMS = { 360: [640, 360], 480: [854, 480], 720: [1280, 720], 1080: [1920, 1080] };
 
 // fabricate an rt_sr-shaped manifest at width C with random weights
@@ -35,10 +37,42 @@ function fakeSR(C) {
 
 const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
 
+function drawTestImage(w, h) {
+  const cv = new OffscreenCanvas(w, h);
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#234'; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 60; i++) {
+    ctx.fillStyle = `hsl(${(i * 41) % 360} 50% ${15 + (i * 17) % 55}%)`;
+    ctx.fillRect((i * 83) % w, (i * 47) % h, 50, 34);
+  }
+  ctx.fillStyle = '#fff'; ctx.font = '22px sans-serif';
+  ctx.fillText('sr parity text 0123', 30, h - 30);
+  return cv;
+}
+
+async function readTex(device, tex, w, h) {
+  const bpr = Math.ceil(w * 4 / 256) * 256;
+  const buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const enc = device.createCommandEncoder();
+  enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+  device.queue.submit([enc.finish()]);
+  await buf.mapAsync(GPUMapMode.READ);
+  const rows = new Uint8Array(buf.getMappedRange());
+  const out = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) out.set(rows.subarray(y * bpr, y * bpr + w * 4), y * w * 4);
+  buf.unmap(); buf.destroy();
+  return out;
+}
+
 async function main() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  const device = await adapter.requestDevice({ requiredFeatures: ['shader-f16'] });
+  const feats = ['shader-f16', 'subgroups'].filter(f => adapter.features.has(f));
+  const device = await adapter.requestDevice({ requiredFeatures: feats });
   const results = {};
+  const refBytes = {}; // per "res" key, from the first module
+  for (const modName of MODS) {
+    const path = modName === 'sr' ? './rt/sr.js' : `./rt/sr_${modName}.js`;
+    const { createSR } = await import(path + '?b=' + Date.now());
   for (const C of WIDTHS) {
     let bin, man;
     if (C === 16 && SCALE === 2 && Q.get('real') !== '0') { // real shipped weights for the baseline
@@ -55,8 +89,10 @@ async function main() {
       const [w, h] = DIMS[R];
       const src = device.createTexture({ size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+      const bmp = await createImageBitmap(drawTestImage(w, h));
+      device.queue.copyExternalImageToTexture({ source: bmp }, { texture: src }, [w, h]);
       const dst = device.createTexture({ size: [w * SCALE, h * SCALE], format: 'rgba8unorm',
-        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
       // per-size pipelines build async on first call - poll until live
       for (let tries = 0; tries < 100 && !sr.process(src, dst, w, h); tries++) {
         await new Promise(r => setTimeout(r, 50));
@@ -71,11 +107,28 @@ async function main() {
       }
       const ms = +median(reps).toFixed(3);
       const tag = tune ? 'w4v2' : 'legacy';
-      results[`c${C} ${tag} x${SCALE} ${R}p`] = ms;
-      log(`c=${C} ${tag} ${w}x${h} -> x${SCALE}: ${ms} ms/frame`);
+      const key = `${modName} c${C} ${tag} x${SCALE} ${R}p`;
+      results[key] = ms;
+      log(`${modName} c=${C} ${tag} ${w}x${h} -> x${SCALE}: ${ms} ms/frame`);
+      // byte parity on the real-weight rung, vs the first module's output
+      if (C === 16 && SCALE === 2 && tune) {
+        const bytes = await readTex(device, dst, w * SCALE, h * SCALE);
+        const pk = `parity ${R}p`;
+        if (!refBytes[pk]) { refBytes[pk] = bytes; if (MODS.length > 1) log(`  ${pk}: reference`); }
+        else {
+          let maxd = 0, nd = 0;
+          for (let i = 0; i < bytes.length; i++) {
+            const d = Math.abs(bytes[i] - refBytes[pk][i]);
+            if (d) { nd++; if (d > maxd) maxd = d; }
+          }
+          results[`${modName} ${pk}`] = `max|d|=${maxd} diffBytes=${(100 * nd / bytes.length).toFixed(3)}%`;
+          log(`  ${pk}: max|d|=${maxd} diffBytes=${(100 * nd / bytes.length).toFixed(3)}%`);
+        }
+      }
       src.destroy(); dst.destroy();
     }
     }
+  }
   }
   window.__benchResult = results;
   document.title = 'SR BENCH DONE';
