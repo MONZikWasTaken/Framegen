@@ -7,7 +7,12 @@ import { wgslConvRB, wgslConvRBSg, WGSL_TO_F32, WGSL_TO_F16 } from './rt.js?v=7'
 
 const WG = 8;
 
-function wgslIn(C) {
+function wgslIn(C, tune) {
+  const WGX = (tune && tune.wgx) || 8, WGY = (tune && tune.wgy) || 8;
+  const TL = !!(tune && tune.tl); // textureLoad: exact texel reads, no sampler/uv math
+  return wgslInBody(C, WGX, WGY, TL);
+}
+function wgslInBody(C, WGX, WGY, TL) {
   return /* wgsl */`
 enable f16;
 @group(0) @binding(0) var src: texture_2d<f32>;
@@ -18,7 +23,7 @@ enable f16;
 @group(0) @binding(5) var<storage, read_write> dst: array<f16>; // [C,H,W]
 @group(0) @binding(6) var<storage, read> dims: array<u32>;  // [W,H]
 
-@compute @workgroup_size(${WG}, ${WG})
+@compute @workgroup_size(${WGX}, ${WGY})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let W = i32(dims[0]); let H = i32(dims[1]);
   let x = i32(gid.x); let y = i32(gid.y);
@@ -28,8 +33,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var kx = 0; kx < 3; kx++) {
       let sx = clamp(x + kx - 1, 0, W - 1);
       let sy = clamp(y + ky - 1, 0, H - 1);
-      let uv = (vec2<f32>(f32(sx), f32(sy)) + 0.5) / vec2<f32>(f32(W), f32(H));
-      let c = textureSampleLevel(src, samp, uv, 0.0).rgb;
+      ${TL ? `let c = textureLoad(src, vec2<i32>(sx, sy), 0).rgb;` : `let uv = (vec2<f32>(f32(sx), f32(sy)) + 0.5) / vec2<f32>(f32(W), f32(H));
+      let c = textureSampleLevel(src, samp, uv, 0.0).rgb;`}
       px[ky * 3 + kx] = vec3<f32>(c.b, c.g, c.r); // BGR domain like the rest
     }
   }
@@ -112,7 +117,11 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   const sgOk = convTune && convTune.sg && device.features.has('subgroups');
   const RB = sgOk ? wgslConvRBSg : wgslConvRB;
   const needW4 = !!(convTune && convTune.w4);
-  const [pIn, pToH, pToF] = await Promise.all([pipeAsync(wgslIn(C)), pipeAsync(WGSL_TO_F16),
+  // in-conv: textureLoad (exact texels, same values the linear sampler returns
+  // at texel centers) + a 16x8 workgroup - measured -20% over the 8x8 sampler
+  // version on Ada
+  const IN_TUNE = { tl: true, wgx: 16, wgy: 8 };
+  const [pIn, pToH, pToF] = await Promise.all([pipeAsync(wgslIn(C, IN_TUNE)), pipeAsync(WGSL_TO_F16),
     needW4 ? pipeAsync(WGSL_TO_F32) : null]);
   const wbufH = {};
   {
@@ -275,8 +284,10 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     if (!bgs || bgs.S !== S) {
       const srcView = srcTex.createView();
       bgs = {
+        // no sampler entry: the textureLoad in-conv never binds one ('auto'
+        // strips the unused binding)
         in: device.createBindGroup({ layout: pIn.getBindGroupLayout(0), entries: [
-          { binding: 0, resource: srcView }, { binding: 1, resource: sampler },
+          { binding: 0, resource: srcView },
           { binding: 2, resource: { buffer: wbuf['c1.weight'] } },
           { binding: 3, resource: { buffer: wbuf['c1.bias'] } },
           { binding: 4, resource: { buffer: wbuf['a1.weight'] } },
@@ -292,7 +303,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     }
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass();
-    pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(gx(w), gx(h));
+    pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 8));
     pass.setPipeline(S.pMid);
     pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
     pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
