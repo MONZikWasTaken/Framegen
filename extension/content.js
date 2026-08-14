@@ -92,10 +92,65 @@
   let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
   let barH = 0; // control-bar height, measured once (content is static)
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
+  const diag = {
+    sourceVideo: null, sourceVideoId: 0, sourceChangedAtFullscreen: false,
+    mediaTime: null, presentedFrames: null, repeatedMediaCallbacks: 0,
+    rvfcCalls: 0, rafCalls: 0, inferenceCalls: 0, prepCalls: 0, presentCalls: 0,
+    duplicateSkips: 0, cutSkips: 0, fullscreenEvents: 0,
+    pumpStarts: 0, sourceLoopStarts: 0, loopStops: 0, sampleAt: performance.now(),
+    sample: null,
+  };
   const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
 
   const log = (...a) => console.log('[framegen]', ...a);
+
+  function trackSourceVideo(v) {
+    if (diag.sourceVideo === v) return;
+    diag.sourceVideo = v;
+    diag.sourceVideoId++;
+    diag.mediaTime = null;
+    diag.presentedFrames = null;
+    log('diagnostics source video', diag.sourceVideoId, v);
+  }
+
+  function diagnosticSnapshot(now = performance.now()) {
+    const v = videoEl;
+    const elapsed = Math.max(1, now - diag.sampleAt);
+    const css = overlay?.getBoundingClientRect();
+    const count = (name) => diag[name] - (diag.sample?.[name] || 0);
+    const rate = (name) => (count(name) * 1000 / elapsed).toFixed(1);
+    const snapshot = {
+      rvfcCalls: diag.rvfcCalls,
+      rafCalls: diag.rafCalls,
+      inferenceCalls: diag.inferenceCalls,
+      prepCalls: diag.prepCalls,
+      presentCalls: diag.presentCalls,
+      duplicateSkips: diag.duplicateSkips,
+      cutSkips: diag.cutSkips,
+    };
+    const out = {
+      sourceVideoId: diag.sourceVideoId,
+      sourceIdentityCurrent: v === diag.sourceVideo,
+      currentTime: v?.currentTime ?? null,
+      mediaTime: diag.mediaTime,
+      presentedFrames: diag.presentedFrames,
+      paused: v?.paused ?? null,
+      readyState: v?.readyState ?? null,
+      playbackRate: v?.playbackRate ?? null,
+      rates: { rvfc: rate('rvfcCalls'), raf: rate('rafCalls'), inference: rate('inferenceCalls'), prep: rate('prepCalls'), present: rate('presentCalls') },
+      skips: { duplicate: diag.duplicateSkips, cut: diag.cutSkips, repeatedMediaCallbacks: diag.repeatedMediaCallbacks },
+      loops: { pumpStarts: diag.pumpStarts, sourceStarts: diag.sourceLoopStarts, stops: diag.loopStops },
+      fullscreen: { events: diag.fullscreenEvents, sourceChanged: diag.sourceChangedAtFullscreen,
+        element: document.fullscreenElement?.tagName || null },
+      canvas: { backing: overlay ? [overlay.width, overlay.height] : null,
+        css: css ? [Math.round(css.width), Math.round(css.height)] : null, dpr: devicePixelRatio },
+    };
+    diag.sampleAt = now;
+    diag.sample = snapshot;
+    return out;
+  }
+  window.__framegenDiagnostics = () => diagnosticSnapshot();
 
   // Chrome on Windows IGNORES powerPreference (crbug.com/369219127): on dual-GPU
   // machines we get whatever GPU Chrome runs on. Detect integrated ones and tell
@@ -453,6 +508,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
   }
   document.addEventListener('fullscreenchange', () => {
+    diag.fullscreenEvents++;
+    diag.sourceChangedAtFullscreen ||= diag.sourceVideo !== videoEl;
+    log('diagnostics fullscreenchange', diagnosticSnapshot());
     reparentUI();
     sbLeft = -1; // force button re-place at the new geometry
     // coords from the OLD geometry are garbage for a moment: hide, let the page
@@ -460,6 +518,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (btn) { btn.style.display = 'none'; gear.style.display = 'none'; }
     uiScan = 0; // the biggest-video answer may change across fullscreen too
     requestAnimationFrame(() => requestAnimationFrame(() => {
+      log('diagnostics fullscreen settled', diagnosticSnapshot());
       const v = running ? videoEl : uiVideo;
       if (v && btn && performance.now() < revealUntil) {
         placeSideButtons(v.getBoundingClientRect());
@@ -474,6 +533,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     reparentUI();
     const r = vrIn || videoEl.getBoundingClientRect();
     if (r.width < 8 || r.height < 8) return;
+    // A player may fit a cinematic stream into a 16:9 box (or crop it with
+    // object-fit:cover). Mirror that presentation instead of treating the aspect
+    // difference as an unsupported video. Canvas is a replaced element, so the
+    // browser applies the same fit/crop rules to our rendered frame as the source.
+    const videoStyle = getComputedStyle(videoEl);
+    const fit = videoStyle.objectFit || 'fill';
+    overlay.style.objectFit = fit;
+    overlay.style.objectPosition = videoStyle.objectPosition;
     // self-calibrating placement: measure where the overlay actually landed and nudge
     // by the delta - immune to whatever containing block/margins the site uses
     const cur = overlay.getBoundingClientRect();
@@ -485,8 +552,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.width = r.width + 'px';
     overlay.style.height = r.height + 'px';
     overlay.style.outline = cfg.debug ? '3px solid #19c37d' : 'none';
-    const bw = Math.round(Math.min(r.width * devicePixelRatio, 1920));
-    const bh = Math.round(Math.min(r.height * devicePixelRatio, 1080));
+    let bw = r.width * devicePixelRatio, bh = r.height * devicePixelRatio;
+    if (fit !== 'fill' && videoEl.videoWidth && videoEl.videoHeight) {
+      const sx = bw / videoEl.videoWidth, sy = bh / videoEl.videoHeight;
+      const scale = fit === 'cover' ? Math.max(sx, sy) : Math.min(sx, sy);
+      bw = videoEl.videoWidth * scale;
+      bh = videoEl.videoHeight * scale;
+    }
+    const cap = Math.min(1, 1920 / bw, 1080 / bh);
+    bw = Math.round(bw * cap);
+    bh = Math.round(bh * cap);
     if (overlay.width !== bw || overlay.height !== bh) { overlay.width = bw; overlay.height = bh; }
   }
   // ---------- TinySR 2x upscale on the present path ----------
@@ -574,6 +649,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     pass.end();
     device.queue.submit([enc.finish()]);
+    diag.presentCalls++;
     if (overlay.style.opacity !== '1') {
       overlay.style.transition = ''; // back to the stylesheet fade (onSrcChange kills it)
       overlay.style.opacity = '1'; // reveal only once pixels exist
@@ -911,6 +987,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function pump(now) {
+    diag.rafCalls++;
     if (!running) return;
     // SPA navigation can replace the <video> element entirely: rVFC dies with it
     // and the canvas would keep showing the dead stream's frames forever.
@@ -937,7 +1014,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (uiTick === 0) {
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect(); // read ONCE per tick, shared with positionOverlay
-      lastVr = vr; lastVrT = now; // onFrame's aspect check reuses this instead of forcing layout
+      lastVr = vr; lastVrT = now; // shared with pointer/UI placement to avoid extra layout reads
       positionOverlay(vr);
       // our bar everywhere except sites whose own controls verifiably sit above
       // the overlay (see SITE_CONTROLS_OK)
@@ -1019,6 +1096,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       statsTimer = now;
       const srcFps = intervalMs > 1 ? (1000 / intervalMs) : 0;
       if (cfg.debug) {
+        const ds = diagnosticSnapshot(now);
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
         const mode = cfg.factor === 'auto' ? (autoPenalty ? `auto-${autoPenalty}` : 'auto') : 'fixed';
         hud.textContent = [
@@ -1032,6 +1110,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `dup ${dups} cut ${cuts}`,
           `motion ${motionAvg.toFixed(0)}`,
           `diff ${lastStat ? lastStat.mean.toFixed(1) : '-'}/${lastStat ? lastStat.max : '-'}${lastStat && lastStat.max === 0 ? ' DRM?' : ''}`,
+          `src#${ds.sourceVideoId} t${ds.currentTime?.toFixed(2) ?? '-'} m${ds.mediaTime?.toFixed(2) ?? '-'} pf${ds.presentedFrames ?? '-'} ${ds.paused ? 'paused' : 'play'} rs${ds.readyState ?? '-'} x${ds.playbackRate ?? '-'}`,
+          `rate rvfc ${ds.rates.rvfc} raf ${ds.rates.raf} prep ${ds.rates.prep} infer ${ds.rates.inference} present ${ds.rates.present}`,
+          `skip dup ${ds.skips.duplicate} cut ${ds.skips.cut} repeat ${ds.skips.repeatedMediaCallbacks} · loop starts ${ds.loops.pumpStarts}/${ds.loops.sourceStarts} stops ${ds.loops.stops}`,
+          `canvas ${ds.canvas.backing?.join('x') ?? '-'} css ${ds.canvas.css?.join('x') ?? '-'} @${ds.canvas.dpr}`,
         ].join('  ·  ');
       } else {
         hud.textContent = `FG ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
@@ -1059,7 +1141,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const out = midTexs[midIdx];
     midIdx = (midIdx + 1) % midTexs.length;
     const t0 = performance.now();
-    try { rt.runT(curJob.ts[k], out); } catch (e) { log('runT', e); curJob = null; return; }
+    try { rt.runT(curJob.ts[k], out); diag.inferenceCalls++; } catch (e) { log('runT', e); curJob = null; return; }
     // sample every 4th mid STARTING AT k=1: mid 0's drain wait also swallows the
     // trunk prep still executing ahead of it, so sampling it inflated msAvg by the
     // trunk share and the auto controller under-committed. Single-mid jobs (x2)
@@ -1088,8 +1170,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
   }
 
-  async function onFrame() {
+  async function onFrame(_now, metadata) {
+    diag.rvfcCalls++;
     if (!running) return;
+    if (metadata) {
+      if (metadata.mediaTime === diag.mediaTime) diag.repeatedMediaCallbacks++;
+      diag.mediaTime = metadata.mediaTime;
+      diag.presentedFrames = metadata.presentedFrames;
+    }
     videoEl.requestVideoFrameCallback(onFrame);
     if (processingFrame) return;
     processingFrame = true;
@@ -1104,22 +1192,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       schedT = (!schedT || Math.abs(arrival - expected) > 80)
         ? arrival : expected + 0.08 * (arrival - expected);
       if (!videoEl.videoWidth || !videoEl.videoHeight) return;
-      // letterboxed content (video aspect != player box, e.g. a landscape clip
-      // inside a vertical shorts player) renders stretched - disengage cleanly
-      // and let the raw player show; resumes by itself when aspects match again.
-      // rect comes from pump's UI tick when fresh: a per-decoded-frame
-      // getBoundingClientRect forces layout 24-60x/s on heavy pages
-      {
-        const br = (lastVr && arrival - lastVrT < 250) ? lastVr : videoEl.getBoundingClientRect();
-        if (br.width > 1 && br.height > 1) {
-          const ea = br.width / br.height;
-          const va = videoEl.videoWidth / videoEl.videoHeight;
-          if (Math.abs(va - ea) / ea > 0.06) {
-            if (overlay && overlay.style.opacity !== '0') overlay.style.opacity = '0';
-            return;
-          }
-        }
-      }
       const [vw, vh] = poolDims();
       ensureFrameTextures(vw, vh);
       // note on importExternalTexture (evaluated, rejected): interpolation needs the
@@ -1192,8 +1264,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // everything from "is this pair worth interpolating" to prepPair/curJob:
   // runs when the dedup readback lands
   function decidePair({ dup, cut }, prev, tex, arrival, srcAt, hzMode) {
-        if (cut) { cuts++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
-        else if (cfg.anime && dup) { dups++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
+        if (cut) { cuts++; diag.cutSkips++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
+        else if (cfg.anime && dup) { dups++; diag.duplicateSkips++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
         else {
           const du = arrival - lastUniqueTs;
           if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
@@ -1265,6 +1337,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           if (run && !switching) {
             flushJob(); // leftovers of the previous pair go out before the new prep
             try {
+              diag.prepCalls++;
               rt.prepPair(prev, tex);
               let ts = hzTs;
               if (!ts) { ts = []; for (let k = 1; k < n; k++) ts.push(k / n); }
@@ -1334,6 +1407,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   async function start(v) {
     if (running && videoEl === v) return; // re-entry insurance: never double-arm the rVFC/rAF loops
     videoEl = v;
+    trackSourceVideo(v);
     if (srcWatchEl !== v) {
       if (srcWatchEl) srcWatchEl.removeEventListener('emptied', onSrcChange);
       srcWatchEl = v;
@@ -1384,12 +1458,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         + 'Windows Settings → Display → Graphics → Chrome → High performance, '
         + 'then restart Chrome.', 14000);
     }
+    diag.pumpStarts++;
+    diag.sourceLoopStarts++;
     videoEl.requestVideoFrameCallback(onFrame);
     requestAnimationFrame(pump);
     btn.style.background = 'rgba(25,195,125,.9)';
   }
   function stop() {
     running = false;
+    diag.loopStops++;
     if (overlay) { // fade out, then release - the raw video underneath is identical
       overlay.style.opacity = '0';
       setTimeout(() => { if (!running && overlay) overlay.style.display = 'none'; }, 260);
