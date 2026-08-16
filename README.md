@@ -62,15 +62,23 @@ need yet.
 
 ### Changes in this fork
 
-This fork bundles the WebGPU runtime and model files in `extension/`, so a
-fresh clone can be loaded directly without a separate asset-build step.
+This fork is self-contained for unpacked development installs on macOS,
+Windows, and Linux. It bundles the WebGPU runtime and model files in
+`extension/`, so a fresh clone can be loaded directly without a separate
+asset-build step. This resolves the `FG error: failed to fetch` error caused
+by an extension folder that contains source code but not its runtime or model
+files.
 
-It also improves compatibility with ordinary non-DRM HTML5 players whose
-video aspect ratio differs from the player box. Framegen now mirrors the
-video's CSS `object-fit` and `object-position` instead of skipping the
-interpolation pipeline.
+For ordinary non-DRM HTML5 players, the overlay now mirrors the video's CSS
+`object-fit` and `object-position`. This prevents the interpolation pipeline
+from being skipped merely because a cinematic or embedded video uses a
+different aspect ratio from its player box.
 
-To test this fork locally:
+The Debug setting in Framegen's gear menu exposes source-frame timing,
+`requestVideoFrameCallback`, render-loop, inference, presentation, and canvas
+dimensions to help investigate player-specific problems.
+
+To install this fork locally:
 
 1. Clone or download this repository.
 2. Open `chrome://extensions` or `edge://extensions`.
