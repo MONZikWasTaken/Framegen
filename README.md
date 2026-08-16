@@ -60,6 +60,27 @@ Requirements: **Chrome 121+** on a machine with a GPU (Windows, macOS with
 Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU features we
 need yet.
 
+### Changes in this fork
+
+This fork bundles the WebGPU runtime and model files in `extension/`, so a
+fresh clone can be loaded directly without a separate asset-build step.
+
+It also improves compatibility with ordinary non-DRM HTML5 players whose
+video aspect ratio differs from the player box. Framegen now mirrors the
+video's CSS `object-fit` and `object-position` instead of skipping the
+interpolation pipeline.
+
+To test this fork locally:
+
+1. Clone or download this repository.
+2. Open `chrome://extensions` or `edge://extensions`.
+3. Enable **Developer mode**, choose **Load unpacked**, and select the
+   repository's `extension` folder.
+4. Reload the video page after reloading the extension.
+
+The Debug setting in Framegen's gear menu shows source-frame, render-loop,
+inference, presentation, and canvas-size diagnostics for troubleshooting.
+
 ## How to use
 
 1. Open any video and hover over it - a round **FC** button appears at the
