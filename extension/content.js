@@ -91,6 +91,8 @@
   let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
   let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
   let barH = 0; // control-bar height, measured once (content is static)
+  let overlayFit = 'fill', overlayFitRequested = 'fill', overlayFitSupported = true;
+  let overlaySourceWidth = 0, overlaySourceHeight = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   const diag = {
     sourceVideo: null, sourceVideoId: 0, sourceChangedAtFullscreen: false,
@@ -111,7 +113,7 @@
     diag.sourceVideoId++;
     diag.mediaTime = null;
     diag.presentedFrames = null;
-    log('diagnostics source video', diag.sourceVideoId, v);
+    if (cfg.debug) log('diagnostics source video', diag.sourceVideoId, v);
   }
 
   function diagnosticSnapshot(now = performance.now()) {
@@ -144,7 +146,8 @@
       fullscreen: { events: diag.fullscreenEvents, sourceChanged: diag.sourceChangedAtFullscreen,
         element: document.fullscreenElement?.tagName || null },
       canvas: { backing: overlay ? [overlay.width, overlay.height] : null,
-        css: css ? [Math.round(css.width), Math.round(css.height)] : null, dpr: devicePixelRatio },
+        css: css ? [Math.round(css.width), Math.round(css.height)] : null, dpr: devicePixelRatio,
+        objectFit: overlayFitRequested, resolvedObjectFit: overlayFit, fitSupported: overlayFitSupported },
     };
     diag.sampleAt = now;
     diag.sample = snapshot;
@@ -510,7 +513,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   document.addEventListener('fullscreenchange', () => {
     diag.fullscreenEvents++;
     diag.sourceChangedAtFullscreen ||= diag.sourceVideo !== videoEl;
-    log('diagnostics fullscreenchange', diagnosticSnapshot());
+    if (cfg.debug) log('diagnostics fullscreenchange', diagnosticSnapshot());
     reparentUI();
     sbLeft = -1; // force button re-place at the new geometry
     // coords from the OLD geometry are garbage for a moment: hide, let the page
@@ -518,7 +521,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (btn) { btn.style.display = 'none'; gear.style.display = 'none'; }
     uiScan = 0; // the biggest-video answer may change across fullscreen too
     requestAnimationFrame(() => requestAnimationFrame(() => {
-      log('diagnostics fullscreen settled', diagnosticSnapshot());
+      if (cfg.debug) log('diagnostics fullscreen settled', diagnosticSnapshot());
       const v = running ? videoEl : uiVideo;
       if (v && btn && performance.now() < revealUntil) {
         placeSideButtons(v.getBoundingClientRect());
@@ -538,7 +541,19 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // difference as an unsupported video. Canvas is a replaced element, so the
     // browser applies the same fit/crop rules to our rendered frame as the source.
     const videoStyle = getComputedStyle(videoEl);
-    const fit = videoStyle.objectFit || 'fill';
+    const sourceWidth = videoEl.videoWidth, sourceHeight = videoEl.videoHeight;
+    const sourceDimensionsChanged = sourceWidth !== overlaySourceWidth || sourceHeight !== overlaySourceHeight;
+    overlaySourceWidth = sourceWidth;
+    overlaySourceHeight = sourceHeight;
+    overlayFitRequested = videoStyle.objectFit || 'fill';
+    let fit = overlayFitRequested;
+    if (!['fill', 'contain', 'cover', 'none', 'scale-down'].includes(fit)) fit = 'fill';
+    // scale-down is exactly the smaller concrete object size from none/contain.
+    // Resolve it before sizing the canvas because its own intrinsic dimensions
+    // otherwise influence which branch the browser chooses.
+    if (fit === 'scale-down' && sourceWidth && sourceHeight) {
+      fit = sourceWidth <= r.width && sourceHeight <= r.height ? 'none' : 'contain';
+    }
     overlay.style.objectFit = fit;
     overlay.style.objectPosition = videoStyle.objectPosition;
     // self-calibrating placement: measure where the overlay actually landed and nudge
@@ -553,12 +568,31 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.height = r.height + 'px';
     overlay.style.outline = cfg.debug ? '3px solid #19c37d' : 'none';
     let bw = r.width * devicePixelRatio, bh = r.height * devicePixelRatio;
-    if (fit !== 'fill' && videoEl.videoWidth && videoEl.videoHeight) {
-      const sx = bw / videoEl.videoWidth, sy = bh / videoEl.videoHeight;
+    let supported = fit === 'fill' || !!(sourceWidth && sourceHeight);
+    if (fit === 'none' && supported) {
+      // object-fit:none depends on absolute intrinsic CSS pixels, not only aspect
+      // ratio. Preserve those dimensions exactly. Oversized unscaled sources
+      // cannot also obey the FHD canvas safety cap, so fail open to the raw video.
+      bw = sourceWidth;
+      bh = sourceHeight;
+      supported = bw <= 1920 && bh <= 1080;
+    } else if (fit !== 'fill' && supported) {
+      const sx = bw / sourceWidth, sy = bh / sourceHeight;
       const scale = fit === 'cover' ? Math.max(sx, sy) : Math.min(sx, sy);
-      bw = videoEl.videoWidth * scale;
-      bh = videoEl.videoHeight * scale;
+      bw = sourceWidth * scale;
+      bh = sourceHeight * scale;
     }
+    if (supported !== overlayFitSupported || fit !== overlayFit || sourceDimensionsChanged) {
+      overlayFitSupported = supported;
+      overlayFit = fit;
+      overlay.style.opacity = '0';
+      queue = []; curJob = null; lastTex = null; cmpRing = [];
+      pairSeq++;
+      if (cfg.debug && !supported) log('object-fit fallback to raw video', overlayFitRequested, bw, bh);
+    }
+    overlay.style.visibility = supported ? 'visible' : 'hidden';
+    overlay.style.pointerEvents = supported && videoEl.controls ? 'auto' : 'none';
+    if (!supported) return;
     const cap = Math.min(1, 1920 / bw, 1080 / bh);
     bw = Math.round(bw * cap);
     bh = Math.round(bh * cap);
@@ -592,6 +626,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // the ORIGINAL cadence, independent of what the output side presents (hz mode
   // rarely presents raw sources - the left half would freeze otherwise)
   function present(tex, isMid) {
+    if (!overlayFitSupported) return;
     // every presented frame goes through SR when it adds pixels toward the
     // canvas. It used to be generated-frames-only as a GPU saving, but that
     // alternates sharp/soft at display rate - visible shimmer, worst on
@@ -1179,6 +1214,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       diag.presentedFrames = metadata.presentedFrames;
     }
     videoEl.requestVideoFrameCallback(onFrame);
+    if (videoEl.videoWidth !== overlaySourceWidth || videoEl.videoHeight !== overlaySourceHeight) {
+      positionOverlay();
+    }
+    if (!overlayFitSupported) return;
     if (processingFrame) return;
     processingFrame = true;
     try {
@@ -1396,11 +1435,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function onSrcChange() {
     queue = []; curJob = null; lastTex = null; cmpRing = []; schedT = 0; lastUniqueTs = 0; hzNext = 0;
     pairSeq++; // kill in-flight classify continuations from the dead stream
+    overlayFitSupported = false;
+    overlaySourceWidth = 0;
+    overlaySourceHeight = 0;
     if (overlay) {
       // hide INSTANTLY: a fade would blend the dead stream's last frame over the
       // new one for 250ms. present() restores the transition on the next real frame
       overlay.style.transition = 'none';
       overlay.style.opacity = '0';
+      overlay.style.visibility = 'hidden';
+      overlay.style.pointerEvents = 'none';
     }
   }
   let srcWatchEl = null;
@@ -1420,7 +1464,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.display = 'block';
     // native players: we own clicks (play/pause + our fullscreen). Sites with DOM
     // controls (YouTube etc.) keep the overlay transparent to the pointer.
-    overlay.style.pointerEvents = videoEl.controls ? 'auto' : 'none';
+    overlay.style.pointerEvents = overlayFitSupported && videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
     const [vw, vh] = videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
