@@ -18,10 +18,18 @@ jobs:
           node --check web/rt/rt.js
           node --check web/rt/sr.js
           node --check extension/content.js
+          node --check extension/rt/rt.js
+          node --check extension/rt/sr.js
           node --check web/player_worker.js
 
       - name: Python syntax
         run: python -m py_compile tools/*.py
+
+      - name: Extension package smoke
+        shell: pwsh
+        run: |
+          ./tools/build_extension.ps1
+          git diff --exit-code -- extension/rt extension/assets
 
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo check (wgpu host only - the TensorRT crate needs CUDA)
