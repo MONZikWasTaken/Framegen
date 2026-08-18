@@ -15,6 +15,38 @@ export interface ConvTune {
   ms?: number;
 }
 
+/**
+ * @experimental Diagnostic-only final-compositor mask sharpening.
+ * The shipped Framegen path leaves this disabled; validate every candidate
+ * against exact GT and temporal metrics before enabling it elsewhere.
+ */
+export interface RTExperimentalMaskSharpen {
+  /** Logit multiplier at a fully active disagreement gate. Must be in [1, 16]. */
+  strength: number;
+  /** Normalized RGB warp disagreement where sharpening starts. */
+  disagreementLow: number;
+  /** Normalized RGB warp disagreement where sharpening reaches full strength. */
+  disagreementHigh: number;
+}
+
+/**
+ * @experimental Full-resolution rgba16float targets for runTDebug.
+ * Every texture must include GPUTextureUsage.STORAGE_BINDING; add COPY_SRC or
+ * TEXTURE_BINDING when the diagnostic consumer needs it.
+ */
+export interface RTDebugOutputs {
+  /** Unblended source-0 warp as RGB in .rgb, alpha 1. */
+  warp0: GPUTexture;
+  /** Unblended source-1 warp as RGB in .rgb, alpha 1. */
+  warp1: GPUTexture;
+  /** Pixel displacement: (flow0.x, flow0.y, flow1.x, flow1.y). */
+  flow: GPUTexture;
+  /** (raw mask logit, effective compositing mask, max-channel warp disagreement, 1). */
+  mask: GPUTexture;
+  /** Full-resolution RGB refine residual in .rgb, alpha 0. */
+  refineResidual: GPUTexture;
+}
+
 export interface CreateRTOptions {
   /** Output width in pixels. Must be divisible by 16. */
   w: number;
@@ -41,6 +73,13 @@ export interface CreateRTOptions {
   sparseRefine?: boolean;
   /** Per-tile max warp-disagreement threshold for sparseRefine (0..1 color units, default 0.02). */
   refineThr?: number;
+  /** @experimental Compile the opt-in texture diagnostics used by runTDebug. Default false. */
+  debugOutputs?: boolean;
+  /**
+   * @experimental Opt-in disagreement-gated mask sharpening for texture-mode
+   * quality A/B tests. Default null; not enabled by the shipped extension.
+   */
+  experimentalMaskSharpen?: RTExperimentalMaskSharpen | null;
 }
 
 export interface RT {
@@ -60,6 +99,11 @@ export interface RT {
   prepPair(a: GPUTexture, b: GPUTexture): void;
   /** Texture mode: one mid at timestep t into outTex (call prepPair first). */
   runT(t: number, outTex: GPUTexture): void;
+  /**
+   * @experimental Queue runT followed by diagnostic writes for the same t.
+   * Present only when createRT receives debugOutputs: true.
+   */
+  runTDebug?(t: number, outTex: GPUTexture, outputs: RTDebugOutputs): RTDebugOutputs;
   /** Per-pass GPU timings, buffer mode (requires timestamp-query). */
   profile(rgbaA: Uint8Array, rgbaB: Uint8Array): Promise<string>;
   /**

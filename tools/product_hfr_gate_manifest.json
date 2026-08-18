@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "profile": "v7s-720p-product-hfr",
+  "playwrightCli": {
+    "package": "@playwright/cli@0.1.17",
+    "browserChannel": "chromium",
+    "headed": true,
+    "persistentContext": true
+  },
+  "extension": {
+    "sourceDirectory": "extension",
+    "contentScript": "extension/content.js",
+    "cadenceScript": "extension/cadence.js",
+    "manifest": "extension/manifest.json",
+    "runtime": "web/rt/rt.js",
+    "weights": "extension/assets/rt_v7s.bin",
+    "weightsManifest": "extension/assets/rt_v7s.json",
+    "modelAssetStem": "rt_v7s"
+  },
+  "fixture": {
+    "path": "web/product_hfr_fixture.html",
+    "pattern": "moving-primitives-v1",
+    "width": 1280,
+    "height": 720,
+    "sourceFps": 60
+  },
+  "measurement": {
+    "factors": [3, 4],
+    "warmupMsPerFactor": 5000,
+    "measureMsPerFactor": 30000,
+    "timeoutMs": 150000
+  },
+  "acceptance": {
+    "durationToleranceFraction": 0.02,
+    "sourceHzToleranceFraction": 0.03,
+    "minimumDisplayHzFraction": 0.95,
+    "minimumScheduledHzFraction": 0.95,
+    "minimumPresentedHzFraction": 0.94,
+    "maximumDroppedFrames": 0,
+    "maximumQueueHighWater": 24,
+    "maximumPendingFrames": 24,
+    "maximumLateP95OutputIntervals": 1.25,
+    "maximumLateMaxOutputIntervals": 3,
+    "maximumSourceBusySkipped": 0,
+    "maximumSourcePresentedFrameGaps": 0,
+    "maximumSourceMetadataDuplicates": 0,
+    "maximumPoolExhaustion": 0,
+    "maximumClassificationSuperseded": 0,
+    "maximumSkippedPairs": 0,
+    "maximumProducerSkippedScheduleSlots": 0,
+    "minimumSourceCallbacksFraction": 0.96,
+    "minimumPairCoverageFraction": 0.98,
+    "requiredDeviceFeatures": ["shader-f16", "timestamp-query"]
+  },
+  "outputDirectory": "output/product-hfr"
+}

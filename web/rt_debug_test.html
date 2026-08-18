@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>RT debug API test</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #111; color: #e6e6e6; font: 14px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    main { max-width: 900px; margin: 32px auto; padding: 0 24px; }
+    .title { margin: 0 0 8px; color: #fff; font-weight: 700; }
+    #status { margin: 0 0 16px; color: #b8b8b8; }
+    pre { margin: 0; padding: 16px; overflow: auto; border: 1px solid #333; background: #181818; white-space: pre-wrap; }
+    .pass { color: #7edc9b; }
+    .fail { color: #ff8d8d; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="title">RT debug API · v7s · 64×64</p>
+    <p id="status" role="status">Loading WebGPU and v7s…</p>
+    <pre id="details">waiting</pre>
+  </main>
+  <script type="module">
+    import { createRT } from './rt/rt.js';
+
+    const WIDTH = 64;
+    const HEIGHT = 64;
+    const DEBUG_KEYS = ['warp0', 'warp1', 'flow', 'mask', 'refineResidual'];
+    const statusElement = document.querySelector('#status');
+    const detailsElement = document.querySelector('#details');
+    const result = {
+      state: 'loading',
+      pass: false,
+      details: {
+        model: 'v7s',
+        resolution: `${WIDTH}x${HEIGHT}`,
+        format: 'rgba16float',
+        checks: [],
+      },
+    };
+    window.__debugTestResult = result;
+
+    function render() {
+      detailsElement.textContent = JSON.stringify(window.__debugTestResult, null, 2);
+    }
+
+    function check(name, pass, evidence = null) {
+      result.details.checks.push({ name, pass, evidence });
+      render();
+      if (!pass) throw new Error(`check failed: ${name}`);
+    }
+
+    async function fetchChecked(url, type) {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${url}`);
+      return type === 'json' ? response.json() : response.arrayBuffer();
+    }
+
+    function makeInput(shift) {
+      const pixels = new Uint8Array(WIDTH * HEIGHT * 4);
+      for (let y = 0; y < HEIGHT; y++) {
+        for (let x = 0; x < WIDTH; x++) {
+          const i = (y * WIDTH + x) * 4;
+          const square = x >= 10 + shift && x < 30 + shift && y >= 18 && y < 40;
+          const circle = (x - (43 - shift * 0.3)) ** 2 + (y - (42 - shift * 0.25)) ** 2 < 9 ** 2;
+          pixels[i] = square ? 238 : 24 + Math.round(x * 0.8);
+          pixels[i + 1] = circle ? 224 : 31 + Math.round(y * 0.7);
+          pixels[i + 2] = square || circle ? 94 : 38 + Math.round((x + y) * 0.35);
+          pixels[i + 3] = 255;
+        }
+      }
+      return pixels;
+    }
+
+    function createInputTexture(device, label, pixels) {
+      const texture = device.createTexture({
+        label,
+        size: [WIDTH, HEIGHT],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      device.queue.writeTexture(
+        { texture },
+        pixels,
+        { bytesPerRow: WIDTH * 4, rowsPerImage: HEIGHT },
+        [WIDTH, HEIGHT],
+      );
+      return texture;
+    }
+
+    function createDebugTexture(device, label, width = WIDTH, height = HEIGHT) {
+      return device.createTexture({
+        label,
+        size: [width, height],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+      });
+    }
+
+    function fillWithNaN(device, texture) {
+      const sentinel = new Uint16Array(WIDTH * HEIGHT * 4);
+      sentinel.fill(0x7e00);
+      device.queue.writeTexture(
+        { texture },
+        sentinel,
+        { bytesPerRow: WIDTH * 8, rowsPerImage: HEIGHT },
+        [WIDTH, HEIGHT],
+      );
+    }
+
+    function halfToNumber(bits) {
+      const sign = bits & 0x8000 ? -1 : 1;
+      const exponent = (bits >>> 10) & 0x1f;
+      const fraction = bits & 0x03ff;
+      if (exponent === 0) return sign * fraction * 2 ** -24;
+      if (exponent === 0x1f) return fraction ? NaN : sign * Infinity;
+      return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+    }
+
+    function summarize(mapped, bytesPerRow) {
+      const channels = Array.from({ length: 4 }, () => ({
+        finite: 0,
+        nonFinite: 0,
+        nonZero: 0,
+        min: Infinity,
+        max: -Infinity,
+        maxAbs: 0,
+        absoluteSum: 0,
+      }));
+      for (let y = 0; y < HEIGHT; y++) {
+        const row = new Uint16Array(mapped, y * bytesPerRow, WIDTH * 4);
+        for (let x = 0; x < WIDTH; x++) {
+          for (let channel = 0; channel < 4; channel++) {
+            const stats = channels[channel];
+            const value = halfToNumber(row[x * 4 + channel]);
+            if (!Number.isFinite(value)) {
+              stats.nonFinite++;
+              continue;
+            }
+            const absolute = Math.abs(value);
+            stats.finite++;
+            stats.nonZero += absolute > 1e-6 ? 1 : 0;
+            stats.min = Math.min(stats.min, value);
+            stats.max = Math.max(stats.max, value);
+            stats.maxAbs = Math.max(stats.maxAbs, absolute);
+            stats.absoluteSum += absolute;
+          }
+        }
+      }
+      return channels.map(stats => ({
+        finite: stats.finite,
+        nonFinite: stats.nonFinite,
+        nonZero: stats.nonZero,
+        min: stats.min,
+        max: stats.max,
+        maxAbs: stats.maxAbs,
+        meanAbs: stats.finite ? stats.absoluteSum / stats.finite : null,
+      }));
+    }
+
+    async function readDebugTextures(device, outputs) {
+      const bytesPerRow = Math.ceil((WIDTH * 8) / 256) * 256;
+      const buffers = Object.fromEntries(DEBUG_KEYS.map(key => [key, device.createBuffer({
+        label: `${key} readback`,
+        size: bytesPerRow * HEIGHT,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })]));
+      const encoder = device.createCommandEncoder({ label: 'debug output readback' });
+      for (const key of DEBUG_KEYS) {
+        encoder.copyTextureToBuffer(
+          { texture: outputs[key] },
+          { buffer: buffers[key], bytesPerRow, rowsPerImage: HEIGHT },
+          [WIDTH, HEIGHT],
+        );
+      }
+      device.queue.submit([encoder.finish()]);
+      await Promise.all(DEBUG_KEYS.map(key => buffers[key].mapAsync(GPUMapMode.READ)));
+      const summaries = {};
+      for (const key of DEBUG_KEYS) {
+        summaries[key] = summarize(buffers[key].getMappedRange(), bytesPerRow);
+        buffers[key].unmap();
+        buffers[key].destroy();
+      }
+      return summaries;
+    }
+
+    async function main() {
+      result.state = 'running';
+      statusElement.textContent = 'Running debug-off, validation, dispatch, and GPU readback checks…';
+      render();
+
+      if (!navigator.gpu) throw new Error('WebGPU is unavailable');
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (!adapter) throw new Error('No WebGPU adapter');
+      const requiredFeatures = adapter.features.has('shader-f16') ? ['shader-f16'] : [];
+      const device = await adapter.requestDevice({ requiredFeatures });
+      result.details.features = [...device.features].sort();
+
+      const [weightsBin, weightsManifest] = await Promise.all([
+        fetchChecked(new URL('../extension/assets/rt_v7s.bin', import.meta.url), 'arrayBuffer'),
+        fetchChecked(new URL('../extension/assets/rt_v7s.json', import.meta.url), 'json'),
+      ]);
+      result.details.weightsBytes = weightsBin.byteLength;
+      const options = {
+        w: WIDTH,
+        h: HEIGHT,
+        weightsBin,
+        weightsManifest,
+        textureInput: true,
+        textureOutput: true,
+        sparseRefine: false,
+      };
+
+      const runtimeWithoutDebug = await createRT(device, options);
+      await device.queue.onSubmittedWorkDone();
+      check(
+        'debug-off runtime omits runTDebug',
+        !Object.prototype.hasOwnProperty.call(runtimeWithoutDebug, 'runTDebug') &&
+          typeof runtimeWithoutDebug.runTDebug === 'undefined',
+        { ownProperty: Object.prototype.hasOwnProperty.call(runtimeWithoutDebug, 'runTDebug') },
+      );
+      runtimeWithoutDebug.destroy();
+
+      const runtime = await createRT(device, { ...options, debugOutputs: true });
+      check('debug-on runtime exposes runTDebug', typeof runtime.runTDebug === 'function');
+
+      const inputA = createInputTexture(device, 'synthetic frame A', makeInput(0));
+      const inputB = createInputTexture(device, 'synthetic frame B', makeInput(14));
+      const output = device.createTexture({
+        label: 'interpolated output',
+        size: [WIDTH, HEIGHT],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      const debugOutputs = Object.fromEntries(DEBUG_KEYS.map(key => [key, createDebugTexture(device, key)]));
+      for (const texture of Object.values(debugOutputs)) fillWithNaN(device, texture);
+
+      runtime.prepPair(inputA, inputB);
+      const invalidFlow = createDebugTexture(device, 'invalid flow dimensions', WIDTH / 2, HEIGHT);
+      let validationMessage = '';
+      try {
+        runtime.runTDebug(0.5, output, { ...debugOutputs, flow: invalidFlow });
+      } catch (error) {
+        validationMessage = String(error?.message || error);
+      }
+      invalidFlow.destroy();
+      check(
+        'mismatched debug texture is rejected before dispatch',
+        validationMessage.includes(`outputs.flow must be ${WIDTH}x${HEIGHT} rgba16float`),
+        validationMessage,
+      );
+
+      device.pushErrorScope('validation');
+      const returnedOutputs = runtime.runTDebug(0.5, output, debugOutputs);
+      check('runTDebug returns the supplied output set', returnedOutputs === debugOutputs);
+      await device.queue.onSubmittedWorkDone();
+      const summaries = await readDebugTextures(device, debugOutputs);
+      const gpuValidationError = await device.popErrorScope();
+      result.details.outputs = summaries;
+      check('debug dispatch has no GPU validation error', gpuValidationError === null, gpuValidationError?.message || null);
+
+      for (const key of DEBUG_KEYS) {
+        const nonFinite = summaries[key].reduce((sum, channel) => sum + channel.nonFinite, 0);
+        check(`${key} overwrites every NaN sentinel with finite data`, nonFinite === 0, { nonFinite });
+      }
+      for (const key of ['warp0', 'warp1']) {
+        check(`${key} writes nonzero RGB`, summaries[key].slice(0, 3).every(channel => channel.maxAbs > 1e-4));
+        check(`${key} writes alpha=1`, summaries[key][3].min > 0.99 && summaries[key][3].max < 1.01, summaries[key][3]);
+      }
+      check(
+        'flow writes four nonzero displacement channels',
+        summaries.flow.every(channel => channel.maxAbs > 1e-4),
+        summaries.flow.map(channel => channel.maxAbs),
+      );
+      check('mask logit is nonzero', summaries.mask[0].maxAbs > 1e-4, summaries.mask[0]);
+      check('mask sigmoid is normalized and nonzero', summaries.mask[1].min > 0 && summaries.mask[1].max < 1, summaries.mask[1]);
+      check('mask disagreement is nonzero', summaries.mask[2].maxAbs > 1e-4, summaries.mask[2]);
+      check('mask writes alpha=1', summaries.mask[3].min > 0.99 && summaries.mask[3].max < 1.01, summaries.mask[3]);
+      check(
+        'refineResidual writes nonzero RGB',
+        summaries.refineResidual.slice(0, 3).every(channel => channel.maxAbs > 1e-6),
+        summaries.refineResidual.slice(0, 3).map(channel => channel.maxAbs),
+      );
+      check(
+        'refineResidual writes alpha=0',
+        summaries.refineResidual[3].maxAbs === 0,
+        summaries.refineResidual[3],
+      );
+
+      runtime.destroy();
+      inputA.destroy();
+      inputB.destroy();
+      output.destroy();
+      Object.values(debugOutputs).forEach(texture => texture.destroy());
+
+      result.state = 'complete';
+      result.pass = true;
+      statusElement.textContent = 'PASS · all RT debug API checks completed';
+      statusElement.className = 'pass';
+      document.title = 'RT DEBUG PASS';
+      render();
+    }
+
+    main().catch(error => {
+      result.state = 'error';
+      result.pass = false;
+      result.error = String(error?.stack || error?.message || error);
+      statusElement.textContent = `FAIL · ${error?.message || error}`;
+      statusElement.className = 'fail';
+      document.title = 'RT DEBUG FAIL';
+      render();
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,278 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Framegen static guard correctness fixture</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 24px; background: #090c12; color: #dbe7f5; font: 13px/1.5 ui-monospace, monospace; }
+  pre { margin: 0; white-space: pre-wrap; }
+</style>
+<pre id="report">running…</pre>
+<script type="module">
+import { createRT } from './rt/rt.js';
+import {
+  STATIC_GUARD_CONTRACT,
+  analyzeStaticGuardFrames,
+  finalizeStaticGuardReport,
+} from '../tools/static_guard_acceptance.mjs';
+
+const { width: WIDTH, height: HEIGHT } = STATIC_GUARD_CONTRACT;
+const TIMESTEPS = [...STATIC_GUARD_CONTRACT.timesteps];
+const PIXELS = WIDTH * HEIGHT;
+const BYTES_PER_ROW = WIDTH * 4;
+const GLYPHS = Object.freeze({
+  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01110'],
+  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+});
+
+function writePixel(bytes, pixel, color) {
+  const offset = pixel * 4;
+  bytes[offset] = color[0];
+  bytes[offset + 1] = color[1];
+  bytes[offset + 2] = color[2];
+  bytes[offset + 3] = 255;
+}
+
+function makeAnchor(endpoint, masks) {
+  const bytes = new Uint8Array(PIXELS * 4);
+  const shift = endpoint ? 12 : 0;
+  for (let y = 0; y < HEIGHT; y++) {
+    for (let x = 0; x < WIDTH; x++) {
+      const stripe = (Math.floor((x + shift) / 12) + Math.floor((y + shift / 2) / 12)) & 1;
+      const wave = (x * 7 + y * 11 + shift * 13) & 31;
+      writePixel(bytes, y * WIDTH + x, stripe
+        ? [24 + wave, 48 + wave, 112 + wave]
+        : [136 + wave, 48 + wave, 26 + wave]);
+    }
+  }
+
+  const plate = endpoint ? [26, 28, 32] : [22, 24, 28];
+  const ink = endpoint ? [244, 246, 248] : [238, 240, 242];
+  for (let y = 196; y < 272; y++) {
+    for (let x = 66; x < 446; x++) writePixel(bytes, y * WIDTH + x, plate);
+  }
+
+  const word = 'FRAMEGEN';
+  const scale = 7;
+  const originX = 78;
+  const originY = 208;
+  for (let letter = 0; letter < word.length; letter++) {
+    const glyph = GLYPHS[word[letter]];
+    const gx = originX + letter * scale * 6;
+    for (let row = 0; row < glyph.length; row++) {
+      for (let column = 0; column < glyph[row].length; column++) {
+        if (glyph[row][column] !== '1') continue;
+        for (let yy = 0; yy < scale; yy++) {
+          for (let xx = 0; xx < scale; xx++) {
+            const x = gx + column * scale + xx;
+            const y = originY + row * scale + yy;
+            const pixel = y * WIDTH + x;
+            writePixel(bytes, pixel, ink);
+            if (xx >= 2 && xx <= scale - 3 && yy >= 2 && yy <= scale - 3) masks.textCore[pixel] = 1;
+          }
+        }
+      }
+    }
+  }
+  for (let y = 263; y < 268; y++) {
+    for (let x = 80; x < 432; x++) masks.textPlate[y * WIDTH + x] = 1;
+  }
+  return bytes;
+}
+
+function makeMotionMask(anchorA, anchorB, mask) {
+  for (let y = 2; y < HEIGHT - 2; y++) {
+    for (let x = 2; x < WIDTH - 2; x++) {
+      if (x >= 62 && x < 450 && y >= 192 && y < 276) continue;
+      let difference = 0;
+      for (let yy = -1; yy <= 1; yy++) {
+        for (let xx = -1; xx <= 1; xx++) {
+          const offset = ((y + yy) * WIDTH + x + xx) * 4;
+          difference += Math.max(
+            Math.abs(anchorA[offset] - anchorB[offset]),
+            Math.abs(anchorA[offset + 1] - anchorB[offset + 1]),
+            Math.abs(anchorA[offset + 2] - anchorB[offset + 2]),
+          );
+        }
+      }
+      if (difference / 9 >= 32) mask[y * WIDTH + x] = 1;
+    }
+  }
+}
+
+function makeTexture(device, bytes, label) {
+  const texture = device.createTexture({
+    label,
+    size: [WIDTH, HEIGHT],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture({ texture }, bytes, { bytesPerRow: BYTES_PER_ROW }, [WIDTH, HEIGHT]);
+  return texture;
+}
+
+function makeOutputTexture(device, label) {
+  return device.createTexture({
+    label,
+    size: [WIDTH, HEIGHT],
+    format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
+}
+
+async function readTextures(device, textures) {
+  const buffers = textures.map((texture, index) => device.createBuffer({
+    label: `static-guard-readback-${index}`,
+    size: BYTES_PER_ROW * HEIGHT,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+  }));
+  const encoder = device.createCommandEncoder();
+  textures.forEach((texture, index) => encoder.copyTextureToBuffer(
+    { texture }, { buffer: buffers[index], bytesPerRow: BYTES_PER_ROW }, [WIDTH, HEIGHT],
+  ));
+  device.queue.submit([encoder.finish()]);
+  await Promise.all(buffers.map(buffer => buffer.mapAsync(GPUMapMode.READ)));
+  return buffers.map(buffer => {
+    const frame = new Uint8Array(buffer.getMappedRange().slice(0));
+    buffer.unmap();
+    buffer.destroy();
+    return frame;
+  });
+}
+
+async function sha256(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+async function runVariant(device, weightsBin, weightsManifest, anchorTexA, anchorTexB, staticGuard) {
+  const options = {
+    w: WIDTH,
+    h: HEIGHT,
+    weightsBin,
+    weightsManifest,
+    textureInput: true,
+    textureOutput: true,
+    sparseRefine: true,
+  };
+  if (staticGuard !== undefined) options.staticGuard = staticGuard;
+  const runtime = await createRT(device, options);
+  const outputs = TIMESTEPS.map((_, index) => makeOutputTexture(device,
+    `static-guard-${staticGuard === undefined ? 'default' : staticGuard ? 'on' : 'off'}-${index}`));
+  runtime.prepPair(anchorTexA, anchorTexB);
+  TIMESTEPS.forEach((t, index) => runtime.runT(t, outputs[index]));
+  const frames = await readTextures(device, outputs);
+  runtime.destroy();
+  outputs.forEach(texture => texture.destroy());
+  return frames;
+}
+
+async function main() {
+  if (!navigator.gpu) throw new Error('WebGPU unavailable');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) throw new Error('WebGPU adapter unavailable');
+  const requiredFeatures = adapter.features.has('shader-f16') ? ['shader-f16'] : [];
+  const device = await adapter.requestDevice({ requiredFeatures });
+  const uncaptured = [];
+  device.addEventListener('uncapturederror', event => uncaptured.push(String(event.error?.message || event.error)));
+
+  const [weightsResponse, manifestResponse, runtimeResponse] = await Promise.all([
+    fetch('../extension/assets/rt_v7s.bin'),
+    fetch('../extension/assets/rt_v7s.json'),
+    fetch('./rt/rt.js'),
+  ]);
+  if (!weightsResponse.ok || !manifestResponse.ok || !runtimeResponse.ok) throw new Error('fixture assets unavailable');
+  const weightsBin = await weightsResponse.arrayBuffer();
+  const manifestText = await manifestResponse.text();
+  // Hash the exact response bytes. Response.text() strips an UTF-8 BOM, while
+  // the source-bound gate hashes the file as stored on disk.
+  const runtimeBytes = await runtimeResponse.arrayBuffer();
+  const weightsManifest = JSON.parse(manifestText);
+
+  const masks = {
+    textCore: new Uint8Array(PIXELS),
+    textPlate: new Uint8Array(PIXELS),
+    ordinaryMotion: new Uint8Array(PIXELS),
+  };
+  const anchorA = makeAnchor(false, masks);
+  const anchorB = makeAnchor(true, masks);
+  makeMotionMask(anchorA, anchorB, masks.ordinaryMotion);
+  const anchorTexA = makeTexture(device, anchorA, 'static-guard-anchor-a');
+  const anchorTexB = makeTexture(device, anchorB, 'static-guard-anchor-b');
+
+  const defaultGuardOffFrames = await runVariant(device, weightsBin, weightsManifest, anchorTexA, anchorTexB, undefined);
+  const explicitGuardOffFrames = await runVariant(device, weightsBin, weightsManifest, anchorTexA, anchorTexB, false);
+  const guardFrames = await runVariant(device, weightsBin, weightsManifest, anchorTexA, anchorTexB, true);
+  await device.queue.onSubmittedWorkDone();
+  anchorTexA.destroy();
+  anchorTexB.destroy();
+  if (uncaptured.length) throw new Error(`WebGPU validation errors: ${uncaptured.join(' | ')}`);
+
+  const metrics = analyzeStaticGuardFrames({
+    width: WIDTH,
+    height: HEIGHT,
+    timesteps: TIMESTEPS,
+    anchorA,
+    anchorB,
+    guardFrames,
+    defaultGuardOffFrames,
+    explicitGuardOffFrames,
+    textCoreMask: masks.textCore,
+    textPlateMask: masks.textPlate,
+    ordinaryMotionMask: masks.ordinaryMotion,
+  });
+  return finalizeStaticGuardReport({
+    schemaVersion: STATIC_GUARD_CONTRACT.schemaVersion,
+    benchmarkId: STATIC_GUARD_CONTRACT.benchmarkId,
+    status: 'complete',
+    generatedAt: new Date().toISOString(),
+    workload: {
+      patternId: STATIC_GUARD_CONTRACT.patternId,
+      model: STATIC_GUARD_CONTRACT.model,
+      width: WIDTH,
+      height: HEIGHT,
+      timesteps: TIMESTEPS,
+      textCorePixels: masks.textCore.reduce((sum, value) => sum + value, 0),
+      textPlatePixels: masks.textPlate.reduce((sum, value) => sum + value, 0),
+      ordinaryMotionPixels: masks.ordinaryMotion.reduce((sum, value) => sum + value, 0),
+    },
+    runtime: {
+      adapter: adapter.info ? { ...adapter.info } : null,
+      features: [...device.features].sort(),
+    },
+    identities: {
+      runtimeSha256: await sha256(runtimeBytes),
+      weightsSha256: await sha256(weightsBin),
+      manifestSha256: await sha256(new TextEncoder().encode(manifestText)),
+      anchorASha256: await sha256(anchorA),
+      anchorBSha256: await sha256(anchorB),
+    },
+    metrics,
+  });
+}
+
+const reportNode = document.getElementById('report');
+window.__STATIC_GUARD_PROMISE__ = main().then(report => {
+  window.__STATIC_GUARD_REPORT__ = report;
+  reportNode.textContent = JSON.stringify(report, null, 2);
+  document.title = report.passed ? 'PASS · static guard fixture' : 'FAIL · static guard fixture';
+  return report;
+}).catch(error => {
+  const report = {
+    schemaVersion: STATIC_GUARD_CONTRACT.schemaVersion,
+    benchmarkId: STATIC_GUARD_CONTRACT.benchmarkId,
+    status: 'error',
+    passed: false,
+    error: String(error?.stack || error),
+  };
+  window.__STATIC_GUARD_REPORT__ = report;
+  reportNode.textContent = JSON.stringify(report, null, 2);
+  document.title = 'ERROR · static guard fixture';
+  return report;
+});
+</script>

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Framegen settings</title>
+  <link rel="stylesheet" href="options.css">
+  <script defer src="profile-store.js"></script>
+  <script defer src="options.js"></script>
+</head>
+<body>
+  <header class="app-bar">
+    <div class="brand">
+      <h1>Framegen settings</h1>
+    </div>
+    <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
+  </header>
+
+  <div class="app-shell">
+    <main class="workspace">
+      <div class="profile-toolbar">
+        <label for="profileSelect">Profile</label>
+        <select id="profileSelect" aria-describedby="runtimeStatus"></select>
+        <div class="profile-actions" aria-label="Profile actions">
+          <button id="newProfile" class="button" type="button">New</button>
+          <button id="duplicateProfile" class="button button-quiet" type="button">Duplicate</button>
+          <button id="renameProfile" class="button button-quiet" type="button">Rename</button>
+          <button id="deleteProfile" class="button button-danger" type="button">Delete</button>
+        </div>
+      </div>
+
+      <form id="settingsForm" novalidate>
+        <section class="settings-section" aria-labelledby="interpolationHeading">
+          <div class="section-heading">
+            <h2 id="interpolationHeading">Frame generation</h2>
+            <p>Output cadence, model, and internal render cost.</p>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="fg">Smoothness</label>
+              <p>Generate intermediate frames during video playback.</p>
+            </div>
+            <input id="fg" name="fg" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="factor">Output rate</label>
+              <p>Follow the display, enter an exact target, or use a source multiplier.</p>
+            </div>
+            <select id="factor" name="factor">
+              <option value="auto">Auto</option>
+              <option value="hz">Display Hz</option>
+              <option value="target">Target FPS</option>
+              <option value="2">2× source</option>
+              <option value="3">3× source</option>
+              <option value="4">4× source</option>
+              <option value="5">5× source</option>
+              <option value="6">6× source</option>
+            </select>
+          </div>
+
+          <div id="targetFpsRow" class="setting-row" hidden>
+            <div class="setting-copy">
+              <label for="targetFps">Target FPS</label>
+              <p>Set an exact output frame rate from 2 to 1000.</p>
+            </div>
+            <input id="targetFps" name="targetFps" class="number-input" type="number"
+              min="2" max="1000" step="0.01" inputmode="decimal">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="res">Quality</label>
+              <p>Internal interpolation resolution. Higher values use more GPU time.</p>
+            </div>
+            <select id="res" name="res">
+              <option value="288">Super eco · 288p</option>
+              <option value="360">Eco · 360p</option>
+              <option value="480">Balanced · 480p</option>
+              <option value="720">Max · 720p</option>
+              <option value="1080">Ultra · 1080p</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="model">Model</label>
+              <p>v7 small is the current production model. v6 remains for compatibility.</p>
+            </div>
+            <select id="model" name="model">
+              <option value="v7s">v7 small · current</option>
+              <option value="v6">v6 · legacy</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="processingHeading">
+          <div class="section-heading">
+            <h2 id="processingHeading">Enhancements</h2>
+            <p>Optional image processing and scene-specific safeguards.</p>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="sr">Resolution boost</label>
+              <p>Apply 2× neural upscaling to generated frames, or to video when Smoothness is off.</p>
+            </div>
+            <input id="sr" name="sr" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="hdr">HDR</label>
+              <p>Expand brightness on a compatible HDR display.</p>
+            </div>
+            <input id="hdr" name="hdr" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="anime">Anime dedup</label>
+              <p>Detect animation frames drawn on twos.</p>
+            </div>
+            <input id="anime" name="anime" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="guard">Subtitle guard</label>
+              <p>Protect static regions from interpolation warping.</p>
+            </div>
+            <input id="guard" name="guard" class="switch" type="checkbox">
+          </div>
+        </section>
+
+        <section class="settings-section" aria-labelledby="playerHeading">
+          <div class="section-heading">
+            <h2 id="playerHeading">Player</h2>
+            <p>Controls and diagnostics shown over video.</p>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="hoverReveal">Hover controls</label>
+              <p>Reveal Framegen controls when the pointer is over a video.</p>
+            </div>
+            <input id="hoverReveal" name="hoverReveal" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="showFps">FPS counter</label>
+              <p>Show output frame rate in the player overlay.</p>
+            </div>
+            <input id="showFps" name="showFps" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="showWatermark">Player watermark</label>
+              <p>Show the Framegen label while interpolation is active.</p>
+            </div>
+            <input id="showWatermark" name="showWatermark" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="compare">Compare</label>
+              <p>Show an original and processed split view.</p>
+            </div>
+            <input id="compare" name="compare" class="switch" type="checkbox">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="debug">Debug overlay</label>
+              <p>Show the processing border and detailed runtime telemetry.</p>
+            </div>
+            <input id="debug" name="debug" class="switch" type="checkbox">
+          </div>
+        </section>
+      </form>
+
+      <div class="action-bar">
+        <strong id="editState" role="status" aria-live="polite">Up to date</strong>
+        <div class="action-buttons">
+          <button id="resetDraft" class="button button-quiet" type="button">Reset changes</button>
+          <button id="saveProfile" class="button button-secondary" type="button">Save as profile</button>
+          <button id="applySettings" class="button button-primary" type="button">Apply settings</button>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <dialog id="profileDialog" aria-labelledby="profileDialogTitle">
+    <form id="profileDialogForm" method="dialog">
+      <h2 id="profileDialogTitle">New profile</h2>
+      <label for="profileName">Profile name</label>
+      <input id="profileName" name="profileName" type="text" maxlength="48" autocomplete="off" required>
+      <div class="dialog-actions">
+        <button class="button button-quiet" value="cancel" type="button" data-close-dialog>Cancel</button>
+        <button id="confirmProfile" class="button button-primary" value="default" type="submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="deleteDialog" aria-labelledby="deleteDialogTitle">
+    <form method="dialog">
+      <h2 id="deleteDialogTitle">Delete profile?</h2>
+      <p id="deleteDialogCopy">This profile will be removed. Current video settings will stay unchanged.</p>
+      <div class="dialog-actions">
+        <button class="button button-quiet" value="cancel" type="button" data-close-dialog>Cancel</button>
+        <button id="confirmDelete" class="button button-danger-solid" value="default" type="submit">Delete</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

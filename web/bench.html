@@ -9,9 +9,42 @@
 //   mods=rt            comma list of runtime modules to compare (rt -> ./rt/rt.js,
 //                      opt -> ./rt/rt_opt.js). First is the parity reference.
 //   mids=N             timesteps per pair for the per-mid wall test (default 4)
+//   warmup=N reps=N iters=N cycleIters=N intervalFactor=N intervalReps=N
+//   intervalFactors=3,4 intervalWarmups=N sourceFps=N outputHz=N
+//   budgetFraction=N hardBudgetFraction=N strictAcceptance=0|1
 const Q = new URLSearchParams(location.search);
 const log = (s) => { document.getElementById('log').textContent += s + '\n'; };
+const intParam = (name, fallback, min, max) => {
+  const raw = Q.get(name);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${name} must be an integer in [${min}, ${max}]`);
+  }
+  return value;
+};
+const numberParam = (name, fallback, min, max) => {
+  const raw = Q.get(name);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${name} must be a number in [${min}, ${max}]`);
+  }
+  return value;
+};
+const intListParam = (name, fallback, min, max) => {
+  const raw = Q.get(name);
+  if (raw === null) return [...fallback];
+  const values = raw.split(',').map(value => Number(value));
+  if (!values.length || values.length > 16
+      || values.some(value => !Number.isInteger(value) || value < min || value > max)
+      || new Set(values).size !== values.length) {
+    throw new Error(`${name} must contain 1..16 unique integers in [${min}, ${max}]`);
+  }
+  return values;
+};
 const RES = { '288': [512, 288], '360': [640, 352], '480': [854, 480], '720': [1280, 720], '1080': [1920, 1080] }[Q.get('res') || '720'];
+if (!RES) throw new Error('res must be one of 288, 360, 480, 720, 1080');
 // model grid must be /16 - the extension rounds the same way
 const MW = Math.round(RES[0] / 16) * 16, MH = Math.round(RES[1] / 16) * 16;
 const MODEL = Q.get('model') || 'v7s';
@@ -19,7 +52,36 @@ const SCENE = Q.get('scene') || 'calm';
 const SPARSE = Q.get('sparse') !== '0';
 const GUARD = Q.get('guard') !== '0';
 const MODS = (Q.get('mods') || 'rt').split(',');
-const NMIDS = +(Q.get('mids') || 4);
+const NMIDS = intParam('mids', 4, 1, 240);
+const WARMUP_RUNS = intParam('warmup', 6, 0, 100);
+const REPS = intParam('reps', 5, 1, 100);
+const ITERS = intParam('iters', 30, 1, 1000);
+const CYCLE_ITERS = intParam('cycleIters', 20, 1, 1000);
+const INTERVAL_FACTOR = intParam('intervalFactor', 24, 2, 240);
+const INTERVAL_FACTORS = intListParam('intervalFactors', [INTERVAL_FACTOR], 2, 240);
+const INTERVAL_REPS = intParam('intervalReps', REPS, 1, 100);
+const INTERVAL_WARMUPS = intParam('intervalWarmups', 0, 0, 20);
+const SOURCE_FPS = numberParam('sourceFps', 10, 0.1, 1000);
+const OUTPUT_HZ = numberParam('outputHz', SOURCE_FPS * INTERVAL_FACTOR, 0.1, 1000);
+const BUDGET_FRACTION = numberParam('budgetFraction', 0.85, 0.01, 1);
+const HARD_BUDGET_FRACTION = numberParam('hardBudgetFraction', 1, BUDGET_FRACTION, 1);
+const STRICT_ACCEPTANCE = Q.get('strictAcceptance') === '1';
+if (STRICT_ACCEPTANCE && INTERVAL_REPS < 30) throw new Error('strict acceptance needs at least 30 interval repetitions');
+if (STRICT_ACCEPTANCE && INTERVAL_WARMUPS < 2) throw new Error('strict acceptance needs at least 2 interval warmups per factor');
+if (STRICT_ACCEPTANCE && Q.get('tune') !== '1') throw new Error('strict acceptance requires one fixed autotune result');
+const SOURCE_INTERVAL_MS = 1000 / SOURCE_FPS;
+const SOFT_DEADLINE_MS = SOURCE_INTERVAL_MS * BUDGET_FRACTION;
+const HARD_DEADLINE_MS = SOURCE_INTERVAL_MS * HARD_BUDGET_FRACTION;
+const OUTPUT_HZ_BY_FACTOR = Object.fromEntries(
+  INTERVAL_FACTORS.map(factor => [factor, SOURCE_FPS * factor]),
+);
+const FACTOR_ORDER_BY_REPETITION = Array.from({ length: INTERVAL_REPS }, (_, repetition) => {
+  const offset = repetition % INTERVAL_FACTORS.length;
+  return [...INTERVAL_FACTORS.slice(offset), ...INTERVAL_FACTORS.slice(0, offset)];
+});
+const DEFAULT_ASSET_STEM = MODEL === 'v7s' ? 'v7s' : 'tfact2';
+const WEIGHTS_URL = Q.get('weights') || `../extension/assets/rt_${DEFAULT_ASSET_STEM}.bin`;
+const WEIGHTS_MANIFEST_URL = Q.get('weightsManifest') || `../extension/assets/rt_${DEFAULT_ASSET_STEM}.json`;
 
 function drawScene(ctx, w, h, phase) {
   // detailed static background (same every frame)
@@ -67,18 +129,70 @@ async function readTex(device, tex, w, h) {
   return out;
 }
 
-const median = (a) => { const s = [...a].sort((x, y) => x - y); return s[s.length >> 1]; };
+async function sha256Bytes(bytes) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+}
+
+const rounded = (value) => +value.toFixed(3);
+const quantile = (sorted, q) => {
+  const position = (sorted.length - 1) * q;
+  const lower = Math.floor(position), upper = Math.ceil(position);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+};
+const summarize = (samples, iterationsPerSample) => {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  const variance = samples.reduce((sum, value) => sum + (value - mean) ** 2, 0) / samples.length;
+  return {
+    unit: 'ms', sampleCount: samples.length, iterationsPerSample,
+    samplesMs: samples.map(rounded), minMs: rounded(sorted[0]),
+    p50Ms: rounded(quantile(sorted, 0.5)), p90Ms: rounded(quantile(sorted, 0.9)),
+    p95Ms: rounded(quantile(sorted, 0.95)),
+    maxMs: rounded(sorted.at(-1)), meanMs: rounded(mean), stddevMs: rounded(Math.sqrt(variance)),
+  };
+};
+const PREP_STAGES = new Set(['diff', 'prepQ', 'conv0a', 'conv0b', 'cb0', 'cb1', 'cb2', 'cb3', 'cb4', 'cb5']);
+function gpuMetrics(profile, intervalFactor) {
+  const stagesMs = {};
+  for (const part of profile.split(' · ')) {
+    const match = /^([^:]+):\s*([0-9.]+)ms$/.exec(part.trim());
+    if (match) stagesMs[match[1]] = Number(match[2]);
+  }
+  if (!Object.keys(stagesMs).length) return { available: false, reason: profile };
+  let prepPairMs = 0, runTMs = 0;
+  for (const [name, value] of Object.entries(stagesMs)) {
+    if (PREP_STAGES.has(name)) prepPairMs += value;
+    else runTMs += value;
+  }
+  return {
+    available: true,
+    method: 'WebGPU timestamp-query via profileT; diagnostic one-pass-per-stage encoding',
+    stagesMs,
+    prepPairMs: rounded(prepPairMs),
+    runTMs: rounded(runTMs),
+    fullIntervalEstimateMs: rounded(prepPairMs + (intervalFactor - 1) * runTMs),
+    fullIntervalEstimateFormula: `prepPair + ${intervalFactor - 1} * runT`,
+  };
+}
 
 async function bench() {
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) throw new Error('No high-performance WebGPU adapter');
+  if (STRICT_ACCEPTANCE) {
+    for (const feature of ['shader-f16', 'timestamp-query']) {
+      if (!adapter.features.has(feature)) throw new Error(`strict acceptance requires ${feature}`);
+    }
+  }
   const feats = ['shader-f16', 'subgroups', 'timestamp-query'].filter(f => adapter.features.has(f));
   const device = await adapter.requestDevice({ requiredFeatures: feats });
   const info = adapter.info || {};
   log(`adapter: ${info.vendor || '?'} ${info.architecture || ''} | features: ${feats.join(',')}`);
 
   const [bin, man] = await Promise.all([
-    fetch(`../assets/rt_${MODEL === 'v7s' ? 'v7s' : 'tfact2'}.bin`).then(r => r.arrayBuffer()),
-    fetch(`../assets/rt_${MODEL === 'v7s' ? 'v7s' : 'tfact2'}.json`).then(r => r.json()),
+    fetch(WEIGHTS_URL).then(r => { if (!r.ok) throw new Error(`weights HTTP ${r.status}`); return r.arrayBuffer(); }),
+    fetch(WEIGHTS_MANIFEST_URL).then(r => { if (!r.ok) throw new Error(`weights manifest HTTP ${r.status}`); return r.json(); }),
   ]);
   const texA = await makeTex(device, MW, MH, 0);
   const texB = await makeTex(device, MW, MH, 1);
@@ -86,7 +200,64 @@ async function bench() {
   for (let i = 0; i < 8; i++) outTexs.push(device.createTexture({ size: [MW, MH], format: 'rgba8unorm',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING }));
 
-  const results = { res: `${MW}x${MH}`, model: MODEL, scene: SCENE, sparse: SPARSE, guard: GUARD, mods: {} };
+  const adapterInfo = {};
+  for (const key of ['vendor', 'architecture', 'device', 'description', 'backend', 'driver',
+    'subgroupMinSize', 'subgroupMaxSize', 'isFallbackAdapter']) {
+    if (info[key] !== undefined) adapterInfo[key] = info[key];
+  }
+  const results = {
+    schemaVersion: 3,
+    harness: { name: 'web/bench.html', fixture: 'synthetic-drawScene-v1' },
+    environment: {
+      browser: {
+        userAgent: navigator.userAgent,
+        userAgentData: navigator.userAgentData?.toJSON?.() || null,
+        platform: navigator.platform,
+      },
+      webgpu: {
+        adapterInfo,
+        adapterFeatures: [...adapter.features].sort(),
+        enabledDeviceFeatures: [...device.features].sort(),
+        precision: device.features.has('shader-f16') ? 'shader-f16' : 'f32 fallback',
+      },
+    },
+    workload: {
+      requestedResolution: Q.get('res') || '720',
+      modelResolution: { width: MW, height: MH },
+      model: MODEL, scene: SCENE, sparseRefine: SPARSE, staticGuard: GUARD,
+      modules: MODS, tune: Q.get('tune') === '1', sourceFps: SOURCE_FPS,
+      outputHz: INTERVAL_FACTORS.length === 1 ? OUTPUT_HZ : null,
+      outputHzByFactor: OUTPUT_HZ_BY_FACTOR,
+      intervalFactor: INTERVAL_FACTORS.length === 1 ? INTERVAL_FACTORS[0] : null,
+      intervalFactors: INTERVAL_FACTORS,
+      generatedFramesPerInterval: INTERVAL_FACTORS.length === 1 ? INTERVAL_FACTORS[0] - 1 : null,
+      modelAssets: { weightsUrl: WEIGHTS_URL, manifestUrl: WEIGHTS_MANIFEST_URL },
+    },
+    conditions: {
+      acceptance: {
+        strict: STRICT_ACCEPTANCE, budgetFraction: BUDGET_FRACTION,
+        hardBudgetFraction: HARD_BUDGET_FRACTION, sourceIntervalMs: SOURCE_INTERVAL_MS,
+        softDeadlineMs: SOFT_DEADLINE_MS, hardDeadlineMs: HARD_DEADLINE_MS,
+      },
+      autotune: { scope: 'once-per-module-before-all-factor-measurements' },
+      warmup: {
+        prepPairCalls: 1, runTCalls: WARMUP_RUNS, timestep: 0.5, gpuQueueDrain: true,
+        fullIntervalCallsPerFactor: INTERVAL_WARMUPS,
+      },
+      samples: {
+        repetitions: REPS, callsPerPrepPairSample: ITERS, callsPerRunTSample: ITERS,
+        callsPerCycle2xSample: CYCLE_ITERS, fullIntervalRepetitions: INTERVAL_REPS,
+        perRunTDistinctTimesteps: NMIDS, statistic: 'p50 and p95', variance: 'population stddev',
+        factorOrderByRepetition: FACTOR_ORDER_BY_REPETITION,
+      },
+      timing: {
+        wall: 'performance.now around calls plus device.queue.onSubmittedWorkDone',
+        cpu: 'performance.now around synchronous encode/submit calls, before GPU queue drain',
+        gpu: 'timestamp-query profileT stage timings; full interval is an explicit estimate',
+      },
+    },
+    res: `${MW}x${MH}`, model: MODEL, scene: SCENE, sparse: SPARSE, guard: GUARD, mods: {},
+  };
   let refBytes = null;
 
   for (const modName of MODS) {
@@ -101,60 +272,148 @@ async function bench() {
     }
     const rt = await mod.createRT(device, { w: MW, h: MH, weightsBin: bin, weightsManifest: man,
       textureInput: true, textureOutput: true, staticGuard: GUARD, sparseRefine: SPARSE, convTune });
-    const r = {};
+    const r = { convTune };
 
     // warm up (compiles, caches)
     rt.prepPair(texA, texB);
-    for (let i = 0; i < 6; i++) rt.runT(0.5, outTexs[i % outTexs.length]);
+    for (let i = 0; i < WARMUP_RUNS; i++) rt.runT(0.5, outTexs[i % outTexs.length]);
     await device.queue.onSubmittedWorkDone();
 
-    // per-pair wall: prepPair x30
+    r.wall = {};
+    r.cpuEncodeSubmit = {};
+
+    // per-pair wall and CPU encode/submit
     {
-      const reps = [];
-      for (let rep = 0; rep < 5; rep++) {
+      const reps = [], cpuReps = [];
+      for (let rep = 0; rep < REPS; rep++) {
         const t0 = performance.now();
-        for (let i = 0; i < 30; i++) rt.prepPair(texA, texB);
+        for (let i = 0; i < ITERS; i++) rt.prepPair(texA, texB);
+        const submitted = performance.now();
         await device.queue.onSubmittedWorkDone();
-        reps.push((performance.now() - t0) / 30);
+        const completed = performance.now();
+        cpuReps.push((submitted - t0) / ITERS);
+        reps.push((completed - t0) / ITERS);
       }
-      r.prepPairMs = +median(reps).toFixed(3);
+      r.wall.prepPair = summarize(reps, ITERS);
+      r.cpuEncodeSubmit.prepPair = summarize(cpuReps, ITERS);
+      r.prepPairMs = r.wall.prepPair.p50Ms;
     }
-    // per-mid wall: prepPair once, then runT x30 (NMIDS distinct t values cycled)
+    // per-mid wall and CPU encode/submit (NMIDS distinct t values cycled)
     {
       const ts = Array.from({ length: NMIDS }, (_, i) => (i + 1) / (NMIDS + 1));
-      const reps = [];
-      for (let rep = 0; rep < 5; rep++) {
+      const reps = [], cpuReps = [];
+      for (let rep = 0; rep < REPS; rep++) {
         rt.prepPair(texA, texB);
         await device.queue.onSubmittedWorkDone();
         const t0 = performance.now();
-        for (let i = 0; i < 30; i++) rt.runT(ts[i % NMIDS], outTexs[i % outTexs.length]);
+        for (let i = 0; i < ITERS; i++) rt.runT(ts[i % NMIDS], outTexs[i % outTexs.length]);
+        const submitted = performance.now();
         await device.queue.onSubmittedWorkDone();
-        reps.push((performance.now() - t0) / 30);
+        const completed = performance.now();
+        cpuReps.push((submitted - t0) / ITERS);
+        reps.push((completed - t0) / ITERS);
       }
-      r.midMs = +median(reps).toFixed(3);
+      r.wall.runT = summarize(reps, ITERS);
+      r.cpuEncodeSubmit.runT = summarize(cpuReps, ITERS);
+      r.midMs = r.wall.runT.p50Ms;
     }
     // full 2x cycle: prepPair + 1 mid
     {
-      const reps = [];
-      for (let rep = 0; rep < 5; rep++) {
+      const reps = [], cpuReps = [];
+      for (let rep = 0; rep < REPS; rep++) {
         const t0 = performance.now();
-        for (let i = 0; i < 20; i++) { rt.prepPair(texA, texB); rt.runT(0.5, outTexs[i % outTexs.length]); }
+        for (let i = 0; i < CYCLE_ITERS; i++) { rt.prepPair(texA, texB); rt.runT(0.5, outTexs[i % outTexs.length]); }
+        const submitted = performance.now();
         await device.queue.onSubmittedWorkDone();
-        reps.push((performance.now() - t0) / 20);
+        const completed = performance.now();
+        cpuReps.push((submitted - t0) / CYCLE_ITERS);
+        reps.push((completed - t0) / CYCLE_ITERS);
       }
-      r.cycle2xMs = +median(reps).toFixed(3);
+      r.wall.cycle2x = summarize(reps, CYCLE_ITERS);
+      r.cpuEncodeSubmit.cycle2x = summarize(cpuReps, CYCLE_ITERS);
+      r.cycle2xMs = r.wall.cycle2x.p50Ms;
     }
+    // Complete source intervals. Every factor uses the same runtime and exact
+    // convTune; measured order rotates to distribute clock/thermal drift.
+    const intervalSamples = new Map(INTERVAL_FACTORS.map(factor => [factor, {
+      cpuEncodeSubmitMs: [], wallMs: [],
+    }]));
+    const measureInterval = async (factor) => {
+      const ts = Array.from({ length: factor - 1 }, (_, i) => (i + 1) / factor);
+      const t0 = performance.now();
+      rt.prepPair(texA, texB);
+      for (let i = 0; i < ts.length; i++) rt.runT(ts[i], outTexs[i % outTexs.length]);
+      const submitted = performance.now();
+      await device.queue.onSubmittedWorkDone();
+      const completed = performance.now();
+      return { cpuEncodeSubmitMs: submitted - t0, wallMs: completed - t0 };
+    };
+    for (const factor of INTERVAL_FACTORS) {
+      for (let warmup = 0; warmup < INTERVAL_WARMUPS; warmup++) await measureInterval(factor);
+    }
+    for (const order of FACTOR_ORDER_BY_REPETITION) {
+      for (const factor of order) {
+        const sample = await measureInterval(factor);
+        intervalSamples.get(factor).cpuEncodeSubmitMs.push(sample.cpuEncodeSubmitMs);
+        intervalSamples.get(factor).wallMs.push(sample.wallMs);
+      }
+    }
+    r.fullIntervals = INTERVAL_FACTORS.map(factor => {
+      const raw = intervalSamples.get(factor);
+      const wall = summarize(raw.wallMs, 1);
+      const cpuEncodeSubmit = summarize(raw.cpuEncodeSubmitMs, 1);
+      const rawP95Ms = quantile([...raw.wallMs].sort((a, b) => a - b), 0.95);
+      const softDeadlineMisses = raw.wallMs.filter(value => value > SOFT_DEADLINE_MS).length;
+      const hardDeadlineMisses = raw.wallMs.filter(value => value > HARD_DEADLINE_MS).length;
+      return {
+        acceptance: {
+          softDeadlineMs: SOFT_DEADLINE_MS,
+          hardDeadlineMs: HARD_DEADLINE_MS,
+          softDeadlineMisses,
+          hardDeadlineMisses,
+          passed: rawP95Ms <= SOFT_DEADLINE_MS && hardDeadlineMisses === 0,
+        },
+        cpuEncodeSubmit,
+        factor,
+        generatedFramesPerInterval: factor - 1,
+        outputHz: SOURCE_FPS * factor,
+        rawCpuEncodeSubmitMs: raw.cpuEncodeSubmitMs,
+        rawWallMs: raw.wallMs,
+        wall,
+      };
+    });
+    if (INTERVAL_FACTORS.length === 1) {
+      const interval = r.fullIntervals[0];
+      r.wall.fullInterval = interval.wall;
+      r.cpuEncodeSubmit.fullInterval = interval.cpuEncodeSubmit;
+      r.fullIntervalMs = interval.wall.p50Ms;
+    }
+    r.passed = r.fullIntervals.every(interval => interval.acceptance.passed);
     // per-stage GPU times
     if (feats.includes('timestamp-query') && rt.profileT) {
       rt.prepPair(texA, texB); // ensure curPrep
       r.profile = await rt.profileT(texA, texB, 0.5, outTexs[0]);
+      r.gpuByFactor = Object.fromEntries(
+        INTERVAL_FACTORS.map(factor => [factor, gpuMetrics(r.profile, factor)]),
+      );
+      r.gpu = INTERVAL_FACTORS.length === 1 ? r.gpuByFactor[INTERVAL_FACTORS[0]] : null;
+    } else {
+      r.gpuByFactor = Object.fromEntries(INTERVAL_FACTORS.map(factor => [factor, {
+        available: false, reason: 'timestamp-query unavailable',
+      }]));
+      r.gpu = INTERVAL_FACTORS.length === 1 ? r.gpuByFactor[INTERVAL_FACTORS[0]] : null;
     }
     // parity vs first module
     rt.prepPair(texA, texB);
     rt.runT(0.5, outTexs[0]);
     await device.queue.onSubmittedWorkDone();
     const bytes = await readTex(device, outTexs[0], MW, MH);
-    if (!refBytes) { refBytes = bytes; r.parity = 'reference'; }
+    const outputSha256 = await sha256Bytes(bytes);
+    if (!refBytes) {
+      refBytes = bytes;
+      r.parity = 'reference';
+      r.parityDetails = { role: 'reference', compared: false, bytes: bytes.length, outputSha256 };
+    }
     else {
       let maxd = 0, nd = 0, sum = 0;
       for (let i = 0; i < bytes.length; i++) {
@@ -162,12 +421,23 @@ async function bench() {
         if (d) { nd++; sum += d; if (d > maxd) maxd = d; }
       }
       r.parity = `max|d|=${maxd} diffBytes=${(100 * nd / bytes.length).toFixed(2)}% mean|d|=${(sum / bytes.length).toFixed(4)}`;
+      r.parityDetails = {
+        role: 'candidate', compared: true, referenceModule: MODS[0], bytes: bytes.length,
+        maxAbsByteDiff: maxd, differentBytes: nd,
+        differentBytePercent: +(100 * nd / bytes.length).toFixed(4),
+        meanAbsByteDiff: +(sum / bytes.length).toFixed(6), exact: nd === 0, outputSha256,
+      };
     }
     results.mods[modName] = r;
-    log(`${modName}: pair=${r.prepPairMs}ms mid=${r.midMs}ms 2x=${r.cycle2xMs}ms`);
+    const intervalLog = r.fullIntervals.map(interval =>
+      `x${interval.factor} p50=${interval.wall.p50Ms}ms p95=${interval.wall.p95Ms}ms ${interval.acceptance.passed ? 'PASS' : 'FAIL'}`
+    ).join(' | ');
+    log(`${modName}: pair=${r.prepPairMs}ms mid=${r.midMs}ms 2x=${r.cycle2xMs}ms | ${intervalLog}`);
     if (r.profile) log('  ' + r.profile);
     log('  parity: ' + r.parity);
+    rt.destroy();
   }
+  results.passed = STRICT_ACCEPTANCE ? Object.values(results.mods).every(result => result.passed) : null;
   window.__benchResult = results;
   document.title = 'BENCH DONE';
   log('== DONE ==\n' + JSON.stringify(results));

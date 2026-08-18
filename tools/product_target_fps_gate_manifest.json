@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 2,
+  "profile": "v7s-480p-product-target-fps-v2",
+  "playwrightCli": {
+    "package": "@playwright/cli@0.1.17",
+    "browser": "chromium",
+    "browserDistribution": "chrome-for-testing",
+    "headed": true,
+    "persistentContext": true
+  },
+  "extension": {
+    "sourceDirectory": "extension",
+    "contentScript": "extension/content.js",
+    "cadenceScript": "extension/cadence.js",
+    "manifest": "extension/manifest.json",
+    "runtime": "web/rt/rt.js",
+    "weights": "extension/assets/rt_v7s.bin",
+    "weightsManifest": "extension/assets/rt_v7s.json",
+    "modelAssetStem": "rt_v7s"
+  },
+  "fixture": {
+    "path": "web/product_target_fps_fixture.html",
+    "pattern": "moving-primitives-v1",
+    "width": 1280,
+    "height": 720,
+    "supportedSourceFps": [10, 15, 24, 60]
+  },
+  "measurement": {
+    "cases": [
+      {
+        "id": "source10-target50",
+        "sourceFps": 10,
+        "targetFps": 50,
+        "resolution": 480,
+        "expectedEffectiveFps": 50,
+        "expectedClampReason": null
+      },
+      {
+        "id": "source15-target50",
+        "sourceFps": 15,
+        "targetFps": 50,
+        "resolution": 480,
+        "expectedEffectiveFps": 50,
+        "expectedClampReason": null
+      },
+      {
+        "id": "source24-target50",
+        "sourceFps": 24,
+        "targetFps": 50,
+        "resolution": 480,
+        "expectedEffectiveFps": 50,
+        "expectedClampReason": null
+      },
+      {
+        "id": "source24-request40-floor48",
+        "sourceFps": 24,
+        "targetFps": 40,
+        "resolution": 480,
+        "expectedEffectiveFps": 48,
+        "expectedClampReason": "minimum"
+      },
+      {
+        "id": "source60-target120",
+        "sourceFps": 60,
+        "targetFps": 120,
+        "resolution": 480,
+        "expectedEffectiveFps": 120,
+        "expectedClampReason": null
+      },
+      {
+        "id": "source60-target144",
+        "sourceFps": 60,
+        "targetFps": 144,
+        "resolution": 480,
+        "expectedEffectiveFps": 144,
+        "expectedClampReason": null
+      },
+      {
+        "id": "source60-request300-display-cap",
+        "sourceFps": 60,
+        "targetFps": 300,
+        "resolution": 480,
+        "expectedEffectiveFps": 232.8,
+        "expectedClampReason": "display"
+      }
+    ],
+    "warmupMsPerCase": 4000,
+    "measureMsPerCase": 12000,
+    "timeoutMsPerCase": 90000,
+    "expectedDisplayHz": 240
+  },
+  "acceptance": {
+    "durationToleranceFraction": 0.03,
+    "sourceHzToleranceFraction": 0.03,
+    "displayHzToleranceFraction": 0.08,
+    "targetHzToleranceFraction": 0.04,
+    "componentHzToleranceFraction": 0.05,
+    "minimumPresentedHzFraction": 0.95,
+    "maximumDroppedFrames": 0,
+    "maximumQueueHighWater": 24,
+    "maximumPendingFrames": 24,
+    "maximumLateP95OutputIntervals": 1.25,
+    "maximumLateMaxOutputIntervals": 3,
+    "maximumSourceBusySkipped": 0,
+    "maximumSourcePresentedFrameGaps": 0,
+    "maximumSourceMetadataDuplicates": 0,
+    "maximumPoolExhaustion": 0,
+    "maximumClassificationSuperseded": 0,
+    "maximumProducerSkippedScheduleSlots": 0,
+    "minimumSourceCallbacksFraction": 0.96,
+    "minimumPairCoverageFraction": 0.98,
+    "maximumMidPipelineLag": 3,
+    "requiredDeviceFeatures": ["shader-f16", "timestamp-query"]
+  },
+  "outputDirectory": "output/product-target-fps"
+}

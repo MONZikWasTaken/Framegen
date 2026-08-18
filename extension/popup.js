@@ -25,8 +25,13 @@ function render(s) {
   dot.classList.toggle('on', s.running);
   state.textContent = s.running ? 'running' : 'off';
   state.className = s.running ? 'on' : '';
+  const outputRate = s.targetState && !['factor', 'active'].includes(s.targetState)
+    ? `${s.rateLabel} · ${s.targetWarning || s.targetState}`
+    : s.rateClamped
+      ? `${s.rateLabel} → ${s.effectiveTargetHz} FPS (${s.targetReason})`
+      : s.rateLabel || (s.factor === 'auto' ? 'Auto' : `${s.factor}x source`);
   stat.textContent = s.running
-    ? `out: ${s.fps} fps · factor x${s.effN}${s.factor === 'auto' ? ' (auto)' : ''}\n`
+    ? `out: ${s.fps} fps · target: ${outputRate}\n`
       + `mid: ${s.ms} ms @ ${s.res}p\n`
       + `drops: ${s.drops} · model: ${s.model}`
     : '';
@@ -42,6 +47,12 @@ const showTab = (help) => {
 };
 $('tabStatus').onclick = () => showTab(false);
 $('tabHelp').onclick = () => showTab(true);
+$('fullSettings').onclick = async () => {
+  try {
+    await chrome.runtime.openOptionsPage();
+    window.close();
+  } catch { /* leave the popup open if Chrome rejects the options request */ }
+};
 
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
