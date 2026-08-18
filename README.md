@@ -60,25 +60,23 @@ Requirements: **Chrome 121+** on a machine with a GPU (Windows, macOS with
 Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU features we
 need yet.
 
-### Changes in this fork
+### Development install
 
-This fork is self-contained for unpacked development installs on macOS,
-Windows, and Linux. It bundles the WebGPU runtime and model files in
-`extension/`, so a fresh clone can be loaded directly without a separate
-asset-build step. This resolves the `FG error: failed to fetch` error caused
-by an extension folder that contains source code but not its runtime or model
-files.
+The repository keeps the WebGPU runtime and released model files in
+`extension/`, so a fresh clone is directly loadable on macOS, Windows, and
+Linux. `tools/build_extension.ps1` validates those files and creates both
+release ZIP layouts; it fails instead of packaging a missing, mismatched, or
+stale runtime payload. If local model exports exist in the ignored `assets/`
+directory, their hashes must match the tracked payload. Use
+`tools/build_extension.ps1 -PromoteLocalAssets` to deliberately promote those
+exports, then review and commit the resulting `extension/assets` changes.
 
-For ordinary non-DRM HTML5 players, the overlay now mirrors the video's CSS
-`object-fit` and `object-position`. This prevents the interpolation pipeline
-from being skipped merely because a cinematic or embedded video uses a
-different aspect ratio from its player box.
+For ordinary non-DRM HTML5 players, the overlay mirrors CSS `object-fit`
+(`fill`, `contain`, `cover`, `none`, and `scale-down`) and `object-position`.
+If an unscaled source exceeds the FHD canvas safety limit, Framegen leaves the
+raw video visible instead of presenting a misaligned overlay.
 
-The Debug setting in Framegen's gear menu exposes source-frame timing,
-`requestVideoFrameCallback`, render-loop, inference, presentation, and canvas
-dimensions to help investigate player-specific problems.
-
-To install this fork locally:
+To load a development checkout locally:
 
 1. Clone or download this repository.
 2. Open `chrome://extensions` or `edge://extensions`.
@@ -86,8 +84,9 @@ To install this fork locally:
    repository's `extension` folder.
 4. Reload the video page after reloading the extension.
 
-The Debug setting in Framegen's gear menu shows source-frame, render-loop,
-inference, presentation, and canvas-size diagnostics for troubleshooting.
+The Debug setting in Framegen's gear menu shows source-frame timing,
+`requestVideoFrameCallback`, render-loop, inference, presentation, and canvas
+dimensions for troubleshooting.
 
 ## How to use
 

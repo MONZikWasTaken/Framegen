@@ -26,8 +26,7 @@ opencode.json
 /frames_in/
 /frames_out/
 
-extension/rt/
-extension/assets/
+# extension/rt and extension/assets are intentionally tracked for Load unpacked.
 extension/_metadata/
 
 framegen-extension.zip
