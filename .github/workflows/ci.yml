@@ -18,6 +18,7 @@ jobs:
           node --check web/rt/rt.js
           node --check web/rt/sr.js
           node --check extension/cadence.js
+          node --check extension/background.js
           node --check extension/content.js
           node --check extension/options.js
           node --check extension/popup.js

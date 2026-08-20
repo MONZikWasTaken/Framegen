@@ -11,11 +11,13 @@ const optionsCss = readFileSync(new URL('../extension/options.css', import.meta.
 const popupHtml = readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
 const popupJs = readFileSync(new URL('../extension/popup.js', import.meta.url), 'utf8');
 const optionsJs = readFileSync(new URL('../extension/options.js', import.meta.url), 'utf8');
+const backgroundJs = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
 
 const customSettings = Object.freeze({
   factor: 'target',
   targetFps: 137.25,
+  fpsLimit: 60,
   anime: false,
   debug: true,
   res: 1080,
@@ -26,6 +28,7 @@ const customSettings = Object.freeze({
   hdr: true,
   showFps: false,
   showWatermark: false,
+  showWarnings: false,
   guard: false,
   model: 'v6',
 });
@@ -41,7 +44,7 @@ function v1Profile(overrides = {}) {
   };
 }
 
-test('missing store initializes empty schema v2 without materializing current settings', () => {
+test('missing store initializes empty schema v3 without materializing current settings', () => {
   const storage = {
     ...customSettings,
     fcTune: { adapter: 'must stay outside profiles' },
@@ -54,7 +57,7 @@ test('missing store initializes empty schema v2 without materializing current se
   assert.equal(loaded.needsWrite, true);
   assert.equal(loaded.sourceSchemaVersion, null);
   assert.deepEqual(loaded.store, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     lastAppliedProfileId: null,
     profiles: [],
   });
@@ -89,6 +92,8 @@ test('target FPS accepts decimals, clamps its range, and rounds to two places', 
   assert.equal(clean.anime, true);
   assert.equal(clean.debug, false);
   assert.equal(clean.showWatermark, true);
+  assert.equal(clean.fpsLimit, null);
+  assert.equal(clean.showWarnings, true);
   assert.deepEqual(Object.keys(clean), Profiles.SETTINGS_KEYS);
   assert.equal('fcTune' in clean, false);
   assert.equal(Profiles.sanitizeSettings({ factor: 'target', targetFps: 1 }).targetFps, 2);
@@ -96,6 +101,36 @@ test('target FPS accepts decimals, clamps its range, and rounds to two places', 
   assert.equal(Profiles.sanitizeSettings({ factor: 'target', targetFps: 59.944 }).targetFps, 59.94);
   assert.equal(Profiles.sanitizeSettings({ factor: 'target', targetFps: -4 }).targetFps, 120);
   assert.equal(Profiles.sanitizeSettings({ factor: '6', targetFps: 240 }).factor, 6);
+  assert.equal(Profiles.sanitizeFpsLimit(137), 144);
+  assert.equal(Profiles.sanitizeFpsLimit(247), 240);
+  assert.equal(Profiles.sanitizeFpsLimit(null), null);
+});
+
+test('schema v2 profiles inherit the current FPS limit and warning preference', () => {
+  const legacySettings = { ...customSettings };
+  delete legacySettings.fpsLimit;
+  delete legacySettings.showWarnings;
+  const rawStore = {
+    schemaVersion: 2,
+    lastAppliedProfileId: 'custom-one',
+    profiles: [{
+      id: 'custom-one',
+      name: 'Living room',
+      description: 'Exact setup',
+      settings: legacySettings,
+    }],
+  };
+  const snapshot = structuredClone(rawStore);
+  const loaded = Profiles.loadStore(rawStore, customSettings);
+
+  assert.equal(loaded.needsWrite, true);
+  assert.equal(loaded.sourceSchemaVersion, 2);
+  assert.equal(loaded.store.schemaVersion, 3);
+  assert.equal(loaded.store.lastAppliedProfileId, 'custom-one');
+  assert.equal(loaded.store.profiles[0].settings.fpsLimit, 60);
+  assert.equal(loaded.store.profiles[0].settings.showWarnings, false);
+  assert.deepEqual(rawStore, snapshot);
+  assert.equal(Profiles.loadStore(loaded.store, customSettings).needsWrite, false);
 });
 
 test('schema v1 built-in selection disappears while custom profiles and flat settings survive', () => {
@@ -365,10 +400,13 @@ test('advanced page keeps compact toolbar and exposes exact target FPS controls'
   assert.match(optionsHtml, /id="showWatermark"/);
 });
 
-test('advanced page action bar remains in document flow and cannot cover setting rows', () => {
+test('advanced page keeps actions visible and reserves scroll space for the fixed bar', () => {
   const actionBarRule = optionsCss.match(/\.action-bar\s*\{([^}]*)\}/)?.[1] || '';
-  assert.equal(/\bposition\s*:\s*(?:fixed|sticky)\b/.test(actionBarRule), false);
-  assert.equal(/\bbottom\s*:/.test(actionBarRule), false);
+  const workspaceRule = optionsCss.match(/\.workspace\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(actionBarRule, /\bposition\s*:\s*fixed\b/);
+  assert.match(actionBarRule, /\bbottom\s*:\s*0\b/);
+  assert.match(workspaceRule, /padding\s*:\s*30px 0 104px/);
+  assert.match(optionsCss, /@media \(max-width: 640px\)[\s\S]*?padding-bottom:\s*104px/);
 });
 
 test('options controller exposes virtual Current first and keeps preview, save, and apply separate', () => {
@@ -377,10 +415,12 @@ test('options controller exposes virtual Current first and keeps preview, save, 
   assert.match(optionsJs, /selectedProfileId = null/);
   assert.match(optionsJs, /function loadCurrentDraft\(\)/);
   assert.match(optionsJs, /Profiles\.loadStore\(/);
-  assert.match(optionsJs, /chrome\.storage\.local\.set\(\{ \[Profiles\.STORE_KEY\]: store \}\)/);
-  assert.match(optionsJs, /Profiles\.toStoragePayload\(store, draftSettings\)/);
+  assert.match(optionsJs, /chrome\.storage\.local\.set\(\{ \[Profiles\.STORE_KEY\]: nextStore \}\)/);
+  assert.match(optionsJs, /Profiles\.toStoragePayload\(nextStore, draftSettings\)/);
   assert.match(optionsJs, /Profiles\.setLastAppliedProfile\(store, selected\?\.id \|\| null\)/);
-  assert.match(optionsJs, /updateTargetFpsVisibility\(draftSettings\.factor\)/);
+  assert.match(optionsJs, /updateRateControlVisibility\(draftSettings\.factor\)/);
+  assert.match(optionsJs, /'showFps', 'showWatermark', 'showWarnings'/);
+  assert.match(optionsJs, /fpsLimit:\s*fpsLimitFromSlider\(\)/);
   assert.match(optionsJs, /let profileStoreReadOnly = false/);
   assert.match(optionsJs, /enterProfileStoreReadOnly\(error\)/);
   assert.match(optionsJs, /if \(profileStoreReadOnly\) return/);
@@ -389,25 +429,37 @@ test('options controller exposes virtual Current first and keeps preview, save, 
 });
 
 test('extension exposes the full-page configurator without replacing popup status and help', () => {
+  assert.equal(manifest.version, '1.4.2');
+  assert.match(contentJs, /const VERSION = '1\.4\.2'/);
+  assert.match(optionsHtml, /<span class="version">v1\.4\.2<\/span>/);
   assert.deepEqual(manifest.options_ui, { page: 'options.html', open_in_tab: true });
-  assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'content.js']);
+  assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'profile-store.js', 'content.js']);
+  assert.deepEqual(manifest.background, { service_worker: 'background.js' });
+  assert.match(optionsHtml, /id="runtimeStatus"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(popupHtml, /id="tabStatus"/);
   assert.match(popupHtml, /id="tabHelp"/);
   assert.match(popupHtml, /id="fullSettings"/);
   assert.match(popupHtml, /github\.com\/MONZikWasTaken\/Framegen/);
   assert.match(popupJs, /chrome\.runtime\.openOptionsPage\(\)/);
+  assert.match(backgroundJs, /message\?\.type !== 'fcOpenOptions'/);
+  assert.match(backgroundJs, /chrome\.tabs\.create\(createOptions\)/);
 });
 
-test('runtime remains isolated from profile storage and consumes flat advanced settings', () => {
-  assert.equal(contentJs.includes('fcProfileStore'), false);
+test('runtime shares the profile contract while continuing to consume flat settings', () => {
+  assert.match(contentJs, /const Profiles = globalThis\.FramegenProfiles/);
+  assert.match(contentJs, /Profiles\.STORE_KEY/);
+  assert.match(contentJs, /Profiles\.toStoragePayload\(nextStore, profile\.settings\)/);
   assert.match(contentJs, /chrome\.storage\.local\.set\(cfg\)/);
   assert.match(contentJs, /showWatermark:\s*true/);
+  assert.match(contentJs, /showWarnings:\s*true/);
+  assert.match(contentJs, /fpsLimit:\s*null/);
   assert.match(contentJs, /wm\.style\.display = cfg\.showWatermark \? 'block' : 'none'/);
   assert.match(contentJs, /k === 'res' \|\| k === 'model' \|\| k === 'guard'/);
   assert.match(contentJs, /rtGuard === guard/);
   assert.match(contentJs, /while \(!runtimeMatches\(\)\)/);
   assert.match(contentJs, /await settingsReady/);
   assert.match(contentJs, /staticGuard: buildGuard/);
-  assert.match(contentJs, /chrome\.runtime\.openOptionsPage\(\)/);
-  assert.match(contentJs, /<option value="v6">v6 \(legacy\)<\/option>/);
+  assert.match(contentJs, /chrome\.runtime\.sendMessage\(\{ type: 'fcOpenOptions' \}\)/);
+  assert.doesNotMatch(contentJs, /id="fcModel"/);
+  assert.match(optionsHtml, /<option value="v6">v6 · legacy<\/option>/);
 });

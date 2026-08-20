@@ -9,6 +9,8 @@
 
   const Cadence = globalThis.FramegenCadence;
   if (!Cadence) throw new Error('Framegen cadence helper was not loaded');
+  const Profiles = globalThis.FramegenProfiles;
+  if (!Profiles) throw new Error('Framegen profile store was not loaded');
 
   const DELAY_MS = 60;
   // runtime tiles are 16x16 - model dims must be /16 (1088, not 1080; the ~0.7%
@@ -34,18 +36,21 @@
   // 3.05ms @480p, 3.75 vs 5.51 @720p) at equal-or-better quality. v6 stays
   // selectable; users with a saved choice keep it.
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
-  const cfg = { factor: 'auto', targetFps: 120, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, guard: true, model: 'v7s' };
+  const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
+  const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
+    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
     cfg.targetFps = Cadence.sanitizeTargetFps(legacyTarget ?? cfg.targetFps, 120);
+    cfg.fpsLimit = canonicalFpsLimit(cfg.fpsLimit);
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
-    cfg.showFps = !!cfg.showFps; cfg.showWatermark = cfg.showWatermark !== false; cfg.guard = !!cfg.guard;
+    cfg.showFps = !!cfg.showFps; cfg.showWatermark = cfg.showWatermark !== false;
+    cfg.showWarnings = cfg.showWarnings !== false; cfg.guard = !!cfg.guard;
   }
   let settleSettingsReady = () => {};
   let settingsSettled = !!PRODUCT_BENCH;
@@ -60,15 +65,24 @@
     // Runtime creation waits for this first snapshot. Otherwise hover preload can
     // compile the defaults and then label them with the saved model/resolution.
     chrome.storage.local.get(cfg, v => {
-      try { Object.assign(cfg, v); sanitizeCfg(); syncPanel(); }
+      try {
+        const storedFpsLimit = v.fpsLimit;
+        Object.assign(cfg, v); sanitizeCfg(); syncPanel();
+        if (storedFpsLimit !== cfg.fpsLimit) {
+          chrome.storage.local.set({ fpsLimit: cfg.fpsLimit });
+        }
+      }
       finally { settleSettingsReady(); }
     });
     // settings changed in another tab/frame apply here live
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== 'local') return;
+      const profileStoreChanged = Object.hasOwn(ch, Profiles.STORE_KEY);
       let runtimeChanged = false;
       const previousFactor = cfg.factor;
       const previousTargetFps = cfg.targetFps;
+      const previousFpsLimit = cfg.fpsLimit;
+      const incomingFpsLimit = ch.fpsLimit?.newValue;
       const previousFg = cfg.fg;
       const previousCompare = cfg.compare;
       for (const k in ch) {
@@ -79,7 +93,16 @@
         cfg[k] = ch[k].newValue;
       }
       sanitizeCfg(); syncPanel();
-      if (cfg.factor !== previousFactor || cfg.targetFps !== previousTargetFps || cfg.fg !== previousFg) {
+      if (incomingFpsLimit !== undefined && incomingFpsLimit !== cfg.fpsLimit) {
+        chrome.storage.local.set({ fpsLimit: cfg.fpsLimit });
+      }
+      if (Object.hasOwn(ch, 'showFps')) syncHudVisibility();
+      if (Object.hasOwn(ch, 'showWarnings') && !cfg.showWarnings) hideWarnings();
+      if (profileStoreChanged) {
+        loadPanelProfiles(ch[Profiles.STORE_KEY].newValue).catch(e => log('profile sync', e));
+      }
+      if (cfg.factor !== previousFactor || cfg.targetFps !== previousTargetFps
+          || cfg.fpsLimit !== previousFpsLimit || cfg.fg !== previousFg) {
         delayMs = DELAY_MS;
         resetOutputCadence(true);
       }
@@ -95,27 +118,184 @@
   function saveCfg() {
     try { chrome.storage.local.set(cfg); } catch {}
   }
+  let panelProfileStore = null;
+
+  function fpsLimitStepIndex(value) {
+    return Profiles.fpsLimitPresetIndex(value);
+  }
+
+  function canonicalFpsLimit(value) {
+    return Profiles.sanitizeFpsLimit(value);
+  }
+
+  function fpsLimitFromSlider(input) {
+    const index = Math.max(0, Math.min(FPS_LIMIT_STEPS.length - 1,
+      Math.round(Number(input.value) || 0)));
+    return FPS_LIMIT_STEPS[index];
+  }
+
+  function updateRateSliderPresentation(input = panel?.querySelector('#fcTargetFps')) {
+    if (!input || !panel) return;
+    const isLimit = cfg.factor === 'auto';
+    const value = isLimit
+      ? fpsLimitFromSlider(input)
+      : Cadence.sanitizeTargetFps(input.value, cfg.targetFps);
+    const output = panel.querySelector('#fcTargetFpsValue');
+    const label = value === null ? 'Unlimited' : `${Number(value.toFixed(2))} FPS`;
+    if (output) output.value = label;
+    input.setAttribute('aria-valuetext', label);
+    const parsedMin = Number(input.min);
+    const parsedMax = Number(input.max);
+    const min = Number.isFinite(parsedMin) ? parsedMin : 2;
+    const max = Number.isFinite(parsedMax) ? parsedMax : 1000;
+    const sliderValue = Number(input.value);
+    const ratio = Math.max(0, Math.min(1,
+      (sliderValue - min) / Math.max(1, max - min)));
+    const thumbOffset = Number((7.5 * (1 - 2 * ratio)).toFixed(3));
+    input.style.setProperty('--fc-fill', `calc(${ratio * 100}% + ${thumbOffset}px)`);
+  }
+
+  function renderRateScale(scale, marks) {
+    scale.replaceChildren(...marks.map(({ label, position }) => {
+      const mark = document.createElement('span');
+      mark.textContent = label;
+      mark.style.setProperty('--fc-mark-position', `${position}%`);
+      const offset = Number((7.5 * (1 - 2 * position / 100)).toFixed(3));
+      mark.style.setProperty('--fc-mark-offset', `${offset}px`);
+      return mark;
+    }));
+  }
+
+  function syncRateSlider() {
+    const input = panel?.querySelector('#fcTargetFps');
+    if (!input) return;
+    const control = input.closest('.fc-target-control');
+    const visible = cfg.factor === 'auto' || cfg.factor === 'target';
+    control.hidden = !visible;
+    if (!visible) return;
+
+    const title = panel.querySelector('#fcRateSliderTitle');
+    const hint = panel.querySelector('#fcRateSliderHint');
+    const scale = panel.querySelector('#fcRateSliderScale');
+    if (cfg.factor === 'auto') {
+      title.textContent = 'FPS limit';
+      hint.textContent = 'Common rates · Auto may run lower';
+      input.min = '0';
+      input.max = String(FPS_LIMIT_STEPS.length - 1);
+      input.step = '1';
+      input.value = String(fpsLimitStepIndex(cfg.fpsLimit));
+      input.setAttribute('aria-label', 'FPS limit');
+      renderRateScale(scale, [15, 60, 120, 240, null].map(value => ({
+        label: value === null ? '∞' : String(value),
+        position: fpsLimitStepIndex(value) / (FPS_LIMIT_STEPS.length - 1) * 100,
+      })));
+    } else {
+      title.textContent = 'Custom FPS';
+      hint.textContent = 'Exact target · minimum 2× source';
+      input.min = '2';
+      input.max = '1000';
+      input.step = '0.01';
+      input.value = String(cfg.targetFps);
+      input.setAttribute('aria-label', 'Custom FPS');
+      renderRateScale(scale, [
+        { label: '2', position: 0 },
+        { label: '500', position: 49.9 },
+        { label: '1000', position: 100 },
+      ]);
+    }
+    updateRateSliderPresentation(input);
+  }
+
+  function syncPanelProfileSelection() {
+    const select = panel?.querySelector('#fcProfile');
+    if (!select || !panelProfileStore) return;
+    try {
+      select.value = Profiles.findMatchingProfileId(panelProfileStore, cfg) || '';
+    } catch {
+      select.value = '';
+    }
+  }
+
+  function renderPanelProfiles() {
+    const select = panel?.querySelector('#fcProfile');
+    if (!select || !panelProfileStore) return;
+    const current = document.createElement('option');
+    current.value = '';
+    current.textContent = 'Current settings';
+    const children = [current];
+    const profiles = Profiles.profileList(panelProfileStore);
+    if (profiles.length) {
+      const group = document.createElement('optgroup');
+      group.label = 'My profiles';
+      for (const profile of profiles) {
+        const option = document.createElement('option');
+        option.value = profile.id;
+        option.textContent = profile.name;
+        group.append(option);
+      }
+      children.push(group);
+    }
+    select.replaceChildren(...children);
+    select.disabled = false;
+    syncPanelProfileSelection();
+  }
+
+  async function loadPanelProfiles(rawStore) {
+    if (!panel) return;
+    const select = panel.querySelector('#fcProfile');
+    try {
+      let candidate = rawStore;
+      if (arguments.length === 0) {
+        const snapshot = await chrome.storage.local.get(Profiles.STORE_KEY);
+        candidate = snapshot[Profiles.STORE_KEY];
+      }
+      const loaded = Profiles.loadStore(candidate, cfg);
+      panelProfileStore = loaded.store;
+      renderPanelProfiles();
+      if (loaded.needsWrite) {
+        await chrome.storage.local.set({ [Profiles.STORE_KEY]: loaded.store });
+      }
+    } catch (error) {
+      panelProfileStore = null;
+      if (select) {
+        const unavailable = document.createElement('option');
+        unavailable.textContent = 'Profiles unavailable';
+        select.replaceChildren(unavailable);
+        select.disabled = true;
+      }
+      log('profiles', error);
+    }
+  }
+
+  async function applyPanelProfile(profileId) {
+    if (!profileId || !panelProfileStore) {
+      syncPanelProfileSelection();
+      return;
+    }
+    const profile = Profiles.getProfile(panelProfileStore, profileId);
+    if (!profile) {
+      syncPanelProfileSelection();
+      return;
+    }
+    const nextStore = Profiles.setLastAppliedProfile(panelProfileStore, profile.id);
+    panelProfileStore = nextStore;
+    await chrome.storage.local.set(Profiles.toStoragePayload(nextStore, profile.settings));
+  }
+
   function syncPanel() {
     if (!panel) return;
     panel.querySelector('#fcFactor').value = String(cfg.factor);
-    const targetInput = panel.querySelector('#fcTargetFps');
-    if (targetInput) {
-      targetInput.value = String(cfg.targetFps);
-      targetInput.closest('.fc-row').hidden = cfg.factor !== 'target';
-    }
+    syncRateSlider();
     panel.querySelector('#fcRes').value = String(cfg.res);
-    panel.querySelector('#fcModel').value = cfg.model;
-    panel.querySelector('#fcAnime').checked = cfg.anime;
-    panel.querySelector('#fcDebug').checked = cfg.debug;
-    panel.querySelector('#fcHover').checked = cfg.hoverReveal;
-    panel.querySelector('#fcFps').checked = cfg.showFps;
-    panel.querySelector('#fcGuard').checked = cfg.guard;
-    panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
+    panel.querySelector('#fcShowFps').checked = cfg.showFps;
+    panel.querySelector('#fcWatermark').checked = cfg.showWatermark;
+    panel.querySelector('#fcWarnings').checked = cfg.showWarnings;
     const hd = panel.querySelector('#fcHDR');
     hd.checked = cfg.hdr;
     if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
+    syncPanelProfileSelection();
   }
 
   let rt = null, rtRes = 0, rtModel = '', rtGuard = null, rtGeneration = 0;
@@ -146,6 +326,13 @@
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, nextUiUpdateAt = 0, motionAvg = 0, lateAvg = 0;
+
+  function syncHudVisibility() {
+    if (!hud) return;
+    const text = hud.textContent || '';
+    const critical = text.startsWith('FG:') || text.startsWith('FG error:') || text.startsWith('FC:');
+    hud.style.display = critical || (running && (cfg.debug || cfg.showFps)) ? 'block' : 'none';
+  }
   const UI_UPDATE_INTERVAL_MS = 1000 / 15;
   const refreshEstimate = { floorMs: rafFloor, slowCandidateMs: 0, slowSamples: 0, stableSamples: 0 };
   let outputRatePlanKey = '';
@@ -248,6 +435,31 @@
     return frameDelta;
   }
 
+  function autoPolicyFactor(midCostMs) {
+    const costMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
+    let factor = 6;
+    while (factor > 2 && (factor - 1) * costMs > uniqueIntervalMs * 0.85) factor--;
+    const displayHz = rafMs > 1 ? 1000 / rafMs : 60;
+    while (factor > 2 && (1000 / uniqueIntervalMs) * factor > displayHz) factor--;
+    factor = Math.max(2, factor - autoPenalty);
+    const motionCeiling = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
+    if (factor > motionCeiling) factor = motionCeiling;
+    return {
+      factor,
+      runnable: (factor - 1) * costMs <= uniqueIntervalMs * 1.1,
+    };
+  }
+
+  function cappedAutoTargetHz(limit, sourceHz, midCostMs) {
+    const policy = autoPolicyFactor(midCostMs);
+    if (!policy.runnable) return Math.min(limit, sourceHz);
+    const uniqueHz = uniqueIntervalMs > 1 ? 1000 / uniqueIntervalMs : sourceHz;
+    // Anime/on-twos still presents every decoded anchor. Only generated mids
+    // follow the unique-pair cadence, so n*uniqueHz would undercount the result.
+    const policyHz = sourceHz + (policy.factor - 1) * uniqueHz;
+    return Math.min(limit, policyHz);
+  }
+
   function currentOutputRatePlan({ midCostMs = null, startGpuProbe = false } = {}) {
     const sourceReady = decodedIntervalSamples.length >= 8;
     const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
@@ -260,11 +472,18 @@
       sourceReady,
       displayReady: refreshEstimate.ready === true || refreshEstimate.stableSamples >= 10,
     };
-    const plan = Cadence.resolveOutputRate(cfg.factor, rafFloor, {
+    const cappedAuto = cfg.factor === 'auto' && cfg.fpsLimit !== null;
+    const requestedTargetFps = cappedAuto && context.sourceHz
+      ? cappedAutoTargetHz(cfg.fpsLimit, context.sourceHz, learnedCostMs)
+      : (cappedAuto ? cfg.fpsLimit : cfg.targetFps);
+    let plan = Cadence.resolveOutputRate(cappedAuto ? 'target' : cfg.factor, rafFloor, {
       ...context,
+      targetFps: requestedTargetFps,
       midCostMs: learnedCostMs,
+      strictCeiling: cappedAuto,
     });
-    const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${Number(plan.minimumHz || 0).toFixed(2)}`;
+    if (cappedAuto) plan = { ...plan, mode: 'auto' };
+    const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${cfg.fpsLimit ?? 'unlimited'}:${Number(plan.minimumHz || 0).toFixed(2)}`;
     const now = performance.now();
     const probeTimeoutMs = sourceReady
       ? Math.max(1500, 2 * (1000 / context.sourceHz) + 250)
@@ -296,6 +515,18 @@
       admissionCostMs: 0.1,
       gpuProbe: true,
     };
+  }
+
+  function usesExactCadence() {
+    return Cadence.isCadenceMode(cfg.factor)
+      || (cfg.factor === 'auto' && cfg.fpsLimit !== null);
+  }
+
+  function outputRateLabel() {
+    if (cfg.factor === 'auto' && cfg.fpsLimit !== null) {
+      return `Auto · max ${Number(cfg.fpsLimit.toFixed(2))} FPS`;
+    }
+    return Cadence.outputRateLabel(cfg.factor, cfg.targetFps);
   }
 
   function outputRateIdentity(plan) {
@@ -334,7 +565,7 @@
     };
   }
   function syncOutputRatePlan(plan) {
-    if (!Cadence.isCadenceMode(cfg.factor)) return plan;
+    if (!usesExactCadence()) return plan;
     const nextIdentity = outputRateIdentity(plan);
     const previous = outputRatePlanIdentity;
     if (!previous) {
@@ -1218,6 +1449,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (bar) uiHost.appendChild(bar);
       if (splitEl) uiHost.appendChild(splitEl);
       if (warnEl) uiHost.appendChild(warnEl);
+      if (adviseEl) uiHost.appendChild(adviseEl);
       if (flashEl) uiHost.appendChild(flashEl);
       if (wm) uiHost.appendChild(wm);
     }
@@ -1685,7 +1917,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   // one-shot amber advisory plate (integrated-GPU hint etc.), positioned above warn
   let adviseEl = null, adviseUntil = 0;
+  function hideWarnings() {
+    overSince = 0;
+    adviseUntil = 0;
+    if (warnEl) {
+      warnEl.style.opacity = '0';
+      warnEl.style.transform = 'translateY(-6px)';
+    }
+    if (adviseEl) adviseEl.style.opacity = '0';
+  }
   function advise(text, ms) {
+    if (!cfg.showWarnings) return;
     if (!adviseEl) {
       adviseEl = document.createElement('div');
       adviseEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
@@ -1700,6 +1942,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function updateAdvise(now, vr) {
     if (!adviseEl) return;
+    if (!cfg.showWarnings) {
+      adviseEl.style.opacity = '0';
+      return;
+    }
     const show = now < adviseUntil;
     if (show) {
       adviseEl.style.left = Math.max(8, vr.left + vr.width / 2 - adviseEl.offsetWidth / 2) + 'px';
@@ -1721,6 +1967,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     document.body.appendChild(warnEl);
   }
   function updateWarn(now, vr) {
+    if (!cfg.showWarnings) {
+      hideWarnings();
+      return;
+    }
     ensureWarn();
     const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
     const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
@@ -1834,7 +2084,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     } // end of throttled UI block
     if (queue.length > 1) queue.sort((a, b) => a.at - b.at);
     const dueSelection = Cadence.selectDuePresentation(queue, now, {
-      targetHz: Cadence.isCadenceMode(cfg.factor)
+      targetHz: usesExactCadence()
         ? stableOutputRatePlan(currentOutputRatePlan()).outputHz || 0
         : 0,
       displayCapacityHz: Cadence.measureDisplayHz(rafFloor).capacityHz,
@@ -1881,8 +2131,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (cfg.debug) {
         const ds = diagnosticSnapshot(now);
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
-        const mode = cfg.factor === 'auto' && autoPenalty
-          ? `Auto-${autoPenalty}` : Cadence.outputRateLabel(cfg.factor, cfg.targetFps);
+        const mode = cfg.factor === 'auto' && autoPenalty && cfg.fpsLimit === null
+          ? `Auto-${autoPenalty}` : outputRateLabel();
         hud.textContent = [
           `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
           `${msAvg.toFixed(1)}ms@${cfg.res}p`,
@@ -1900,7 +2150,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           `canvas ${ds.canvas.backing?.join('x') ?? '-'} css ${ds.canvas.css?.join('x') ?? '-'} @${ds.canvas.dpr}`,
         ].join('  ·  ');
       } else {
-        hud.textContent = `FG ${fpsWin.length}fps · ${Cadence.outputRateLabel(cfg.factor, cfg.targetFps)} · ${msAvg.toFixed(0)}ms`;
+        hud.textContent = `FG ${fpsWin.length}fps · ${outputRateLabel()} · ${msAvg.toFixed(0)}ms`;
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
@@ -2062,7 +2312,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
       const playbackRate = Math.max(0.01, Math.abs(Number(videoEl.playbackRate) || 1));
       const wallPairMs = decodedIntervalMs / playbackRate;
-      const cadenceConfigured = Cadence.isCadenceMode(cfg.factor) && cfg.fg;
+      const cadenceConfigured = usesExactCadence() && cfg.fg;
       const dTarget = Cadence.computePresentationDelayMs({
         cadenceMode: cadenceConfigured,
         sourceIntervalMs: wallPairMs,
@@ -2263,19 +2513,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (noInterpolation) return;
     let n, run = true;
     if (cfg.factor === 'auto') {
-      // smart auto: as much as fits in 85% of the per-unique-frame budget,
-      // but never past the display refresh (extra frames would be thrown away)
-      n = 6;
-      while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.85) n--;
-      // cap by what the compositor actually presents, no optimism margin
-      const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
-      while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz) n--;
-      n = Math.max(2, n - autoPenalty); // drop-rate feedback (see pump)
-      // fast scenes: interpolation artifacts scale with motion while the eye
-      // can't rate smoothness anyway - cap the factor by measured motion
-      const mcap = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
-      if (n > mcap) n = mcap;
-      if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
+      // smart auto: as much as fits the unique-frame budget, display service,
+      // drop feedback and current motion. Capped Auto reuses the same policy.
+      const policy = autoPolicyFactor(ms);
+      n = policy.factor;
+      run = policy.runnable;
+      if (!run) autoSkipT = arrival;
     } else {
       // fixed by the user = a CEILING: under sustained overload we step down
       // to what actually fits the frame budget (the overload plate explains),
@@ -2391,6 +2634,19 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       return;
     }
     cfg.targetFps = next;
+    delayMs = DELAY_MS;
+    resetOutputCadence(true);
+    syncPanel();
+    if (persist) saveCfg();
+  }
+
+  function setFpsLimit(value, persist = true) {
+    const next = canonicalFpsLimit(value);
+    if (cfg.fpsLimit === next) {
+      syncPanel();
+      return;
+    }
+    cfg.fpsLimit = next;
     delayMs = DELAY_MS;
     resetOutputCadence(true);
     syncPanel();
@@ -2576,8 +2832,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     hud.style.display = 'none';
     if (wm) wm.style.display = 'none';
     if (bar) bar.style.display = 'none';
-    overSince = 0;
-    if (warnEl) warnEl.style.opacity = '0';
+    hideWarnings();
     if (splitEl) splitEl.style.display = 'none';
     resetOutputCadence(true);
     delayMs = DELAY_MS;
@@ -2608,8 +2863,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const st = panel && panel.querySelector('#fcStatus');
     if (!st) return;
     const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
-    const label = Cadence.outputRateLabel(cfg.factor, cfg.targetFps);
-    const rateState = !ratePlan.interpolationAllowed && Cadence.isCadenceMode(cfg.factor)
+    const label = outputRateLabel();
+    const rateState = !ratePlan.interpolationAllowed && usesExactCadence()
       ? `${label} · ${ratePlan.warning}`
       : ratePlan.clamped
         ? `${label} → ${Number(ratePlan.outputHz.toFixed(2))} FPS (${ratePlan.clampReason})`
@@ -2657,7 +2912,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     } finally { switching = false; }
   }
 
-  // keep the whole panel on screen - it grows when "advanced" unfolds
+  // Keep the quick panel inside the viewport on small and embedded players.
   function clampPanel() {
     if (!panel || panel.style.display !== 'block') return;
     const r = panel.getBoundingClientRect();
@@ -2665,111 +2920,113 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (r.right > innerWidth - 10) panel.style.left = Math.max(10, innerWidth - r.width - 10) + 'px';
   }
 
+  async function openAdvancedSettings() {
+    const button = panel?.querySelector('#fcOpenSettings');
+    if (button) button.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'fcOpenOptions' });
+      if (!response?.ok) throw new Error(response?.error || 'Could not open settings');
+    } catch (messageError) {
+      try {
+        await chrome.runtime.openOptionsPage();
+      } catch (directError) {
+        log('open settings', directError || messageError);
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function buildPanel() {
     panel = document.createElement('div');
+    panel.className = 'fc-panel';
     panel.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
-      + 'background:rgba(14,15,17,.96); color:#ddd; border:1px solid rgba(255,255,255,.14);'
-      + 'border-radius:14px; box-shadow:0 8px 32px rgba(0,0,0,.5);'
-      + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
+      + 'background:#111315; color:#ddd; border:1px solid #303338;'
+      + 'border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.4);'
+      + 'padding:14px 16px 15px; font:12px/1.5 system-ui; display:none; width:332px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framegen <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
-      <label class="fc-row"><span>Smoothness<small>neural frame generation</small></span>
+      <div class="fc-panel-head">
+        <div class="fc-brand">
+          <span class="fc-brand-dot" aria-hidden="true"></span>
+          <strong>Framegen</strong>
+          <span class="fc-version">v${VERSION}</span>
+        </div>
+        <a class="fc-icon-link" href="https://github.com/MONZikWasTaken/Framegen"
+          target="_blank" rel="noopener noreferrer" title="Open Framegen on GitHub"
+          aria-label="Open Framegen on GitHub">
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.38.97.1-.75.4-1.27.74-1.56-2.57-.3-5.27-1.29-5.27-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.16 1.18a10.96 10.96 0 0 1 5.75 0c2.19-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.41-2.71 5.39-5.29 5.68.42.36.79 1.06.79 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/>
+          </svg>
+        </a>
+      </div>
+      <label class="fc-row fc-profile-row"><span>Profile<small>Apply a saved setup</small></span>
+        <select class="fc-sel fc-profile" id="fcProfile" disabled>
+          <option>Loading profiles…</option>
+        </select></label>
+      <div class="fc-divider"></div>
+      <label class="fc-row"><span>Frame generation<small>Create smoother motion</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <label class="fc-row"><span>Output rate<small>target playback frame rate</small></span>
+      <label class="fc-row"><span>Output rate<small>Choose how playback is paced</small></span>
         <select class="fc-sel" id="fcFactor">
-          <option value="auto">Auto</option>
-          <option value="hz">Display Hz</option>
-          <option value="target">Target FPS</option>
+          <option value="auto">Auto · recommended</option>
+          <option value="hz">Match display</option>
+          <option value="target">Custom FPS</option>
           <option value="2">2× source</option><option value="3">3× source</option>
           <option value="4">4× source</option><option value="5">5× source</option>
           <option value="6">6× source</option>
         </select></label>
-      <label class="fc-row" hidden><span>Target FPS<small>minimum 2× source</small></span>
-        <input class="fc-target" id="fcTargetFps" type="number" min="2" max="1000" step="0.01"
-          inputmode="decimal"></label>
-      <label class="fc-row"><span>Resolution boost<small>2x neural upscale - generated frames, or the whole video when Smoothness is off</small></span>
+      <label class="fc-target-control">
+        <span class="fc-target-head"><span><span id="fcRateSliderTitle">FPS limit</span>
+          <small id="fcRateSliderHint">Common rates · Auto may run lower</small></span>
+          <output id="fcTargetFpsValue" for="fcTargetFps">Unlimited</output></span>
+        <input class="fc-target-slider" id="fcTargetFps" type="range" min="0" max="17"
+          step="1" value="17" aria-label="FPS limit">
+        <span class="fc-target-scale" id="fcRateSliderScale" aria-hidden="true">
+          <span>15</span><span>60</span><span>120</span><span>240</span><span>∞</span>
+        </span>
+      </label>
+      <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
-      <label class="fc-row"><span>HDR<small>brightness expansion (needs an HDR display)</small></span>
+      <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
-      <label class="fc-row"><span>Quality<small>GPU load</small></span>
+      <label class="fc-row"><span>Quality<small>Balance detail and GPU load</small></span>
         <select class="fc-sel" id="fcRes">
-          <option value="288">super eco</option><option value="360">eco</option>
-          <option value="480">balanced</option>
-          <option value="720">max</option>
-          <option value="1080">ultra</option>
+          <option value="288">Low power</option><option value="360">Efficient</option>
+          <option value="480">Balanced</option>
+          <option value="720">High</option>
+          <option value="1080">Ultra</option>
         </select></label>
-      <details class="fc-details">
-        <summary>advanced</summary>
-        <label class="fc-row"><span>Model<small>interpolation weights</small></span>
-          <select class="fc-sel" id="fcModel">
-            <option value="v6">v6 (legacy)</option>
-            <option value="v7s">v7 small</option>
-          </select></label>
-        <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
-          <input class="fc-sw" type="checkbox" id="fcAnime"></label>
-        <label class="fc-row"><span>Hover controls</span>
-          <input class="fc-sw" type="checkbox" id="fcHover"></label>
-        <label class="fc-row"><span>FPS counter<small>badge in the top-left</small></span>
-          <input class="fc-sw" type="checkbox" id="fcFps"></label>
-        <label class="fc-row"><span>Subtitle guard<small>static regions are not warped</small></span>
-          <input class="fc-sw" type="checkbox" id="fcGuard"></label>
-        <label class="fc-row"><span>Compare<small>original / FC split slider</small></span>
-          <input class="fc-sw" type="checkbox" id="fcCompare"></label>
-        <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
-          <input class="fc-sw" type="checkbox" id="fcDebug"></label>
-        <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
-        <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">-</div>
-      </details>
-      <button class="fc-open-settings" id="fcOpenSettings" type="button">Open full settings</button>`;
+      <label class="fc-row"><span>FPS counter<small>Show frame rate and render time</small></span>
+        <input class="fc-sw" type="checkbox" id="fcShowFps"></label>
+      <label class="fc-row"><span>Watermark<small>Show the Framegen label on video</small></span>
+        <input class="fc-sw" type="checkbox" id="fcWatermark"></label>
+      <label class="fc-row"><span>Warnings<small>Show non-critical notices over video</small></span>
+        <input class="fc-sw" type="checkbox" id="fcWarnings"></label>
+      <button class="fc-open-settings" id="fcOpenSettings" type="button">
+        <span>Advanced settings</span>
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="currentColor" d="m6 3 5 5-5 5-1.2-1.2L8.6 8 4.8 4.2 6 3Z"/>
+        </svg>
+      </button>`;
     document.body.appendChild(panel);
-    panel.querySelector('.fc-details').addEventListener('toggle', () => requestAnimationFrame(clampPanel));
     const F = panel.querySelector('#fcFactor'), R = panel.querySelector('#fcRes');
-    const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
-    const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
     syncPanel();
-    panel.querySelector('#fcOpenSettings').onclick = () => {
-      try {
-        const request = chrome.runtime.openOptionsPage();
-        if (request && typeof request.catch === 'function') request.catch(e => log('open settings', e));
-      } catch (e) { log('open settings', e); }
+    loadPanelProfiles().catch(e => log('profiles', e));
+    panel.querySelector('#fcOpenSettings').onclick = openAdvancedSettings;
+    panel.querySelector('#fcProfile').onchange = async event => {
+      const select = event.currentTarget;
+      select.disabled = true;
+      try { await applyPanelProfile(select.value); }
+      catch (e) { log('apply profile', e); }
+      finally { select.disabled = false; syncPanelProfileSelection(); }
     };
     F.onchange = () => setOutputRate(F.value);
     const Tf = panel.querySelector('#fcTargetFps');
-    Tf.onchange = () => setTargetFps(Tf.value);
-    const Md = panel.querySelector('#fcModel');
-    // rebuild directly, like res: the storage listener can't carry it - cfg.model
-    // is already updated by the time the onChanged event compares against it, so
-    // the originating tab never saw a "change" (other tabs did - stale cfg there)
-    Md.onchange = async () => {
-      cfg.model = Md.value; saveCfg();
-      if (running && !toggling) {
-        toggling = true;
-        try { await switchRes(); }
-        catch (e) { log('model switch', e); }
-        finally { toggling = false; }
-      }
-    };
-    A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
-    D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
-    Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
-    const Fp = panel.querySelector('#fcFps');
-    Fp.onchange = () => { cfg.showFps = Fp.checked; saveCfg(); };
-    const Gd = panel.querySelector('#fcGuard');
-    Gd.onchange = async () => { // the guard is baked into the flow kernel - rebuild
-      cfg.guard = Gd.checked; saveCfg();
-      if (running && !toggling) {
-        toggling = true;
-        try { await switchRes(); }
-        catch (e) { log('guard switch', e); }
-        finally { toggling = false; }
-      }
-    };
-    Cm.onchange = () => {
-      cfg.compare = Cm.checked;
-      if (!cfg.compare) cmpRing = [];
-      saveCfg();
-    };
+    Tf.oninput = () => updateRateSliderPresentation(Tf);
+    Tf.onchange = () => cfg.factor === 'auto'
+      ? setFpsLimit(fpsLimitFromSlider(Tf))
+      : setTargetFps(Tf.value);
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => setFrameGeneration(Fg.checked);
     Sr.onchange = () => {
@@ -2778,6 +3035,21 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     };
     const Hd = panel.querySelector('#fcHDR');
     Hd.onchange = () => { cfg.hdr = Hd.checked; saveCfg(); configureOverlay(); };
+    panel.querySelector('#fcShowFps').onchange = event => {
+      cfg.showFps = event.currentTarget.checked;
+      saveCfg();
+      syncHudVisibility();
+    };
+    panel.querySelector('#fcWatermark').onchange = event => {
+      cfg.showWatermark = event.currentTarget.checked;
+      saveCfg();
+      if (!cfg.showWatermark && wm) wm.style.display = 'none';
+    };
+    panel.querySelector('#fcWarnings').onchange = event => {
+      cfg.showWarnings = event.currentTarget.checked;
+      saveCfg();
+      if (!cfg.showWarnings) hideWarnings();
+    };
     R.onchange = async () => {
       cfg.res = +R.value; saveCfg();
       if (running && !toggling) { // hot-swap, no visible restart
@@ -2827,16 +3099,28 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
         transition:background .15s,transform .15s}
       .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}
-      .fc-title{font:600 14px system-ui;color:#fff;display:flex;align-items:center;gap:7px;margin-bottom:8px}
-      .fc-title::before{content:'';width:8px;height:8px;border-radius:50%;background:#19c37d}
-      .fc-row{display:flex;justify-content:space-between;align-items:center;gap:18px;
-        padding:7px 0;margin:0;border:0;width:auto;cursor:pointer;
+      .fc-panel-head{height:30px;display:flex;align-items:center;justify-content:space-between;
+        margin:0 0 8px;padding:0;border:0}
+      .fc-brand{display:flex;align-items:center;gap:7px;color:#f4f5f5;font:12px/1 system-ui}
+      .fc-brand strong{font:650 14px/1 system-ui;color:#f4f5f5}
+      .fc-brand-dot{width:8px;height:8px;border-radius:50%;background:#19c37d}
+      .fc-version{color:#747980;font:400 10px/1 system-ui}
+      .fc-icon-link{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+        border-radius:7px;color:#92979e;text-decoration:none;outline:none;
+        transition:background .15s,color .15s}
+      .fc-icon-link:hover{background:#202327;color:#f2f3f3}
+      .fc-icon-link:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-divider{height:1px;background:#292c30;margin:7px 0}
+      .fc-row{display:flex;justify-content:space-between;align-items:center;gap:14px;
+        padding:8px 0;margin:0;border:0;width:auto;cursor:default;
         font:12px/1.4 system-ui;color:#e8e8e8;text-align:left}
+      .fc-row[hidden]{display:none}
       .fc-row>span{display:block;flex:1 1 auto;min-width:0;margin:0;padding:0;
         font:12px/1.4 system-ui;color:#e8e8e8;text-align:left;
         letter-spacing:normal;text-transform:none;white-space:normal}
       .fc-row small{display:block;color:#8a8f98;font:400 10px/1.3 system-ui;
         margin:1px 0 0;padding:0;letter-spacing:normal;text-transform:none}
+      .fc-profile-row{padding-top:5px;padding-bottom:7px}
       .fc-sw{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:20px;
         background:#3d4148;position:relative;cursor:pointer;outline:none;margin:0;
         transition:background .2s;flex:none}
@@ -2844,13 +3128,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
       .fc-sw:checked{background:#19c37d}
       .fc-sw:checked::after{left:18px}
+      .fc-sw:focus-visible{outline:2px solid #19c37d;outline-offset:2px}
       /* customizable select (Chrome base-select): button + popup in the same glass */
       .fc-sel, .fc-sel::picker(select){appearance:base-select}
-      .fc-sel{background:rgba(255,255,255,.07);color:#eee;border:1px solid rgba(255,255,255,.14);
-        border-radius:8px;padding:5px 11px;font:12px system-ui;outline:none;cursor:pointer;
-        flex:none;min-width:118px;display:flex;align-items:center;justify-content:space-between;
+      .fc-sel{background:#1b1e21;color:#eee;border:1px solid #383c41;
+        border-radius:8px;padding:6px 10px;font:12px system-ui;outline:none;cursor:pointer;
+        flex:none;min-width:154px;max-width:174px;display:flex;align-items:center;justify-content:space-between;
         gap:8px;transition:background .15s,border-color .15s}
-      .fc-sel:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
+      .fc-sel:hover{background:#22262a;border-color:#50555c}
+      .fc-sel:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
       .fc-sel:open{border-color:rgba(25,195,125,.6)}
       .fc-sel::picker-icon{color:#8a8f98;font-size:9px;transition:rotate .15s}
       .fc-sel:open::picker-icon{rotate:180deg}
@@ -2862,21 +3148,34 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       .fc-sel option:hover{background:rgba(255,255,255,.09)}
       .fc-sel option:checked{background:rgba(25,195,125,.16);color:#8ee7bd}
       .fc-sel option::checkmark{color:#19c37d}
-      .fc-target{width:118px;height:28px;box-sizing:border-box;border-radius:8px;
-        border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.07);
-        color:#eee;padding:0 9px;font:12px system-ui;outline:none}
-      .fc-target:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
-      .fc-target:focus{border-color:rgba(25,195,125,.7)}
-      .fc-details summary{cursor:pointer;color:#8a8f98;font:11px system-ui;list-style:none;
-        display:flex;align-items:center;gap:5px;padding:6px 0 2px;user-select:none}
-      .fc-details summary::before{content:'';width:0;height:0;border-left:4px solid #8a8f98;
-        border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transition:transform .15s}
-      .fc-details[open] summary::before{transform:rotate(90deg)}
-      .fc-details summary::-webkit-details-marker{display:none}
-      .fc-open-settings{width:100%;margin-top:10px;padding:8px 10px;border-radius:8px;
-        border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.07);
-        color:#dce3ea;font:600 11px system-ui;cursor:pointer}
-      .fc-open-settings:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}`;
+      .fc-target-control{display:block;padding:2px 0 8px;margin:0;cursor:pointer}
+      .fc-target-control[hidden]{display:none}
+      .fc-target-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+        margin:0 0 4px;color:#e8e8e8;font:12px/1.35 system-ui}
+      .fc-target-head>span{display:block}
+      .fc-target-head small{display:block;margin-top:1px;color:#8a8f98;font:400 10px/1.3 system-ui}
+      .fc-target-head output{min-width:72px;color:#7fe0b5;font:600 11px/1.35 system-ui;
+        font-variant-numeric:tabular-nums;text-align:right}
+      .fc-target-slider{--fc-fill:12%;appearance:none;-webkit-appearance:none;display:block;
+        width:100%;height:20px;margin:0;background:transparent;cursor:pointer;outline:none}
+      .fc-target-slider::-webkit-slider-runnable-track{height:3px;border-radius:3px;
+        background:linear-gradient(to right,#19c37d 0 var(--fc-fill),#3d4148 var(--fc-fill) 100%)}
+      .fc-target-slider::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:15px;height:15px;
+        margin-top:-6px;border:2px solid #111315;border-radius:50%;background:#f2f4f3;
+        box-shadow:0 0 0 1px #62686f}
+      .fc-target-slider:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-target-scale{position:relative;display:block;height:10px;margin-top:-2px;
+        color:#656b73;font:500 9px/1 system-ui;font-variant-numeric:tabular-nums;pointer-events:none}
+      .fc-target-scale>span{position:absolute;
+        left:calc(var(--fc-mark-position) + var(--fc-mark-offset));top:0;
+        transform:translateX(-50%);white-space:nowrap}
+      .fc-open-settings{width:100%;height:35px;display:flex;align-items:center;justify-content:space-between;
+        margin-top:10px;padding:0 11px;border-radius:8px;border:1px solid #383c41;background:#1b1e21;
+        color:#e2e4e5;font:600 11px system-ui;cursor:pointer;outline:none;
+        transition:background .15s,border-color .15s}
+      .fc-open-settings:hover{background:#22262a;border-color:#50555c}
+      .fc-open-settings:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-open-settings:disabled{opacity:.55;cursor:wait}`;
     (document.head || document.documentElement).appendChild(css);
     btn = document.createElement('button');
     btn.textContent = 'FG';
@@ -2919,7 +3218,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -2929,8 +3228,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           try { sendResponse({
           version: VERSION, gpu: sys.gpu, integrated: sys.integrated, f16: sys.f16,
           hasVideo: !!v, running, fps: fpsWin.length, effN,
-          ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor, targetFps: cfg.targetFps,
-          rateLabel: Cadence.outputRateLabel(cfg.factor, cfg.targetFps), targetHz: ratePlan.requestedHz,
+          ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor,
+          targetFps: cfg.targetFps, fpsLimit: cfg.fpsLimit,
+          rateLabel: outputRateLabel(), targetHz: ratePlan.requestedHz,
           effectiveTargetHz: ratePlan.outputHz, rateClamped: ratePlan.clamped,
           targetState: ratePlan.state, targetReason: ratePlan.clampReason,
           targetWarning: ratePlan.warning,

@@ -239,6 +239,7 @@
     sourceReady = Number.isFinite(sourceHz) && sourceHz > 0,
     displayReady = true,
     midCostMs = null,
+    strictCeiling = false,
   } = {}) {
     const safeMode = sanitizeOutputRate(mode);
     const display = measureDisplayHz(rafFloorMs);
@@ -286,21 +287,23 @@
       computeCapacityHz = normalizedSourceHz * (maxMidsPerPair + 1);
     }
     const toleranceHz = Math.max(0.01, minimumHz * VIDEO_RATE_MATCH_TOLERANCE);
-    if (display.capacityHz + toleranceHz < minimumHz) {
+    if (!strictCeiling && display.capacityHz + toleranceHz < minimumHz) {
       return {
         ...base, state: 'no-2x-display-range', computeCapacityHz,
         runtimeCapacityHz,
         warning: `Needs at least ${formatRate(minimumHz)} Hz; display is ~${formatRate(display.capacityHz)} Hz`,
       };
     }
-    if (computeCapacityHz + toleranceHz < minimumHz) {
+    if (!strictCeiling && computeCapacityHz + toleranceHz < minimumHz) {
       return {
         ...base, state: 'no-2x-gpu-range', computeCapacityHz, runtimeCapacityHz,
         warning: `GPU cannot sustain the ${formatRate(minimumHz)} FPS minimum at this quality`,
       };
     }
 
-    const desiredHz = safeMode === 'target'
+    const desiredHz = strictCeiling
+      ? requestedHz
+      : safeMode === 'target'
       ? Math.max(requestedHz, minimumHz)
       : display.capacityHz;
     // When an explicit request is above the display ceiling, reserve a small
@@ -310,7 +313,7 @@
     const targetsDisplayCeiling = safeMode === 'target'
       && requestedHz >= display.capacityHz;
     const useDisplayHeadroom = targetsDisplayCeiling
-      && headroomDisplayHz + toleranceHz >= minimumHz;
+      && (strictCeiling || headroomDisplayHz + toleranceHz >= minimumHz);
     const displayLimitHz = useDisplayHeadroom ? headroomDisplayHz : display.capacityHz;
     const maximumHz = Math.min(displayLimitHz, computeCapacityHz, runtimeCapacityHz);
     const outputHz = Math.min(desiredHz, maximumHz);
@@ -319,7 +322,7 @@
       if (maximumHz === displayLimitHz) clampReason = 'display';
       else if (maximumHz === computeCapacityHz) clampReason = 'gpu';
       else clampReason = 'runtime';
-    } else if (safeMode === 'target' && requestedHz + toleranceHz < minimumHz) {
+    } else if (!strictCeiling && safeMode === 'target' && requestedHz + toleranceHz < minimumHz) {
       clampReason = 'minimum';
     }
     let warning = null;

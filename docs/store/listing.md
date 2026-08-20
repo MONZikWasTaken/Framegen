@@ -18,8 +18,8 @@ local files opened in the browser.
 
 Features:
 - Any custom Target FPS with a safe 2x-source minimum, 2x to 6x interpolation,
-  an auto mode that follows your GPU headroom, and a "display Hz" mode that
-  follows your monitor
+  an auto mode with an optional FPS limit, and a "display Hz" mode that follows
+  your monitor
 - User-created local profiles in a full-screen settings editor;
   quick controls remain available directly over the video
 - Anime mode: detects animation drawn "on twos" and interpolates the real
@@ -28,8 +28,8 @@ Features:
   interpolation artifacts, not just sharpen
 - Self-calibrating kernels: the runtime benchmarks itself on your GPU once and
   picks the fastest shader variants
-- Optional HUD with live fps / latency stats and a separately hideable player
-  watermark
+- Optional HUD with live fps / latency stats, a separately hideable player
+  watermark, and optional non-critical performance notices
 
 Requirements: a WebGPU-capable browser (Chrome/Edge 121+) and a GPU with
 shader-f16 support. No WebGPU = the extension politely does nothing.

@@ -7,8 +7,9 @@
   const $ = (id) => document.getElementById(id);
   const BOOLEAN_FIELDS = Object.freeze([
     'fg', 'sr', 'hdr', 'anime', 'guard', 'hoverReveal',
-    'showFps', 'showWatermark', 'compare', 'debug',
+    'showFps', 'showWatermark', 'showWarnings', 'compare', 'debug',
   ]);
+  const FPS_LIMIT_PRESETS = Profiles.FPS_LIMIT_PRESETS;
   const STORE_MUTATION_CONTROLS = Object.freeze([
     'profileSelect', 'newProfile', 'duplicateProfile', 'renameProfile',
     'deleteProfile', 'saveProfile', 'resetDraft', 'applySettings',
@@ -78,32 +79,81 @@
     return `custom-${token}`.slice(0, 63);
   }
 
-  function updateTargetFpsVisibility(factor) {
-    const visible = factor === 'target';
-    $('targetFpsRow').hidden = !visible;
-    $('targetFps').disabled = !visible;
+  function fpsLimitFromSlider() {
+    const index = Math.max(0, Math.min(
+      FPS_LIMIT_PRESETS.length - 1,
+      Math.round(Number($('fpsLimit').value) || 0),
+    ));
+    return FPS_LIMIT_PRESETS[index];
+  }
+
+  function updateFpsLimitPresentation() {
+    const input = $('fpsLimit');
+    const value = fpsLimitFromSlider();
+    const label = value === null ? 'Unlimited' : `${value} FPS`;
+    const ratio = Number(input.value) / Math.max(1, FPS_LIMIT_PRESETS.length - 1);
+    input.style.setProperty('--fill', `${ratio * 100}%`);
+    input.setAttribute('aria-valuetext', label);
+    $('fpsLimitValue').value = label;
+    $('fpsLimitValue').textContent = label;
+  }
+
+  function renderFpsLimitScale() {
+    const values = [15, 60, 120, 240, null];
+    const maxIndex = FPS_LIMIT_PRESETS.length - 1;
+    $('fpsLimitScale').replaceChildren(...values.map(value => {
+      const mark = document.createElement('span');
+      const position = Profiles.fpsLimitPresetIndex(value) / maxIndex * 100;
+      const offset = Number((7.5 * (1 - 2 * position / 100)).toFixed(3));
+      mark.textContent = value === null ? '∞' : String(value);
+      mark.style.setProperty('--position', `${position}%`);
+      mark.style.setProperty('--offset', `${offset}px`);
+      return mark;
+    }));
+  }
+
+  function updateRateControlVisibility(factor) {
+    const custom = factor === 'target';
+    const auto = factor === 'auto';
+    $('targetFpsRow').hidden = !custom;
+    $('targetFps').disabled = !custom;
+    $('targetFps').required = custom;
+    $('fpsLimitRow').hidden = !auto;
+    $('fpsLimit').disabled = !auto;
+  }
+
+  function validateVisibleRateControl() {
+    if (draftSettings.factor !== 'target') return true;
+    if ($('targetFps').checkValidity()) return true;
+    $('targetFps').reportValidity();
+    lastMessage = 'Enter a Custom FPS from 2 to 1000';
+    renderStatus();
+    return false;
   }
 
   function readForm() {
     const candidate = {
       factor: $('factor').value,
       targetFps: Number($('targetFps').value),
+      fpsLimit: fpsLimitFromSlider(),
       res: Number($('res').value),
       model: $('model').value,
     };
     for (const key of BOOLEAN_FIELDS) candidate[key] = $(key).checked;
     draftSettings = settingsCopy(candidate);
-    updateTargetFpsVisibility(draftSettings.factor);
+    updateRateControlVisibility(draftSettings.factor);
   }
 
   function writeForm(settings) {
     const clean = Profiles.sanitizeSettings(settings);
     $('factor').value = String(clean.factor);
     $('targetFps').value = String(clean.targetFps);
+    $('fpsLimit').value = String(Profiles.fpsLimitPresetIndex(clean.fpsLimit));
+    updateFpsLimitPresentation();
     $('res').value = String(clean.res);
     $('model').value = clean.model;
     for (const key of BOOLEAN_FIELDS) $(key).checked = clean[key];
-    updateTargetFpsVisibility(clean.factor);
+    updateRateControlVisibility(clean.factor);
   }
 
   function renderProfileSelect() {
@@ -170,8 +220,9 @@
 
     $('resetDraft').disabled = !externalChangeNotice && !hasDraftEdits;
     $('applySettings').disabled = !pendingApply;
-    $('saveProfile').disabled = !!selected && !selectedModified;
-    $('saveProfile').textContent = selected ? 'Save profile' : 'Save as profile';
+    $('saveProfile').hidden = !selected;
+    $('saveProfile').disabled = !selected || !selectedModified;
+    $('saveProfile').textContent = 'Save profile';
     for (const id of ['renameProfile', 'deleteProfile', 'duplicateProfile']) {
       $(id).disabled = !selected;
       $(id).hidden = !selected;
@@ -198,22 +249,26 @@
     renderAll({ write: true });
   }
 
-  async function persistStore() {
+  async function persistStore(nextStore = store) {
     if (profileStoreReadOnly) throw new Profiles.ProfileStoreError('Profiles are read-only');
-    storageSnapshot[Profiles.STORE_KEY] = store;
-    await chrome.storage.local.set({ [Profiles.STORE_KEY]: store });
+    await chrome.storage.local.set({ [Profiles.STORE_KEY]: nextStore });
+    store = nextStore;
+    storageSnapshot[Profiles.STORE_KEY] = nextStore;
+    return nextStore;
   }
 
   async function applyDraft() {
     if (profileStoreReadOnly) return;
+    if (!validateVisibleRateControl()) return;
     const selected = currentProfile();
     const pendingRuntimeChange = !Profiles.settingsEqual(draftSettings, runtimeSettings);
     const pendingProfileChange = !!selected
       && selected.id !== store.lastAppliedProfileId;
     if (!pendingRuntimeChange && !pendingProfileChange) return;
     try {
-      store = Profiles.setLastAppliedProfile(store, selected?.id || null);
-      const payload = Profiles.toStoragePayload(store, draftSettings);
+      const nextStore = Profiles.setLastAppliedProfile(store, selected?.id || null);
+      const payload = Profiles.toStoragePayload(nextStore, draftSettings);
+      await chrome.storage.local.set(payload);
       Object.assign(storageSnapshot, payload);
       runtimeSettings = settingsCopy(draftSettings);
       store = payload[Profiles.STORE_KEY];
@@ -224,7 +279,6 @@
       externalChangeNotice = false;
       lastMessage = 'Settings applied';
       renderAll();
-      await chrome.storage.local.set(payload);
     } catch {
       lastMessage = 'Could not apply settings';
       renderStatus();
@@ -233,6 +287,7 @@
 
   function openProfileDialog(mode) {
     if (profileStoreReadOnly) return;
+    if ((mode === 'new' || mode === 'duplicate') && !validateVisibleRateControl()) return;
     const selected = currentProfile();
     dialogMode = mode;
     const titles = {
@@ -260,22 +315,27 @@
     }
     const selected = currentProfile();
     try {
+      let nextStore;
+      let createdProfileId = null;
       if (dialogMode === 'rename') {
         if (!selected) throw new TypeError('profile does not exist');
-        store = Profiles.renameProfile(store, selected.id, name);
+        nextStore = Profiles.renameProfile(store, selected.id, name);
       } else {
         const id = createProfileId();
-        store = Profiles.upsertProfile(store, {
+        nextStore = Profiles.upsertProfile(store, {
           id,
           name,
           description: '',
           settings: draftSettings,
         });
-        selectedProfileId = id;
+        createdProfileId = id;
+      }
+      await persistStore(nextStore);
+      if (createdProfileId) {
+        selectedProfileId = createdProfileId;
         draftOrigin = settingsCopy(draftSettings);
         draftSource = 'profile';
       }
-      await persistStore();
       $('profileDialog').close();
       lastMessage = dialogMode === 'rename' ? 'Profile renamed' : 'Profile saved';
       externalChangeNotice = false;
@@ -289,21 +349,27 @@
 
   async function saveSelectedProfile() {
     if (profileStoreReadOnly) return;
+    if (!validateVisibleRateControl()) return;
     const selected = currentProfile();
     if (!selected) {
       openProfileDialog('new');
       return;
     }
-    store = Profiles.upsertProfile(store, {
-      ...selected,
-      settings: draftSettings,
-    });
-    await persistStore();
-    draftOrigin = settingsCopy(draftSettings);
-    draftSource = 'profile';
-    externalChangeNotice = false;
-    lastMessage = 'Profile saved';
-    renderAll();
+    try {
+      const nextStore = Profiles.upsertProfile(store, {
+        ...selected,
+        settings: draftSettings,
+      });
+      await persistStore(nextStore);
+      draftOrigin = settingsCopy(draftSettings);
+      draftSource = 'profile';
+      externalChangeNotice = false;
+      lastMessage = 'Profile saved';
+      renderAll();
+    } catch {
+      lastMessage = 'Could not save profile';
+      renderStatus();
+    }
   }
 
   function openDeleteDialog() {
@@ -312,7 +378,7 @@
     if (!selected) return;
     $('deleteDialogCopy').textContent = `“${selected.name}” will be removed. Current video settings will stay unchanged.`;
     $('deleteDialog').showModal();
-    $('confirmDelete').focus();
+    $('cancelDelete').focus();
   }
 
   async function deleteSelectedProfile(event) {
@@ -320,14 +386,19 @@
     if (profileStoreReadOnly) return;
     const selected = currentProfile();
     if (!selected) return;
-    store = Profiles.deleteProfile(store, selected.id);
-    loadCurrentDraft();
-    await persistStore();
-    $('deleteDialog').close();
-    externalChangeNotice = false;
-    lastMessage = 'Profile deleted';
-    renderAll({ write: true });
-    $('profileSelect').focus();
+    try {
+      const nextStore = Profiles.deleteProfile(store, selected.id);
+      await persistStore(nextStore);
+      loadCurrentDraft();
+      $('deleteDialog').close();
+      externalChangeNotice = false;
+      lastMessage = 'Profile deleted';
+      renderAll({ write: true });
+      $('profileSelect').focus();
+    } catch {
+      lastMessage = 'Could not delete profile';
+      renderStatus();
+    }
   }
 
   function resetDraft() {
@@ -352,11 +423,17 @@
     runtimeSettings = Profiles.pickFlatSettings(storageSnapshot);
     if (storeChanged) {
       try {
-        store = Profiles.loadStore(
+        const loaded = Profiles.loadStore(
           storageSnapshot[Profiles.STORE_KEY],
           runtimeSettings,
-        ).store;
+        );
+        store = loaded.store;
         leaveProfileStoreReadOnly();
+        if (loaded.needsWrite) {
+          const migratedStore = loaded.store;
+          chrome.storage.local.set({ [Profiles.STORE_KEY]: migratedStore })
+            .catch(error => enterProfileStoreReadOnly(error, 'Could not update profiles'));
+        }
       } catch (error) {
         enterProfileStoreReadOnly(error);
         return;
@@ -394,6 +471,7 @@
   }
 
   function bindEvents() {
+    $('fpsLimit').addEventListener('input', updateFpsLimitPresentation);
     $('settingsForm').addEventListener('input', () => {
       readForm();
       externalChangeNotice = false;
@@ -423,6 +501,7 @@
       const loaded = Profiles.loadStore(storageSnapshot[Profiles.STORE_KEY], runtimeSettings);
       store = loaded.store;
       loadCurrentDraft();
+      renderFpsLimitScale();
       writeForm(draftSettings);
       bindEvents();
       renderAll();

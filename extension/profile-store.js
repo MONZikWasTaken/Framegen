@@ -1,21 +1,28 @@
 (function installFramegenProfiles(root) {
   'use strict';
 
-  const SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 3;
+  const PREVIOUS_SCHEMA_VERSION = 2;
   const LEGACY_SCHEMA_VERSION = 1;
   const STORE_KEY = 'fcProfileStore';
   const SETTINGS_KEYS = Object.freeze([
-    'factor', 'targetFps', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
-    'fg', 'sr', 'hdr', 'showFps', 'showWatermark', 'guard', 'model',
+    'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
+    'fg', 'sr', 'hdr', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
   ]);
   const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
   const RESOLUTIONS = Object.freeze([288, 360, 480, 720, 1080]);
   const MODELS = Object.freeze(['v6', 'v7s']);
   const TARGET_FPS_MIN = 2;
   const TARGET_FPS_MAX = 1000;
+  const FPS_LIMIT_PRESETS = Object.freeze([
+    15, 24, 25, 30, 48, 50, 60, 72, 75,
+    90, 100, 120, 144, 165, 180, 240, 360,
+    null,
+  ]);
   const DEFAULT_SETTINGS = Object.freeze({
     factor: 'auto',
     targetFps: 120,
+    fpsLimit: null,
     anime: true,
     debug: false,
     res: 480,
@@ -26,6 +33,7 @@
     hdr: false,
     showFps: true,
     showWatermark: true,
+    showWarnings: true,
     guard: true,
     model: 'v7s',
   });
@@ -63,6 +71,31 @@
     return Math.round((clamped + Number.EPSILON) * 100) / 100;
   }
 
+  function fpsLimitPresetIndex(value) {
+    if (value === null || value === undefined
+        || (typeof value === 'string' && value.trim() === '')) {
+      return FPS_LIMIT_PRESETS.length - 1;
+    }
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return FPS_LIMIT_PRESETS.length - 1;
+    let nearest = 0;
+    for (let index = 1; index < FPS_LIMIT_PRESETS.length - 1; index++) {
+      if (Math.abs(FPS_LIMIT_PRESETS[index] - numeric)
+          < Math.abs(FPS_LIMIT_PRESETS[nearest] - numeric)) {
+        nearest = index;
+      }
+    }
+    return nearest;
+  }
+
+  function sanitizeFpsLimit(value, fallback = DEFAULT_SETTINGS.fpsLimit) {
+    if (value === null || value === undefined
+        || (typeof value === 'string' && value.trim() === '')) return fallback;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return FPS_LIMIT_PRESETS[fpsLimitPresetIndex(numeric)];
+  }
+
   function sanitizeFactor(value) {
     if (value === 'auto' || value === 'hz' || value === 'target') return value;
     if (value === 'fps60' || value === 'fps120') return 'target';
@@ -83,6 +116,7 @@
     return {
       factor: sanitizeFactor(source.factor),
       targetFps,
+      fpsLimit: sanitizeFpsLimit(source.fpsLimit),
       anime: booleanValue(source.anime, DEFAULT_SETTINGS.anime),
       debug: booleanValue(source.debug, DEFAULT_SETTINGS.debug),
       res: RESOLUTIONS.includes(numericResolution) ? numericResolution : DEFAULT_SETTINGS.res,
@@ -93,6 +127,7 @@
       hdr: booleanValue(source.hdr, DEFAULT_SETTINGS.hdr),
       showFps: booleanValue(source.showFps, DEFAULT_SETTINGS.showFps),
       showWatermark: booleanValue(source.showWatermark, DEFAULT_SETTINGS.showWatermark),
+      showWarnings: booleanValue(source.showWarnings, DEFAULT_SETTINGS.showWarnings),
       guard: booleanValue(source.guard, DEFAULT_SETTINGS.guard),
       model: MODELS.includes(source.model) ? source.model : DEFAULT_SETTINGS.model,
     };
@@ -136,7 +171,17 @@
     return /^[a-z0-9][a-z0-9_-]{2,63}$/.test(id) ? id : null;
   }
 
-  function normalizeProfiles(rawProfiles, label) {
+  function settingsWithCompatibilityDefaults(value, compatibilitySettings = DEFAULT_SETTINGS) {
+    const source = value && typeof value === 'object' ? value : {};
+    const fallback = sanitizeSettings(compatibilitySettings);
+    return {
+      ...source,
+      fpsLimit: hasOwn(source, 'fpsLimit') ? source.fpsLimit : fallback.fpsLimit,
+      showWarnings: hasOwn(source, 'showWarnings') ? source.showWarnings : fallback.showWarnings,
+    };
+  }
+
+  function normalizeProfiles(rawProfiles, label, compatibilitySettings = DEFAULT_SETTINGS) {
     if (!Array.isArray(rawProfiles)) {
       throw new ProfileStoreError(`${label}.profiles must be an array`);
     }
@@ -153,7 +198,10 @@
         id,
         name: normalizeName(candidate.name),
         description: normalizeDescription(candidate.description),
-        settings: sanitizeSettings(candidate.settings),
+        settings: sanitizeSettings(settingsWithCompatibilityDefaults(
+          candidate.settings,
+          compatibilitySettings,
+        )),
       };
     });
   }
@@ -166,8 +214,12 @@
     };
   }
 
-  function normalizeV2Store(rawStore) {
-    const profiles = normalizeProfiles(rawStore.profiles, 'profile store');
+  function normalizeStore(rawStore, compatibilitySettings = DEFAULT_SETTINGS) {
+    const profiles = normalizeProfiles(
+      rawStore.profiles,
+      'profile store',
+      compatibilitySettings,
+    );
     const requestedId = rawStore.lastAppliedProfileId == null
       ? null
       : sanitizeProfileId(rawStore.lastAppliedProfileId);
@@ -187,7 +239,10 @@
       && candidate.id === LEGACY_CURRENT_PROFILE.id
       && candidate.name === LEGACY_CURRENT_PROFILE.name
       && candidate.description === LEGACY_CURRENT_PROFILE.description
-      && settingsEqual(candidate.settings, currentSettings);
+      && settingsEqual(
+        settingsWithCompatibilityDefaults(candidate.settings, currentSettings),
+        currentSettings,
+      );
   }
 
   function migrateV1Store(rawStore, currentSettings) {
@@ -197,7 +252,7 @@
     const retained = rawStore.customProfiles.filter(
       candidate => !isUntouchedLegacyCurrentProfile(rawStore, candidate, currentSettings),
     );
-    const profiles = normalizeProfiles(retained, 'schema v1');
+    const profiles = normalizeProfiles(retained, 'schema v1', currentSettings);
     const activeId = sanitizeProfileId(rawStore.activeProfileId);
     const lastAppliedProfileId = activeId && profiles.some(profile => profile.id === activeId)
       ? activeId
@@ -218,10 +273,18 @@
       throw new ProfileStoreError('profile store must be an object');
     }
     if (rawStore.schemaVersion === SCHEMA_VERSION) {
+      const normalized = normalizeStore(rawStore);
       return {
-        store: normalizeV2Store(rawStore),
-        needsWrite: false,
+        store: normalized,
+        needsWrite: JSON.stringify(normalized) !== JSON.stringify(rawStore),
         sourceSchemaVersion: SCHEMA_VERSION,
+      };
+    }
+    if (rawStore.schemaVersion === PREVIOUS_SCHEMA_VERSION) {
+      return {
+        store: normalizeStore(rawStore, cleanCurrent),
+        needsWrite: true,
+        sourceSchemaVersion: PREVIOUS_SCHEMA_VERSION,
       };
     }
     if (rawStore.schemaVersion === LEGACY_SCHEMA_VERSION) {
@@ -234,15 +297,15 @@
     throw new UnsupportedProfileStoreVersionError(rawStore.schemaVersion);
   }
 
-  function requireV2Store(store) {
+  function requireStore(store) {
     if (!store || typeof store !== 'object' || store.schemaVersion !== SCHEMA_VERSION) {
-      throw new ProfileStoreError('schema v2 profile store is required');
+      throw new ProfileStoreError(`schema v${SCHEMA_VERSION} profile store is required`);
     }
-    return normalizeV2Store(store);
+    return normalizeStore(store);
   }
 
   function profileList(store) {
-    return requireV2Store(store).profiles;
+    return requireStore(store).profiles;
   }
 
   function getProfile(store, id) {
@@ -257,7 +320,7 @@
   }
 
   function resolveProfileSelection(store, preferredProfileId, currentSettings = DEFAULT_SETTINGS) {
-    const normalized = requireV2Store(store);
+    const normalized = requireStore(store);
     const profile = getProfile(normalized, preferredProfileId);
     if (!profile) {
       return {
@@ -279,7 +342,7 @@
   }
 
   function setLastAppliedProfile(store, id) {
-    const normalized = requireV2Store(store);
+    const normalized = requireStore(store);
     if (id == null) return { ...normalized, lastAppliedProfileId: null };
     const profile = getProfile(normalized, id);
     if (!profile) throw new TypeError('profile does not exist');
@@ -287,7 +350,7 @@
   }
 
   function upsertProfile(store, candidate) {
-    const normalized = requireV2Store(store);
+    const normalized = requireStore(store);
     const profile = normalizeProfiles([candidate], 'candidate')[0];
     const profiles = normalized.profiles.filter(item => item.id !== profile.id);
     profiles.push(profile);
@@ -295,7 +358,7 @@
   }
 
   function renameProfile(store, id, name) {
-    const normalized = requireV2Store(store);
+    const normalized = requireStore(store);
     const profile = getProfile(normalized, id);
     if (!profile) throw new TypeError('profile does not exist');
     return {
@@ -308,7 +371,7 @@
 
   function deleteProfile(store, id) {
     const normalizedId = sanitizeProfileId(id);
-    const normalized = requireV2Store(store);
+    const normalized = requireStore(store);
     if (!normalizedId || !normalized.profiles.some(profile => profile.id === normalizedId)) {
       return normalized;
     }
@@ -324,12 +387,13 @@
   function toStoragePayload(store, settings) {
     return {
       ...sanitizeSettings(settings),
-      [STORE_KEY]: requireV2Store(store),
+      [STORE_KEY]: requireStore(store),
     };
   }
 
   const api = Object.freeze({
     SCHEMA_VERSION,
+    PREVIOUS_SCHEMA_VERSION,
     LEGACY_SCHEMA_VERSION,
     STORE_KEY,
     SETTINGS_KEYS,
@@ -338,10 +402,13 @@
     MODELS,
     TARGET_FPS_MIN,
     TARGET_FPS_MAX,
+    FPS_LIMIT_PRESETS,
     DEFAULT_SETTINGS,
     ProfileStoreError,
     UnsupportedProfileStoreVersionError,
     sanitizeSettings,
+    sanitizeFpsLimit,
+    fpsLimitPresetIndex,
     pickFlatSettings,
     settingsEqual,
     normalizeName,

@@ -95,12 +95,12 @@ dimensions for troubleshooting.
 2. Click it. The button turns green, an fps readout appears, and the video is
    now interpolated. Click again to turn it off.
 3. The **gear** button next to it keeps the quick settings inside the player.
-   Choose **Full settings** there or in the extension popup when you want the
+   Choose **Advanced settings** there or in the extension popup when you want the
    full-screen profile editor.
 
 | Setting | What it does |
 |---|---|
-| **Output rate** | `auto` is right for most people. Choose any custom Target FPS, fixed 2×-6×, or `display Hz` to match your monitor. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
+| **Output rate** | `auto` is right for most people and can use an optional FPS limit. You can also choose any custom Target FPS, fixed 2×-6×, or `display Hz` to match your monitor. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
 | **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
 | **Model** | `v7s` (current default) or `v6` (legacy; retained until v8 replaces it) |
 | **Anime mode** | Keep on for anime; harmless elsewhere |
@@ -110,8 +110,9 @@ dimensions for troubleshooting.
 The full settings page lets you keep the live settings as-is or save any number
 of your own local profiles that can be created, duplicated, renamed, deleted,
 and reset. It also exposes
-the supported visibility controls, including the FPS counter and the small
-`framegen` watermark. Existing settings are migrated without losing values.
+the supported visibility controls, including the FPS counter, small
+`framegen` watermark, and optional performance notices. Existing settings
+are migrated without losing values.
 
 **Good first test:** anything shot at 24 fps - a movie trailer, a film scene
 with a slow camera pan, an anime opening. That's where the difference hits

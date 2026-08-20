@@ -274,6 +274,33 @@ test('arbitrary targets enforce the 2x source floor and measured display cap', (
   assert.match(noRange.warning, /Needs at least 120 Hz/);
 });
 
+test('a strict FPS ceiling may decimate anchors below the interpolation floor', () => {
+  const fifteen = resolveTarget(15, 60, 240, { strictCeiling: true, midCostMs: 1 });
+  assert.equal(fifteen.state, 'active');
+  assert.equal(fifteen.outputHz, 15);
+  assert.equal(fifteen.clamped, false);
+  assert.equal(fifteen.clampReason, null);
+
+  for (const [sourceHz, targetHz] of [[60, 15], [30, 15], [60, 30]]) {
+    const plan = resolveTarget(targetHz, sourceHz, 240, { strictCeiling: true, midCostMs: 1 });
+    const split = simulatePresentationSplit(sourceHz, plan.outputHz, 600);
+    assert.ok(Math.abs(split.totalHz - targetHz) < 0.03,
+      `${sourceHz} -> ${targetHz} must keep the strict presentation ceiling`);
+    assert.equal(split.midsHz, 0);
+  }
+
+  const ninety = resolveTarget(90, 60, 240, { strictCeiling: true, midCostMs: 1 });
+  assert.equal(ninety.outputHz, 90);
+  const split = simulatePresentationSplit(60, ninety.outputHz, 600);
+  assert.ok(Math.abs(split.totalHz - 90) < 0.03);
+  assert.ok(Math.abs(split.anchorsHz - 60) < 0.03);
+  assert.ok(Math.abs(split.midsHz - 30) < 0.03);
+
+  const ordinaryTarget = resolveTarget(15, 60, 240, { midCostMs: 1 });
+  assert.equal(ordinaryTarget.outputHz, 120);
+  assert.equal(ordinaryTarget.clampReason, 'minimum');
+});
+
 test('an explicit target at the measured display ceiling keeps recovery headroom', () => {
   const plan = Cadence.resolveOutputRate('target', 1000 / 239.52, {
     targetFps: 240,
@@ -763,7 +790,7 @@ test('storage values preserve new modes and reject invalid targets', () => {
 
 test('extension loads the helper first and exposes every output-rate choice', () => {
   const manifest = JSON.parse(readFileSync(`${extensionDirectory}/manifest.json`, 'utf8'));
-  assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'content.js']);
+  assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'profile-store.js', 'content.js']);
   const content = readFileSync(`${extensionDirectory}/content.js`, 'utf8');
   for (const value of ['auto', 'hz', 'target', '2', '3', '4', '5', '6']) {
     assert.match(content, new RegExp(`<option value="${value}">`));
@@ -771,7 +798,9 @@ test('extension loads the helper first and exposes every output-rate choice', ()
   assert.doesNotMatch(content, /<option value="fps(?:60|120)">/);
   assert.match(content, /id="fcTargetFps"/);
   assert.match(content, /<span>Output rate/);
-  assert.match(content, /Cadence\.isCadenceMode\(cfg\.factor\)/);
+  assert.match(content, /function usesExactCadence\(\)/);
+  assert.match(content, /cfg\.factor === 'auto' && cfg\.fpsLimit !== null/);
+  assert.match(content, /strictCeiling:\s*cappedAuto/);
   assert.match(content, /Cadence\.planSourceCadencePresentations\(/);
   assert.match(content, /Cadence\.fallbackCadencePresentations\(/);
   assert.match(content, /Cadence\.estimateSourceCadence\(/);
