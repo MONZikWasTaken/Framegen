@@ -214,6 +214,81 @@ test('decoded cadence estimator becomes ready for a native 240 FPS source', () =
   assert.ok(Math.abs(estimate.intervalMs - 1000 / 240) < 1e-9);
 });
 
+test('an arbitrary fallback rate cannot impersonate a nominal source cadence', () => {
+  const estimate = Cadence.estimateSourceCadence(
+    Array(32).fill(1000 / 24),
+    1000 / 24.45,
+  );
+  assert.equal(estimate.sourceHz, 24);
+  assert.equal(estimate.intervalMs, 1000 / 24);
+});
+
+test('alternating live-source timestamps recover from a stale decoded-rate estimate', () => {
+  const staleIntervalMs = 44.828769230769225;
+  const state = {
+    intervalMs: staleIntervalMs,
+    samples: Array(32).fill(staleIntervalMs),
+    transition: { intervalMs: 0, samples: 0, direction: 0 },
+  };
+  for (let index = 0; index < 256; index += 1) {
+    Cadence.updateSourceInterval(state, index % 2 ? 47 : 36);
+  }
+  assert.equal(state.samples.length, 32);
+  assert.ok(Math.abs(1000 / state.intervalMs - 24) < 0.05,
+    `decoded source remained at ${(1000 / state.intervalMs).toFixed(3)} FPS`);
+});
+
+test('abrupt decoded-rate transitions confirm on the fourth consistent sample', () => {
+  for (const [fromHz, toHz] of [[24, 30], [30, 24], [24, 60], [60, 24], [60, 120]]) {
+    const state = {
+      intervalMs: 1000 / fromHz,
+      samples: Array(32).fill(1000 / fromHz),
+      transition: { intervalMs: 0, samples: 0, direction: 0 },
+    };
+    let confirmedAt = null;
+    for (let sample = 1; sample <= 4; sample += 1) {
+      const update = Cadence.updateSourceInterval(state, 1000 / toHz);
+      if (update.transitioned) confirmedAt = sample;
+    }
+    assert.equal(confirmedAt, 4, `${fromHz} -> ${toHz}`);
+    assert.ok(Math.abs(1000 / state.intervalMs - toHz) < 1e-9, `${fromHz} -> ${toHz}`);
+  }
+});
+
+test('live-source recovery and target planning stay rate-conserving together', () => {
+  const targetHz = 58.1903;
+  const targetStepMs = 1000 / targetHz;
+  const staleIntervalMs = 44.828769230769225;
+  const state = {
+    intervalMs: staleIntervalMs,
+    samples: Array(32).fill(staleIntervalMs),
+    transition: { intervalMs: 0, samples: 0, direction: 0 },
+  };
+  const mediaIntervalsMs = [36, 47];
+  const deadlines = [];
+  let startAt = 1000;
+  let nextAt = 0;
+  let phaseMs = 0;
+  for (let index = 0; index < 288; index += 1) {
+    const mediaIntervalMs = mediaIntervalsMs[index % mediaIntervalsMs.length];
+    Cadence.updateSourceInterval(state, mediaIntervalMs);
+    const plan = Cadence.planSourceCadencePresentations({
+      nextAt, phaseMs, startAt, sourceIntervalMs: state.intervalMs,
+      outputHz: targetHz, interpolate: true,
+    });
+    deadlines.push(...plan.presentations.map(item => item.at));
+    nextAt = plan.nextAt;
+    phaseMs = plan.nextPhaseMs;
+    startAt += mediaIntervalMs;
+  }
+  assert.equal(deadlines.length, 695);
+  for (let index = 1; index < deadlines.length; index += 1) {
+    const gapSteps = (deadlines[index] - deadlines[index - 1]) / targetStepMs;
+    assert.ok(gapSteps >= 1 - 1e-7);
+    assert.ok(Math.abs(gapSteps - Math.round(gapSteps)) < 1e-7);
+  }
+});
+
 test('low-FPS cadence delay keeps the complete source pair ahead of presentation deadlines', () => {
   for (const sourceHz of [10, 15]) {
     const sourceIntervalMs = 1000 / sourceHz;
@@ -312,6 +387,38 @@ test('an explicit target at the measured display ceiling keeps recovery headroom
   assert.equal(plan.clampReason, 'display');
   assert.ok(plan.outputHz < plan.capacityHz);
   assert.ok(Math.abs(plan.outputHz - plan.capacityHz * Cadence.DISPLAY_CLAMP_HEADROOM) < 1e-9);
+});
+
+test('display Hz mode reserves catch-up headroom without reporting a clamp', () => {
+  const plan = Cadence.resolveOutputRate('hz', 1000 / 60, {
+    sourceHz: 24,
+    sourceReady: true,
+    displayReady: true,
+  });
+  assert.equal(plan.state, 'active');
+  assert.equal(plan.capacityHz, 60);
+  assert.ok(Math.abs(plan.outputHz - 60 * Cadence.DISPLAY_CLAMP_HEADROOM) < 1e-9);
+  assert.equal(plan.clampReason, null);
+
+  const queue = [{ at: 1000 }, { at: 1000 + 1000 / plan.outputHz }];
+  const selection = Cadence.selectDuePresentation(queue, 1100, {
+    targetHz: plan.outputHz,
+    displayCapacityHz: plan.capacityHz,
+  });
+  assert.equal(selection.recovering, true);
+  assert.equal(selection.dropCount, 0);
+});
+
+test('display Hz mode keeps the panel rate when headroom would break the 2x floor', () => {
+  const plan = Cadence.resolveOutputRate('hz', 1000 / 60, {
+    sourceHz: 30,
+    sourceReady: true,
+    displayReady: true,
+  });
+  assert.equal(plan.state, 'active');
+  assert.equal(plan.minimumHz, 60);
+  assert.equal(plan.outputHz, 60);
+  assert.equal(plan.clampReason, null);
 });
 
 test('playback-adjusted source cadence keeps the exact 2x floor', () => {
@@ -456,6 +563,67 @@ test('display estimator accepts faster and slower transitions only after ten sta
     assert.equal(Cadence.updateDisplayInterval(state, 1000 / toHz), true);
     assert.ok(Math.abs(state.floorMs - 1000 / toHz) < 1e-9);
   }
+});
+
+for (const [latchedHz, realHz] of [[45, 60], [30, 60], [60, 120]]) {
+  test(`a display latched at ${latchedHz}Hz recovers to ${realHz}Hz through harmonic hitches`, () => {
+    for (let phase = 0; phase < 8; phase += 1) {
+      const state = { floorMs: 100, ready: false, stableSamples: 0 };
+      for (let index = 0; index < Cadence.REFRESH_TRANSITION_SAMPLES; index += 1) {
+        Cadence.updateDisplayInterval(state, 1000 / latchedHz);
+      }
+      assert.equal(Cadence.measureDisplayHz(state.floorMs).displayHz, latchedHz);
+
+      const realIntervalMs = 1000 / realHz;
+      let samples = 0;
+      const recovered = () => Math.abs(state.floorMs - realIntervalMs) / realIntervalMs <= 0.06;
+      while (samples < 200 && !recovered()) {
+        Cadence.updateDisplayInterval(state,
+          samples % 8 === phase ? realIntervalMs * 2 : realIntervalMs);
+        samples += 1;
+      }
+      assert.ok(recovered(),
+        `phase ${phase} stayed at ${(1000 / state.floorMs).toFixed(2)}Hz after ${samples} samples`);
+      assert.ok(samples <= 12, `phase ${phase} needed ${samples} callbacks to recover`);
+      assert.equal(Cadence.measureDisplayHz(state.floorMs).displayHz, realHz);
+    }
+  });
+}
+
+test('sparse fast outliers expire without authorizing a harmonic display rate', () => {
+  const confirmedIntervalMs = 1000 / 60;
+  for (const spacing of [2, 3, 4, 5, 8]) {
+    const state = { floorMs: 100, ready: false, stableSamples: 0 };
+    for (let index = 0; index < Cadence.REFRESH_TRANSITION_SAMPLES; index += 1) {
+      Cadence.updateDisplayInterval(state, confirmedIntervalMs);
+    }
+    for (let index = 0; index < 1000; index += 1) {
+      const sampleMs = index % spacing === 0 ? 1000 / 240 : confirmedIntervalMs;
+      Cadence.updateDisplayInterval(state, sampleMs);
+    }
+    assert.equal(Cadence.measureDisplayHz(state.floorMs).displayHz, 60,
+      `one fast outlier every ${spacing} callbacks changed the display rate`);
+    assert.ok((state._displayFasterSamples?.length || 0) <= Cadence.REFRESH_TRANSITION_SAMPLES);
+  }
+});
+
+test('short fast bursts and a changed candidate cannot accumulate stale evidence', () => {
+  const state = { floorMs: 100, ready: false, stableSamples: 0 };
+  const normalMs = 1000 / 60;
+  for (let index = 0; index < Cadence.REFRESH_TRANSITION_SAMPLES; index += 1) {
+    Cadence.updateDisplayInterval(state, normalMs);
+  }
+  for (let cycle = 0; cycle < 100; cycle += 1) {
+    for (let index = 0; index < 9; index += 1) Cadence.updateDisplayInterval(state, 1000 / 240);
+    for (let index = 0; index < 4; index += 1) Cadence.updateDisplayInterval(state, normalMs);
+    assert.equal(state._displayFasterSamples.length, 0);
+  }
+  assert.equal(Cadence.measureDisplayHz(state.floorMs).displayHz, 60);
+
+  for (let index = 0; index < 5; index += 1) Cadence.updateDisplayInterval(state, 1000 / 240);
+  for (let index = 0; index < 2; index += 1) Cadence.updateDisplayInterval(state, normalMs);
+  for (let index = 0; index < 10; index += 1) Cadence.updateDisplayInterval(state, 1000 / 120);
+  assert.equal(Cadence.measureDisplayHz(state.floorMs).displayHz, 120);
 });
 
 for (const sourceFps of [50, 60000 / 1001, 60, 75, 120]) {
@@ -641,6 +809,37 @@ test('a 70ms wall stall resyncs by whole target steps without queuing stale dead
   assert.ok(Math.abs(stalled.presentations[1].at - stalled.presentations[0].at - targetStepMs) < 1e-7);
 });
 
+test('a stale source interval never rewinds or duplicates the absolute target clock', () => {
+  const staleSourceIntervalMs = 44.828769230769225;
+  const targetHz = 58.1903;
+  const targetStepMs = 1000 / targetHz;
+  const wallIntervalsMs = [1000 / 30, 1000 / 20];
+  const deadlines = [];
+  let startAt = 1000;
+  let nextAt = 0;
+  let phaseMs = 0;
+  for (let index = 0; index < 288; index += 1) {
+    const plan = Cadence.planSourceCadencePresentations({
+      nextAt,
+      phaseMs,
+      startAt,
+      sourceIntervalMs: staleSourceIntervalMs,
+      outputHz: targetHz,
+      interpolate: true,
+    });
+    deadlines.push(...plan.presentations.map(item => item.at));
+    nextAt = plan.nextAt;
+    phaseMs = plan.nextPhaseMs;
+    startAt += wallIntervalsMs[index % wallIntervalsMs.length];
+  }
+  assert.equal(deadlines.length, 698);
+  for (let index = 1; index < deadlines.length; index += 1) {
+    const gapSteps = (deadlines[index] - deadlines[index - 1]) / targetStepMs;
+    assert.ok(gapSteps >= 1 - 1e-7);
+    assert.ok(Math.abs(gapSteps - Math.round(gapSteps)) < 1e-7);
+  }
+});
+
 test('cuts, anime duplicates and GPU fallback preserve the same target cadence', () => {
   const regular = simulateProductPresentations(24, 120);
   const duplicate = simulateProductPresentations(24, 120, { interpolate: false });
@@ -792,6 +991,7 @@ test('extension loads the helper first and exposes every output-rate choice', ()
   const manifest = JSON.parse(readFileSync(`${extensionDirectory}/manifest.json`, 'utf8'));
   assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'profile-store.js', 'content.js']);
   const content = readFileSync(`${extensionDirectory}/content.js`, 'utf8');
+  const cadenceSource = readFileSync(`${extensionDirectory}/cadence.js`, 'utf8');
   for (const value of ['auto', 'hz', 'target', '2', '3', '4', '5', '6']) {
     assert.match(content, new RegExp(`<option value="${value}">`));
   }
@@ -803,7 +1003,7 @@ test('extension loads the helper first and exposes every output-rate choice', ()
   assert.match(content, /strictCeiling:\s*cappedAuto/);
   assert.match(content, /Cadence\.planSourceCadencePresentations\(/);
   assert.match(content, /Cadence\.fallbackCadencePresentations\(/);
-  assert.match(content, /Cadence\.estimateSourceCadence\(/);
+  assert.match(content, /Cadence\.updateSourceInterval\(/);
   assert.match(content, /Cadence\.targetNeedsInterpolation\(/);
   assert.match(content, /Cadence\.selectDuePresentation\(/);
   assert.match(content, /const wallPairMs = decodedIntervalMs \/ playbackRate/);
@@ -817,9 +1017,11 @@ test('extension loads the helper first and exposes every output-rate choice', ()
     'a missed source callback must break pair history before the next interpolation');
   assert.match(content, /sourceGapHistoryBreaks\+\+/,
     'source-gap recovery must remain observable in product evidence');
+  assert.match(content, /\[3, 4, 'target', 'hz'\]\.includes\(factor\)/,
+    'the product benchmark bridge must be able to exercise Display Hz mode');
   assert.match(content, /pumpWorkMs[\s\S]*?sourceWorkMs/,
     'product evidence must separate runtime callback work from browser scheduling stalls');
-  assert.match(content, /decodedIntervalSamples\.length > 32/);
+  assert.match(cadenceSource, /state\.samples\.length > SOURCE_INTERVAL_WINDOW/);
   const cadencePlan = content.slice(content.indexOf('function planPairCadence'),
     content.indexOf('function scheduleCadenceAnchors'));
   assert.match(cadencePlan, /1000 \/ timing\.sourceIntervalMs/);

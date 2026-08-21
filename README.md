@@ -35,8 +35,8 @@ HUD - recorded at 60 fps on an RTX 4060 Ti.
   off before you'd see a stutter
 - **Anime mode** detects animation drawn "on twos" and interpolates the real
   motion instead of the duplicated frames
-- **Display-Hz mode** locks output to your monitor's refresh grid (great on
-  120-240 Hz screens)
+- **Display-Hz mode** follows your monitor with a small recovery margin so an
+  occasional delayed frame does not turn into a permanent drop
 - **Compare slider** - drag a divider across the video: original on the left,
   Framegen on the right
 - **Private by construction** - the whole pipeline runs on your GPU; we collect
@@ -100,7 +100,7 @@ dimensions for troubleshooting.
 
 | Setting | What it does |
 |---|---|
-| **Output rate** | `auto` is right for most people and can use an optional FPS limit. You can also choose any custom Target FPS, fixed 2×-6×, or `display Hz` to match your monitor. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
+| **Output rate** | `auto` is right for most people and can use an optional FPS limit. You can also choose any custom Target FPS, fixed 2×-6×, or `display Hz` to pace just below your monitor's measured limit for recovery headroom. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
 | **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
 | **Model** | `v7s` (current default) or `v6` (legacy; retained until v8 replaces it) |
 | **Anime mode** | Keep on for anime; harmless elsewhere |

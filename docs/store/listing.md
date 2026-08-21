@@ -11,7 +11,7 @@ Real-time neural frame interpolation for any video: 24/30 fps becomes 60-240+ fp
 Framegen doubles (or more) the frame rate of any HTML5 video in real time,
 right in the tab. A small neural network - our own WebGPU runtime, ~3 ms per
 frame on a mid-range GPU (RTX 4060 Ti) - synthesizes the frames between the real ones, so
-24/30 fps footage plays at 60, 120 or up to your display's refresh rate.
+24/30 fps footage plays at 60, 120 or near your display's refresh rate.
 
 Works on any site with a <video> element: YouTube, Twitch, streaming sites,
 local files opened in the browser.
@@ -19,7 +19,7 @@ local files opened in the browser.
 Features:
 - Any custom Target FPS with a safe 2x-source minimum, 2x to 6x interpolation,
   an auto mode with an optional FPS limit, and a "display Hz" mode that follows
-  your monitor
+  your monitor with a small recovery margin
 - User-created local profiles in a full-screen settings editor;
   quick controls remain available directly over the video
 - Anime mode: detects animation drawn "on twos" and interpolates the real

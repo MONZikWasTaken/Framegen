@@ -393,26 +393,13 @@
       decodedCadenceShift.direction = 0;
       return frameDelta;
     }
-    if (decodedIntervalSamples.length >= 8
-        && Math.abs(sampleMs - decodedIntervalMs) / decodedIntervalMs > 0.12) {
-      const direction = sampleMs > decodedIntervalMs ? 1 : -1;
-      if (decodedCadenceShift.samples > 0
-          && direction === decodedCadenceShift.direction) {
-        decodedCadenceShift.samples++;
-        decodedCadenceShift.intervalMs += (sampleMs - decodedCadenceShift.intervalMs)
-          / decodedCadenceShift.samples;
-      } else {
-        decodedCadenceShift.intervalMs = sampleMs;
-        decodedCadenceShift.samples = 1;
-        decodedCadenceShift.direction = direction;
-      }
-      // Quantized 60 FPS timestamps commonly alternate around 12.5/20.8 ms.
-      // Only a consistent run is a real source-rate transition.
-      if (decodedCadenceShift.samples < 4) return;
-      sampleMs = decodedCadenceShift.intervalMs;
-      decodedCadenceShift.intervalMs = 0;
-      decodedCadenceShift.samples = 0;
-      decodedCadenceShift.direction = 0;
+    const update = Cadence.updateSourceInterval({
+      intervalMs: decodedIntervalMs,
+      samples: decodedIntervalSamples,
+      transition: decodedCadenceShift,
+    }, sampleMs);
+    decodedIntervalMs = update.intervalMs;
+    if (update.transitioned) {
       resetOutputCadence(true);
       delayMs = DELAY_MS;
       lastTex = null;
@@ -420,18 +407,9 @@
       lastUniqueTs = 0;
       const playbackRate = Math.max(0.01,
         Math.abs(Number(videoEl?.playbackRate) || 1));
-      intervalMs = sampleMs / playbackRate;
+      intervalMs = decodedIntervalMs / playbackRate;
       uniqueIntervalMs = intervalMs;
-      decodedIntervalSamples.length = 0;
-      decodedIntervalMs = sampleMs;
-    } else {
-      decodedCadenceShift.intervalMs = 0;
-      decodedCadenceShift.samples = 0;
-      decodedCadenceShift.direction = 0;
     }
-    decodedIntervalSamples.push(sampleMs);
-    if (decodedIntervalSamples.length > 32) decodedIntervalSamples.shift();
-    decodedIntervalMs = Cadence.estimateSourceCadence(decodedIntervalSamples, decodedIntervalMs).intervalMs;
     return frameDelta;
   }
 
@@ -3278,8 +3256,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
               ? Cadence.sanitizeTargetFps(message.payload?.targetFps)
               : cfg.targetFps;
             const requestedResolution = Number(message.payload?.resolution ?? 720);
-            if (![3, 4, 'target'].includes(factor) || (factor === 'target' && targetFps === null)) {
-              throw new Error('factor must be 3, 4 or target with a positive targetFps');
+            if (![3, 4, 'target', 'hz'].includes(factor) || (factor === 'target' && targetFps === null)) {
+              throw new Error('factor must be 3, 4, hz or target with a positive targetFps');
             }
             if (!SIZES[requestedResolution]) throw new Error('resolution is not supported');
             Object.assign(cfg, {

@@ -24,6 +24,10 @@
   const DISPLAY_SAMPLE_QUANTIZATION_MS = 1.05;
   const DISPLAY_STABILITY_CV = 0.12;
   const DISPLAY_SERVICE_WINDOW = 32;
+  const DISPLAY_FASTER_MISS_BUDGET = 3;
+  const SOURCE_INTERVAL_WINDOW = 32;
+  const SOURCE_TRANSITION_TOLERANCE = 0.12;
+  const SOURCE_TRANSITION_SAMPLES = 4;
 
   function sanitizeOutputRate(value) {
     if (value === 'auto' || value === 'hz' || value === 'target') return value;
@@ -79,7 +83,13 @@
     const rawHz = 1000 / robustIntervalMs;
     const measuredHz = normalizeVideoRate(rawHz);
     const previousHz = 1000 / fallbackIntervalMs;
-    const previousNominalHz = normalizeVideoRate(previousHz);
+    let previousNominalHz = COMMON_VIDEO_RATES[0];
+    for (const rate of COMMON_VIDEO_RATES) {
+      if (Math.abs(previousHz - rate) / rate
+          < Math.abs(previousHz - previousNominalHz) / previousNominalHz) {
+        previousNominalHz = rate;
+      }
+    }
     const previousIsNominal = Math.abs(previousHz - previousNominalHz) / previousNominalHz < 1e-9;
     // Once a common decoded cadence is established, hold it through bounded
     // timestamp noise. A sustained real rate change still moves the rolling
@@ -89,6 +99,64 @@
     const sourceHz = holdPrevious ? previousNominalHz : measuredHz;
     return { intervalMs: 1000 / sourceHz, sourceHz, rawHz,
       sampleCount: valid.length, normalized: sourceHz !== rawHz };
+  }
+
+  function resetSourceTransition(transition) {
+    transition.intervalMs = 0;
+    transition.samples = 0;
+    transition.direction = 0;
+  }
+
+  // Keep the robust window unbiased even while deciding whether an abrupt
+  // interval change is a real source-rate transition. Dropping the first three
+  // outliers made alternating short/long media timestamps converge on only the
+  // long half of the pattern and permanently understated the decoded rate.
+  function updateSourceInterval(state, sampleMs) {
+    if (!state || typeof state !== 'object') throw new TypeError('source cadence state must be an object');
+    if (!Number.isFinite(state.intervalMs) || state.intervalMs <= 0) {
+      throw new RangeError('source cadence interval must be positive');
+    }
+    if (!Number.isFinite(sampleMs) || sampleMs <= 0.5 || sampleMs >= 2000) {
+      throw new RangeError('source cadence sample is invalid');
+    }
+    if (!Array.isArray(state.samples)) state.samples = [];
+    if (!state.transition || typeof state.transition !== 'object') state.transition = {};
+    const transition = state.transition;
+    if (!Number.isFinite(transition.intervalMs) || transition.intervalMs < 0
+        || !Number.isInteger(transition.samples) || transition.samples < 0
+        || ![-1, 0, 1].includes(transition.direction)) {
+      resetSourceTransition(transition);
+    }
+
+    let acceptedSampleMs = sampleMs;
+    let transitioned = false;
+    const outsideCurrentBand = state.samples.length >= 8
+      && Math.abs(sampleMs - state.intervalMs) / state.intervalMs > SOURCE_TRANSITION_TOLERANCE;
+    if (outsideCurrentBand) {
+      const direction = sampleMs > state.intervalMs ? 1 : -1;
+      if (transition.samples > 0 && transition.direction === direction) {
+        transition.samples += 1;
+        transition.intervalMs += (sampleMs - transition.intervalMs) / transition.samples;
+      } else {
+        transition.intervalMs = sampleMs;
+        transition.samples = 1;
+        transition.direction = direction;
+      }
+      if (transition.samples >= SOURCE_TRANSITION_SAMPLES) {
+        acceptedSampleMs = transition.intervalMs;
+        state.samples.length = 0;
+        state.intervalMs = acceptedSampleMs;
+        resetSourceTransition(transition);
+        transitioned = true;
+      }
+    } else {
+      resetSourceTransition(transition);
+    }
+
+    state.samples.push(acceptedSampleMs);
+    if (state.samples.length > SOURCE_INTERVAL_WINDOW) state.samples.shift();
+    state.intervalMs = estimateSourceCadence(state.samples, state.intervalMs).intervalMs;
+    return { intervalMs: state.intervalMs, transitioned };
   }
 
   function targetNeedsInterpolation(sourceHz, targetHz) {
@@ -157,13 +225,37 @@
     state.slowSamples = state.candidateSamples;
   }
 
+  function resetDisplayCandidates(state) {
+    state._displayFasterSamples = [];
+    state._displayFasterMisses = 0;
+    state._displaySlowerSamples = [];
+    state._displayCandidateSamples = [];
+  }
+
+  function syncDirectionalCandidateState(state) {
+    const candidates = state._displayFasterSamples.length
+      ? state._displayFasterSamples
+      : state._displaySlowerSamples;
+    state._displayCandidateSamples = candidates;
+    syncDisplayCandidateState(state, candidates);
+  }
+
+  function ageFasterCandidate(state) {
+    if (!state._displayFasterSamples.length) return;
+    state._displayFasterMisses += 1;
+    if (state._displayFasterMisses > DISPLAY_FASTER_MISS_BUDGET) {
+      state._displayFasterSamples = [];
+      state._displayFasterMisses = 0;
+    }
+  }
+
   function confirmDisplayService(state, samples) {
     const summary = displaySampleSummary(samples);
     const previous = state.floorMs;
     state.floorMs = summary.serviceIntervalMs;
     state._displayConfirmed = true;
     state._displayServiceSamples = samples.slice(-DISPLAY_SERVICE_WINDOW);
-    state._displayCandidateSamples = [];
+    resetDisplayCandidates(state);
     state.stableSamples = Math.max(REFRESH_TRANSITION_SAMPLES,
       state._displayServiceSamples.length);
     state.ready = true;
@@ -182,6 +274,11 @@
 
     if (!Array.isArray(state._displayServiceSamples)) state._displayServiceSamples = [];
     if (!Array.isArray(state._displayCandidateSamples)) state._displayCandidateSamples = [];
+    if (!Array.isArray(state._displayFasterSamples)) state._displayFasterSamples = [];
+    if (!Array.isArray(state._displaySlowerSamples)) state._displaySlowerSamples = [];
+    if (!Number.isInteger(state._displayFasterMisses) || state._displayFasterMisses < 0) {
+      state._displayFasterMisses = 0;
+    }
     if (state._displayConfirmed !== true) {
       state._displayConfirmed = state.ready === true
         && Number.isFinite(state.floorMs) && state.floorMs > 1 && state.floorMs < 100;
@@ -191,7 +288,8 @@
     }
 
     if (state._displayConfirmed && displaySamplesAgree(sampleMs, state.floorMs)) {
-      state._displayCandidateSamples = [];
+      ageFasterCandidate(state);
+      state._displaySlowerSamples = [];
       state._displayServiceSamples.push(sampleMs);
       if (state._displayServiceSamples.length > DISPLAY_SERVICE_WINDOW) {
         state._displayServiceSamples.shift();
@@ -204,24 +302,35 @@
       state.stableSamples = Math.min(DISPLAY_SERVICE_WINDOW,
         Math.max(REFRESH_TRANSITION_SAMPLES, state.stableSamples + 1));
       state.ready = true;
-      syncDisplayCandidateState(state, state._displayCandidateSamples);
+      syncDirectionalCandidateState(state);
       return Math.abs(state.floorMs - previous) > 1e-9;
     }
 
-    const candidates = state._displayCandidateSamples;
+    // Delayed callbacks cannot disprove faster service. Keep up to ten agreeing
+    // faster observations through at most three intervening misses so a missed
+    // callback at a harmonic interval cannot permanently latch a slower rate.
+    // The bounded miss budget prevents isolated fast outliers accumulating into a
+    // false transition over an unbounded amount of time.
+    const faster = sampleMs < state.floorMs;
+    const candidates = faster ? state._displayFasterSamples : state._displaySlowerSamples;
+    if (faster) state._displaySlowerSamples = [];
+    else ageFasterCandidate(state);
     if (candidates.length) {
       const candidateMeanMs = displaySampleSummary(candidates).meanMs;
-      if (!displaySamplesAgree(sampleMs, candidateMeanMs)) candidates.length = 0;
+      if (!displaySamplesAgree(sampleMs, candidateMeanMs)) {
+        candidates.length = 0;
+        if (faster) state._displayFasterMisses = 0;
+      }
     }
     candidates.push(sampleMs);
     if (candidates.length > REFRESH_TRANSITION_SAMPLES) candidates.shift();
-    syncDisplayCandidateState(state, candidates);
+    syncDirectionalCandidateState(state);
 
     // One or two long callbacks are ordinary OS/browser scheduling stalls. Keep
     // an already confirmed display usable through those outliers, but fail safe
     // once three agreeing slow samples indicate a real refresh-rate transition.
     const confirmedSlowdown = state._displayConfirmed
-      && sampleMs > state.floorMs
+      && !faster
       && candidates.length >= 3;
     if (!state._displayConfirmed || confirmedSlowdown) {
       state.ready = false;
@@ -310,15 +419,21 @@
     // amount of real presentation service for bounded catch-up after an rAF
     // hitch. Never let that reserve violate the strict 2x source floor.
     const headroomDisplayHz = display.capacityHz * DISPLAY_CLAMP_HEADROOM;
-    const targetsDisplayCeiling = safeMode === 'target'
-      && requestedHz >= display.capacityHz;
+    const targetsDisplayCeiling = requestedHz >= display.capacityHz;
     const useDisplayHeadroom = targetsDisplayCeiling
       && (strictCeiling || headroomDisplayHz + toleranceHz >= minimumHz);
     const displayLimitHz = useDisplayHeadroom ? headroomDisplayHz : display.capacityHz;
+    // Display Hz asks for the panel ceiling itself. Use the headroom-adjusted
+    // service target so ordinary rAF hitches can be recovered without reporting
+    // a misleading display clamp. Explicit targets retain their existing clamp
+    // semantics, and strict Auto caps remain strict.
+    const adjustedDesiredHz = !strictCeiling && safeMode === 'hz'
+      ? displayLimitHz
+      : desiredHz;
     const maximumHz = Math.min(displayLimitHz, computeCapacityHz, runtimeCapacityHz);
-    const outputHz = Math.min(desiredHz, maximumHz);
+    const outputHz = Math.min(adjustedDesiredHz, maximumHz);
     let clampReason = null;
-    if (desiredHz > maximumHz + toleranceHz) {
+    if (adjustedDesiredHz > maximumHz + toleranceHz) {
       if (maximumHz === displayLimitHz) clampReason = 'display';
       else if (maximumHz === computeCapacityHz) clampReason = 'gpu';
       else clampReason = 'runtime';
@@ -470,9 +585,14 @@
       // phase survive, but no stale deadline backlog is emitted.
       const desiredAt = startAt + cursorPhase;
       const epsilonMs = Math.max(1e-7, stepMs * 1e-9);
-      if (Math.abs(cursorAt - desiredAt) > stepMs + epsilonMs) {
+      if (desiredAt - cursorAt > stepMs + epsilonMs) {
         const shiftSteps = Math.ceil((desiredAt - cursorAt) / stepMs - 1e-10);
         cursorAt += shiftSteps * stepMs;
+        resynced = true;
+      } else if (cursorAt - desiredAt > stepMs + epsilonMs) {
+        // Never rewind the absolute target clock: doing so emits a deadline that
+        // was already scheduled. Carry the clock's lead as media phase instead.
+        cursorPhase = Math.max(0, cursorAt - startAt);
         resynced = true;
       }
     }
@@ -589,6 +709,7 @@
     isCadenceMode,
     normalizeVideoRate,
     estimateSourceCadence,
+    updateSourceInterval,
     targetNeedsInterpolation,
     measureDisplayHz,
     updateDisplayInterval,

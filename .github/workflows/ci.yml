@@ -26,6 +26,7 @@ jobs:
           node --check extension/rt/rt.js
           node --check extension/rt/sr.js
           node --check web/player_worker.js
+          node --check tools/run_display_hz_check.mjs
 
       - name: Extension unit and acceptance contracts
         run: node --test tools/*.test.mjs
