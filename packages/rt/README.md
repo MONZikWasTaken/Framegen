@@ -19,7 +19,7 @@ bundler setup copy them from `node_modules/framegen/weights/`; in the browser
 the easiest path is the npm CDN (proper CORS, versioned, cached):
 
 ```js
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.1.0/weights';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.4.0/weights';
 const [bin, manifest] = await Promise.all([
   fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
   fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
@@ -58,6 +58,63 @@ what makes 4x-6x factors affordable.
 
 For one-off use (benchmarks, offline tools) there is also a buffer-mode API:
 `rt.run(rgbaA, rgbaB, t)` takes and returns `Uint8Array` RGBA pixels.
+
+### Experimental diagnostics
+
+Exact-GT and artifact harnesses can opt into GPU-resident intermediate outputs.
+This path is diagnostic-only and adds no pipelines or dispatches unless
+`debugOutputs: true` is passed:
+
+```js
+const rt = await createRT(device, { ...opts, debugOutputs: true });
+rt.prepPair(frameA, frameB);
+rt.runTDebug(0.5, out, { warp0, warp1, flow, mask, refineResidual });
+```
+
+The five targets must be full-resolution `rgba16float` textures with
+`STORAGE_BINDING`. `flow` stores `(fx0, fy0, fx1, fy1)` in pixels; `mask`
+stores `(raw logit, effective compositing mask, max warp disagreement, 1)`;
+the effective mask includes `experimentalMaskSharpen` when that A/B is active.
+The two warps and the upsampled refine residual use RGB channel order. Add `COPY_SRC` or
+`TEXTURE_BINDING` to the target usage when the harness needs readback or
+visualization.
+
+The texture-mode final compositor also has a diagnostic-only mask-sharpening
+candidate. It is disabled by default and is not enabled by the Framegen
+extension:
+
+```js
+const rt = await createRT(device, {
+  ...opts,
+  experimentalMaskSharpen: {
+    strength: 4,
+    disagreementLow: 0.02,
+    disagreementHigh: 0.2,
+  },
+});
+```
+
+This option is for controlled exact-GT A/B tests, not a recommended quality
+preset. Sharpening can reduce double images while increasing missing regions,
+centroid error, popping, or temporal flicker. Keep the default `null` unless a
+candidate passes scene, temporal, and performance gates.
+
+The exact-GT page also exposes a deterministic primitive fixture suite through
+`?fixture=`:
+
+- `collision` (default) preserves the public-demo baseline;
+- `crossing` exercises identity and fixed depth order;
+- `merge_zoom` exercises changing scale and partial occlusion;
+- `rotate_thin` stresses rotating sub-/8-resolution boundaries;
+- `acceleration` and `bounce` are diagnostic stress cases whose exact internal
+  motion is not observable from two anchors alone.
+
+Every fixture runs the same 23 `k/24` positions and publishes its metadata,
+focus frame, quality ROI, geometry/tracking aggregates, temporal residual,
+flicker excess, motion deficit, and GT-vs-GT sanity result through
+`window.__collisionResult`. Unknown fixture names fail explicitly. Do not use
+the unobservable-motion fixtures as pairwise-model release blockers; they are
+evidence for training-data or temporal-context decisions.
 
 ## Squeeze the last 20%
 

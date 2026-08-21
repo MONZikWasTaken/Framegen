@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 2,
+  "playwrightCli": {
+    "package": "@playwright/cli@0.1.17",
+    "browser": "chrome",
+    "headed": true
+  },
+  "harness": {
+    "path": "web/bench.html"
+  },
+  "modelAssets": {
+    "v7s": {
+      "weights": "extension/assets/rt_v7s.bin",
+      "manifest": "extension/assets/rt_v7s.json"
+    },
+    "tfact2": {
+      "weights": "extension/assets/rt_tfact2.bin",
+      "manifest": "extension/assets/rt_tfact2.json"
+    }
+  },
+  "workload": {
+    "resolution": "720",
+    "model": "v7s",
+    "scene": "calm",
+    "modules": [
+      "rt"
+    ],
+    "sparseRefine": true,
+    "staticGuard": true,
+    "tune": true,
+    "sourceFps": 10,
+    "outputHz": 240
+  },
+  "measurement": {
+    "warmupRunTCalls": 6,
+    "repetitions": 9,
+    "callsPerSample": 30,
+    "cycleCallsPerSample": 20,
+    "perRunTDistinctTimesteps": 4,
+    "intervalFactor": 24,
+    "intervalRepetitions": 15,
+    "timeoutMs": 180000
+  },
+  "profiles": {
+    "v7s-720p-hfr": {
+      "workload": {
+        "resolution": "720",
+        "model": "v7s",
+        "scene": "motion",
+        "modules": [
+          "rt"
+        ],
+        "sparseRefine": true,
+        "staticGuard": true,
+        "tune": true,
+        "sourceFps": 60
+      },
+      "measurement": {
+        "warmupRunTCalls": 12,
+        "repetitions": 9,
+        "callsPerSample": 30,
+        "cycleCallsPerSample": 20,
+        "perRunTDistinctTimesteps": 3,
+        "intervalFactors": [
+          3,
+          4
+        ],
+        "intervalWarmupsPerFactor": 2,
+        "intervalRepetitions": 30,
+        "timeoutMs": 180000
+      },
+      "acceptance": {
+        "enabled": true,
+        "budgetFraction": 0.85,
+        "hardBudgetFraction": 1,
+        "minimumRepetitions": 30,
+        "minimumWarmupIntervals": 2,
+        "width": 1280,
+        "height": 720,
+        "requiredDeviceFeatures": [
+          "shader-f16",
+          "timestamp-query"
+        ]
+      }
+    }
+  },
+  "parity": {
+    "maxAbsByteDiff": 0,
+    "maxMeanAbsByteDiff": 0,
+    "maxDifferentBytePercent": 0
+  },
+  "outputDirectory": "output/playwright"
+}

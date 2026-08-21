@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Framegen - Frame Interpolation",
-  "version": "1.4.0",
+  "version": "1.4.2",
   "action": {
     "default_title": "Framegen",
     "default_popup": "popup.html",
@@ -11,16 +11,23 @@
       "48": "icons/icon48.png"
     }
   },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "permissions": ["storage", "declarativeNetRequest"],
   "host_permissions": ["<all_urls>"],
   "declarative_net_request": {
     "rule_resources": [{ "id": "cors_media", "enabled": true, "path": "rules.json" }]
   },
-  "description": "Real-time 2-6x frame interpolation for any <video> - own WebGPU runtime, runs fully on your GPU. Free for personal use.",
+  "description": "Real-time 2x+ frame interpolation with custom target FPS for any <video>. Runs locally on your GPU with WebGPU.",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["cadence.js", "profile-store.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

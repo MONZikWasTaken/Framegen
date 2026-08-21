@@ -21,6 +21,8 @@
 opencode.json
 /.claude/
 /.cargo/
+/.playwright-cli/
+/output/
 
 /third_party/
 

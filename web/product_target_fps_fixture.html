@@ -1,0 +1,247 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Framegen product target-FPS fixture</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #080b11; }
+  body { display: grid; place-items: center; overflow: hidden; }
+  video { width: 1280px; height: 720px; display: block; background: #080b11; }
+  canvas { display: none; }
+</style>
+<video id="framegen-bench-video" width="1280" height="720" muted autoplay playsinline></video>
+<canvas id="source" width="1280" height="720"></canvas>
+<script>
+(() => {
+  'use strict';
+  const WIDTH = 1280;
+  const HEIGHT = 720;
+  const params = new URL(location.href).searchParams;
+  const caseId = params.get('caseId') || '';
+  const factor = params.get('factor') || '';
+  const SOURCE_FPS = Number(params.get('sourceFps'));
+  const TARGET_FPS = Number(params.get('targetFps'));
+  const RESOLUTION = Number(params.get('resolution'));
+  const FRAME_MS = 1000 / SOURCE_FPS;
+  const PATTERN = 'moving-primitives-v1';
+  const token = params.get('framegenBenchToken') || '';
+  const warmupMs = Number(params.get('warmupMs'));
+  const measureMs = Number(params.get('measureMs'));
+  const source = document.getElementById('source');
+  const video = document.getElementById('framegen-bench-video');
+  const context = source.getContext('2d', { alpha: false });
+  const pending = new Map();
+  let requestId = 0;
+  let producerTimer = 0;
+  let producerRunning = false;
+  let producerNextAtMs = 0;
+  let frameIndex = 0;
+  let measureProducer = false;
+  let producerStartedAtMs = 0;
+  let producerLastAtMs = null;
+  let producedFrames = 0;
+  let skippedScheduleSlots = 0;
+  let producerIntervalsMs = [];
+
+  function drawFrame(index) {
+    const phase = index % 720;
+    context.fillStyle = '#0b0f18';
+    context.fillRect(0, 0, WIDTH, HEIGHT);
+    context.fillStyle = '#111827';
+    for (let x = -80 + (phase % 80); x < WIDTH; x += 80) context.fillRect(x, 0, 2, HEIGHT);
+    for (let y = -72 + ((phase * 2) % 72); y < HEIGHT; y += 72) context.fillRect(0, y, WIDTH, 2);
+
+    const rectX = -180 + ((phase * 4) % (WIDTH + 360));
+    const rectY = 110 + 70 * Math.sin(phase * Math.PI / 90);
+    context.save();
+    context.translate(rectX, rectY);
+    context.rotate(phase * Math.PI / 180);
+    context.fillStyle = '#31b9ed';
+    context.fillRect(-72, -54, 144, 108);
+    context.restore();
+
+    const circleX = WIDTH - ((phase * 3) % (WIDTH + 240)) + 120;
+    const circleY = 390 + 110 * Math.sin(phase * Math.PI / 120);
+    context.beginPath();
+    context.arc(circleX, circleY, 64, 0, Math.PI * 2);
+    context.fillStyle = '#ee6950';
+    context.fill();
+
+    const smallX = 170 + ((phase * 5) % 940);
+    const smallY = 560 - 95 * Math.cos(phase * Math.PI / 75);
+    context.beginPath();
+    context.arc(smallX, smallY, 38, 0, Math.PI * 2);
+    context.fillStyle = '#d9b8e6';
+    context.fill();
+
+    context.fillStyle = '#e7edf7';
+    context.font = '600 28px ui-monospace, monospace';
+    context.fillText(String(index).padStart(8, '0'), 28, 48);
+  }
+
+  function startProducer(track) {
+    producerRunning = true;
+    producerNextAtMs = performance.now();
+    const tick = () => {
+      if (!producerRunning) return;
+      const now = performance.now();
+      if (now + 0.25 < producerNextAtMs) {
+        producerTimer = setTimeout(tick, Math.max(0, producerNextAtMs - now));
+        return;
+      }
+      if (now - producerNextAtMs >= FRAME_MS * 2) {
+        const skipped = Math.floor((now - producerNextAtMs) / FRAME_MS);
+        frameIndex += skipped;
+        producerNextAtMs += skipped * FRAME_MS;
+        if (measureProducer) skippedScheduleSlots += skipped;
+      }
+      drawFrame(frameIndex++);
+      track.requestFrame();
+      if (measureProducer) {
+        producedFrames++;
+        if (producerLastAtMs !== null) producerIntervalsMs.push(now - producerLastAtMs);
+        producerLastAtMs = now;
+      }
+      producerNextAtMs += FRAME_MS;
+      producerTimer = setTimeout(tick, Math.max(0, producerNextAtMs - performance.now()));
+    };
+    tick();
+  }
+
+  function beginProducerMeasurement() {
+    measureProducer = true;
+    producerStartedAtMs = performance.now();
+    producerLastAtMs = null;
+    producedFrames = 0;
+    skippedScheduleSlots = 0;
+    producerIntervalsMs = [];
+  }
+
+  function producerSnapshot() {
+    const durationMs = performance.now() - producerStartedAtMs;
+    const intervalTotalMs = producerIntervalsMs.reduce((sum, value) => sum + value, 0);
+    return {
+      durationMs,
+      producedFrames,
+      skippedScheduleSlots,
+      observedHz: intervalTotalMs > 0 ? 1000 * producerIntervalsMs.length / intervalTotalMs : null,
+      intervalsMs: [...producerIntervalsMs],
+    };
+  }
+
+  function requestBridge(command, payload = null, timeoutMs = 10000) {
+    const id = ++requestId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`Framegen benchmark bridge timed out: ${command}`));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      window.postMessage({
+        source: 'framegen-product-bench-fixture', token, id, command, payload,
+      }, location.origin);
+    });
+  }
+
+  window.addEventListener('message', event => {
+    if (event.source !== window) return;
+    const message = event.data;
+    if (!message || message.source !== 'framegen-product-bench-extension'
+        || message.token !== token || !Number.isInteger(message.id)) return;
+    const waiter = pending.get(message.id);
+    if (!waiter) return;
+    pending.delete(message.id);
+    clearTimeout(waiter.timer);
+    if (message.ok) waiter.resolve(message.value);
+    else waiter.reject(new Error(message.error || 'Framegen benchmark bridge failed'));
+  });
+
+  async function waitForBridge() {
+    const deadline = performance.now() + 15000;
+    let lastError = null;
+    while (performance.now() < deadline) {
+      try { return await requestBridge('ping', null, 750); }
+      catch (error) { lastError = error; }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw lastError || new Error('Framegen benchmark bridge unavailable');
+  }
+
+  async function waitForVideoFrame() {
+    await video.play();
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('fixture video did not produce a frame')), 10000);
+      video.requestVideoFrameCallback(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  async function main() {
+    if (!/^[a-z0-9][a-z0-9-]{2,63}$/.test(caseId)) throw new Error('invalid caseId');
+    if (factor !== 'target') throw new Error('factor must be target');
+    if (!Number.isFinite(SOURCE_FPS) || SOURCE_FPS <= 0 || SOURCE_FPS > 120) {
+      throw new Error('sourceFps must be in (0, 120]');
+    }
+    if (!Number.isFinite(TARGET_FPS) || TARGET_FPS < 2 || TARGET_FPS > 1000) {
+      throw new Error('targetFps must be in [2, 1000]');
+    }
+    if (![288, 360, 480, 720, 1080].includes(RESOLUTION)) {
+      throw new Error('resolution is not supported');
+    }
+    if (!/^[a-f0-9]{32,128}$/.test(token)) throw new Error('invalid benchmark token');
+    if (warmupMs !== 4000 || measureMs !== 12000) {
+      throw new Error('authoritative fixture requires 4000ms warmup and 12000ms measurement');
+    }
+    if (typeof source.captureStream !== 'function') throw new Error('canvas.captureStream is unavailable');
+    const stream = source.captureStream(0);
+    const track = stream.getVideoTracks()[0];
+    if (!track || typeof track.requestFrame !== 'function') {
+      throw new Error('CanvasCaptureMediaStreamTrack.requestFrame is unavailable');
+    }
+    drawFrame(frameIndex++);
+    video.srcObject = stream;
+    startProducer(track);
+    await waitForVideoFrame();
+    const bridge = await waitForBridge();
+    const configured = await requestBridge('configure',
+      { factor, targetFps: TARGET_FPS, resolution: RESOLUTION });
+    const prepared = await requestBridge('prepare', null, 120000);
+    const started = await requestBridge('start', null, 120000);
+    await new Promise(resolve => setTimeout(resolve, warmupMs));
+    beginProducerMeasurement();
+    await requestBridge('reset');
+    await new Promise(resolve => setTimeout(resolve, measureMs));
+    const telemetry = await requestBridge('snapshot');
+    const producer = producerSnapshot();
+    measureProducer = false;
+    await requestBridge('stop').catch(() => {});
+    producerRunning = false;
+    clearTimeout(producerTimer);
+    track.stop();
+    globalThis.__productTargetFpsResult = {
+      schemaVersion: 2,
+      fixture: { name: 'web/product_target_fps_fixture.html', pattern: PATTERN, width: WIDTH,
+        height: HEIGHT, nominalSourceFps: SOURCE_FPS },
+      conditions: { caseId, factor, targetFps: TARGET_FPS, sourceFps: SOURCE_FPS,
+        resolution: RESOLUTION, warmupMs, measureMs },
+      bridge,
+      configured,
+      prepared,
+      started,
+      producer,
+      telemetry,
+    };
+    document.title = `PRODUCT TARGET ${caseId} DONE`;
+  }
+
+  main().catch(error => {
+    producerRunning = false;
+    clearTimeout(producerTimer);
+    globalThis.__productTargetFpsResult = { schemaVersion: 2, error: error.stack || error.message || String(error) };
+    document.title = 'PRODUCT TARGET FPS ERROR';
+  });
+})();
+</script>

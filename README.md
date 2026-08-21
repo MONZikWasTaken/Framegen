@@ -94,16 +94,25 @@ dimensions for troubleshooting.
    left edge of the player.
 2. Click it. The button turns green, an fps readout appears, and the video is
    now interpolated. Click again to turn it off.
-3. The **gear** button next to it opens settings:
+3. The **gear** button next to it keeps the quick settings inside the player.
+   Choose **Advanced settings** there or in the extension popup when you want the
+   full-screen profile editor.
 
 | Setting | What it does |
 |---|---|
-| **Factor** | `auto` is right for most people. Fixed 2×-6× if you want control, `display Hz` to sync exactly to your monitor |
+| **Output rate** | `auto` is right for most people and can use an optional FPS limit. You can also choose any custom Target FPS, fixed 2×-6×, or `display Hz` to match your monitor. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
 | **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
-| **Model** | `v7` (default, fastest) or `v6` (previous generation) |
+| **Model** | `v7s` (current default) or `v6` (legacy; retained until v8 replaces it) |
 | **Anime mode** | Keep on for anime; harmless elsewhere |
 | **SR 2×** | Neural upscale of inserted frames - costs GPU, sharper result |
 | **Compare** | The split slider, for seeing the difference yourself |
+
+The full settings page lets you keep the live settings as-is or save any number
+of your own local profiles that can be created, duplicated, renamed, deleted,
+and reset. It also exposes
+the supported visibility controls, including the FPS counter, small
+`framegen` watermark, and optional performance notices. Existing settings
+are migrated without losing values.
 
 **Good first test:** anything shot at 24 fps - a movie trailer, a film scene
 with a slow camera pan, an anime opening. That's where the difference hits
@@ -168,7 +177,7 @@ lines, weights included:
 ```js
 import { createRT } from 'framegen';
 
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.0.1/weights';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.4.0/weights';
 const rt = await createRT(device, {
   w: 1280, h: 720, textureInput: true, textureOutput: true,
   weightsBin: await fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),

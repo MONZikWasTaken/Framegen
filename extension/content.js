@@ -7,73 +7,301 @@
   if (window.__framegen) return;
   window.__framegen = true;
 
+  const Cadence = globalThis.FramegenCadence;
+  if (!Cadence) throw new Error('Framegen cadence helper was not loaded');
+  const Profiles = globalThis.FramegenProfiles;
+  if (!Profiles) throw new Error('Framegen profile store was not loaded');
+
   const DELAY_MS = 60;
   // runtime tiles are 16x16 - model dims must be /16 (1088, not 1080; the ~0.7%
   // vertical stretch at present time is invisible)
   const SIZES = { 288: [512, 288], 360: [640, 352], 480: [848, 480], 720: [1280, 720], 1080: [1920, 1088] };
 
+  // Deliberately unreachable from ordinary pages. The product-path gate uses a
+  // fresh loopback URL and a per-run token; no benchmark state exists otherwise.
+  const PRODUCT_BENCH = (() => {
+    try {
+      const params = new URL(location.href).searchParams;
+      const token = params.get('framegenBenchToken') || '';
+      const loopback = location.hostname === '127.0.0.1' || location.hostname === 'localhost';
+      return window === window.top && location.protocol === 'http:' && loopback
+        && params.get('framegenProductBench') === '1' && /^[a-f0-9]{32,128}$/.test(token)
+        ? { token } : null;
+    } catch { return null; }
+  })();
+
   // ---------- settings (chrome.storage.local, live-applied) ----------
-  // factor: 'auto' (smart) or a fixed 2..6 treated as a CEILING under GPU overload
+  // factor stores output-rate mode: auto/display/custom target, or a fixed 2..6 source multiplier.
   // model: weight set key from MODELS. v7s is the default: faster (2.57ms vs
   // 3.05ms @480p, 3.75 vs 5.51 @720p) at equal-or-better quality. v6 stays
   // selectable; users with a saved choice keep it.
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
-  const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, guard: true, model: 'v7s' };
+  const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
+  const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
+    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
-    if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
+    const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
+    cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
+    cfg.targetFps = Cadence.sanitizeTargetFps(legacyTarget ?? cfg.targetFps, 120);
+    cfg.fpsLimit = canonicalFpsLimit(cfg.fpsLimit);
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
     if (![0, 1, 2, 3].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
-    cfg.showFps = !!cfg.showFps; cfg.guard = !!cfg.guard;
+    cfg.showFps = !!cfg.showFps; cfg.showWatermark = cfg.showWatermark !== false;
+    cfg.showWarnings = cfg.showWarnings !== false; cfg.guard = !!cfg.guard;
   }
-  try {
-    // async: the panel may already be built with defaults by the time this lands -
-    // ALWAYS resync the UI, otherwise checkboxes show one thing and cfg does another
-    chrome.storage.local.get(cfg, v => { Object.assign(cfg, v); sanitizeCfg(); syncPanel(); });
+  let settleSettingsReady = () => {};
+  let settingsSettled = !!PRODUCT_BENCH;
+  const settingsReady = PRODUCT_BENCH ? Promise.resolve() : new Promise((resolve) => {
+    settleSettingsReady = () => {
+      if (settingsSettled) return;
+      settingsSettled = true;
+      resolve();
+    };
+  });
+  if (!PRODUCT_BENCH) try {
+    // Runtime creation waits for this first snapshot. Otherwise hover preload can
+    // compile the defaults and then label them with the saved model/resolution.
+    chrome.storage.local.get(cfg, v => {
+      try {
+        const storedFpsLimit = v.fpsLimit;
+        Object.assign(cfg, v); sanitizeCfg(); syncPanel();
+        if (storedFpsLimit !== cfg.fpsLimit) {
+          chrome.storage.local.set({ fpsLimit: cfg.fpsLimit });
+        }
+      }
+      finally { settleSettingsReady(); }
+    });
     // settings changed in another tab/frame apply here live
     chrome.storage.onChanged.addListener((ch, area) => {
       if (area !== 'local') return;
-      let resChanged = false;
+      const profileStoreChanged = Object.hasOwn(ch, Profiles.STORE_KEY);
+      let runtimeChanged = false;
+      const previousFactor = cfg.factor;
+      const previousTargetFps = cfg.targetFps;
+      const previousFpsLimit = cfg.fpsLimit;
+      const incomingFpsLimit = ch.fpsLimit?.newValue;
+      const previousFg = cfg.fg;
+      const previousCompare = cfg.compare;
       for (const k in ch) {
         if (!(k in cfg)) continue;
-        if ((k === 'res' || k === 'model') && cfg[k] !== ch[k].newValue) resChanged = true;
+        if ((k === 'res' || k === 'model' || k === 'guard') && cfg[k] !== ch[k].newValue) {
+          runtimeChanged = true;
+        }
         cfg[k] = ch[k].newValue;
       }
       sanitizeCfg(); syncPanel();
-      if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
-      if (resChanged && running && videoEl && !toggling) {
+      if (incomingFpsLimit !== undefined && incomingFpsLimit !== cfg.fpsLimit) {
+        chrome.storage.local.set({ fpsLimit: cfg.fpsLimit });
+      }
+      if (Object.hasOwn(ch, 'showFps')) syncHudVisibility();
+      if (Object.hasOwn(ch, 'showWarnings') && !cfg.showWarnings) hideWarnings();
+      if (profileStoreChanged) {
+        loadPanelProfiles(ch[Profiles.STORE_KEY].newValue).catch(e => log('profile sync', e));
+      }
+      if (cfg.factor !== previousFactor || cfg.targetFps !== previousTargetFps
+          || cfg.fpsLimit !== previousFpsLimit || cfg.fg !== previousFg) {
+        delayMs = DELAY_MS;
+        resetOutputCadence(true);
+      }
+      if (previousCompare && !cfg.compare) cmpRing = [];
+      if ('hdr' in ch) configureOverlay();
+      if ('sr' in ch && cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
+      if (runtimeChanged && running && videoEl && !toggling) {
         toggling = true;
-        switchRes().catch(e => log('res sync', e)).finally(() => { toggling = false; });
+        switchRes().catch(e => log('runtime settings sync', e)).finally(() => { toggling = false; });
       }
     });
-  } catch { /* storage unavailable in some frames */ }
+  } catch { settleSettingsReady(); /* storage unavailable in some frames */ }
   function saveCfg() {
     try { chrome.storage.local.set(cfg); } catch {}
   }
+  let panelProfileStore = null;
+
+  function fpsLimitStepIndex(value) {
+    return Profiles.fpsLimitPresetIndex(value);
+  }
+
+  function canonicalFpsLimit(value) {
+    return Profiles.sanitizeFpsLimit(value);
+  }
+
+  function fpsLimitFromSlider(input) {
+    const index = Math.max(0, Math.min(FPS_LIMIT_STEPS.length - 1,
+      Math.round(Number(input.value) || 0)));
+    return FPS_LIMIT_STEPS[index];
+  }
+
+  function updateRateSliderPresentation(input = panel?.querySelector('#fcTargetFps')) {
+    if (!input || !panel) return;
+    const isLimit = cfg.factor === 'auto';
+    const value = isLimit
+      ? fpsLimitFromSlider(input)
+      : Cadence.sanitizeTargetFps(input.value, cfg.targetFps);
+    const output = panel.querySelector('#fcTargetFpsValue');
+    const label = value === null ? 'Unlimited' : `${Number(value.toFixed(2))} FPS`;
+    if (output) output.value = label;
+    input.setAttribute('aria-valuetext', label);
+    const parsedMin = Number(input.min);
+    const parsedMax = Number(input.max);
+    const min = Number.isFinite(parsedMin) ? parsedMin : 2;
+    const max = Number.isFinite(parsedMax) ? parsedMax : 1000;
+    const sliderValue = Number(input.value);
+    const ratio = Math.max(0, Math.min(1,
+      (sliderValue - min) / Math.max(1, max - min)));
+    const thumbOffset = Number((7.5 * (1 - 2 * ratio)).toFixed(3));
+    input.style.setProperty('--fc-fill', `calc(${ratio * 100}% + ${thumbOffset}px)`);
+  }
+
+  function renderRateScale(scale, marks) {
+    scale.replaceChildren(...marks.map(({ label, position }) => {
+      const mark = document.createElement('span');
+      mark.textContent = label;
+      mark.style.setProperty('--fc-mark-position', `${position}%`);
+      const offset = Number((7.5 * (1 - 2 * position / 100)).toFixed(3));
+      mark.style.setProperty('--fc-mark-offset', `${offset}px`);
+      return mark;
+    }));
+  }
+
+  function syncRateSlider() {
+    const input = panel?.querySelector('#fcTargetFps');
+    if (!input) return;
+    const control = input.closest('.fc-target-control');
+    const visible = cfg.factor === 'auto' || cfg.factor === 'target';
+    control.hidden = !visible;
+    if (!visible) return;
+
+    const title = panel.querySelector('#fcRateSliderTitle');
+    const hint = panel.querySelector('#fcRateSliderHint');
+    const scale = panel.querySelector('#fcRateSliderScale');
+    if (cfg.factor === 'auto') {
+      title.textContent = 'FPS limit';
+      hint.textContent = 'Common rates · Auto may run lower';
+      input.min = '0';
+      input.max = String(FPS_LIMIT_STEPS.length - 1);
+      input.step = '1';
+      input.value = String(fpsLimitStepIndex(cfg.fpsLimit));
+      input.setAttribute('aria-label', 'FPS limit');
+      renderRateScale(scale, [15, 60, 120, 240, null].map(value => ({
+        label: value === null ? '∞' : String(value),
+        position: fpsLimitStepIndex(value) / (FPS_LIMIT_STEPS.length - 1) * 100,
+      })));
+    } else {
+      title.textContent = 'Custom FPS';
+      hint.textContent = 'Exact target · minimum 2× source';
+      input.min = '2';
+      input.max = '1000';
+      input.step = '0.01';
+      input.value = String(cfg.targetFps);
+      input.setAttribute('aria-label', 'Custom FPS');
+      renderRateScale(scale, [
+        { label: '2', position: 0 },
+        { label: '500', position: 49.9 },
+        { label: '1000', position: 100 },
+      ]);
+    }
+    updateRateSliderPresentation(input);
+  }
+
+  function syncPanelProfileSelection() {
+    const select = panel?.querySelector('#fcProfile');
+    if (!select || !panelProfileStore) return;
+    try {
+      select.value = Profiles.findMatchingProfileId(panelProfileStore, cfg) || '';
+    } catch {
+      select.value = '';
+    }
+  }
+
+  function renderPanelProfiles() {
+    const select = panel?.querySelector('#fcProfile');
+    if (!select || !panelProfileStore) return;
+    const current = document.createElement('option');
+    current.value = '';
+    current.textContent = 'Current settings';
+    const children = [current];
+    const profiles = Profiles.profileList(panelProfileStore);
+    if (profiles.length) {
+      const group = document.createElement('optgroup');
+      group.label = 'My profiles';
+      for (const profile of profiles) {
+        const option = document.createElement('option');
+        option.value = profile.id;
+        option.textContent = profile.name;
+        group.append(option);
+      }
+      children.push(group);
+    }
+    select.replaceChildren(...children);
+    select.disabled = false;
+    syncPanelProfileSelection();
+  }
+
+  async function loadPanelProfiles(rawStore) {
+    if (!panel) return;
+    const select = panel.querySelector('#fcProfile');
+    try {
+      let candidate = rawStore;
+      if (arguments.length === 0) {
+        const snapshot = await chrome.storage.local.get(Profiles.STORE_KEY);
+        candidate = snapshot[Profiles.STORE_KEY];
+      }
+      const loaded = Profiles.loadStore(candidate, cfg);
+      panelProfileStore = loaded.store;
+      renderPanelProfiles();
+      if (loaded.needsWrite) {
+        await chrome.storage.local.set({ [Profiles.STORE_KEY]: loaded.store });
+      }
+    } catch (error) {
+      panelProfileStore = null;
+      if (select) {
+        const unavailable = document.createElement('option');
+        unavailable.textContent = 'Profiles unavailable';
+        select.replaceChildren(unavailable);
+        select.disabled = true;
+      }
+      log('profiles', error);
+    }
+  }
+
+  async function applyPanelProfile(profileId) {
+    if (!profileId || !panelProfileStore) {
+      syncPanelProfileSelection();
+      return;
+    }
+    const profile = Profiles.getProfile(panelProfileStore, profileId);
+    if (!profile) {
+      syncPanelProfileSelection();
+      return;
+    }
+    const nextStore = Profiles.setLastAppliedProfile(panelProfileStore, profile.id);
+    panelProfileStore = nextStore;
+    await chrome.storage.local.set(Profiles.toStoragePayload(nextStore, profile.settings));
+  }
+
   function syncPanel() {
     if (!panel) return;
     panel.querySelector('#fcFactor').value = String(cfg.factor);
+    syncRateSlider();
     panel.querySelector('#fcRes').value = String(cfg.res);
-    panel.querySelector('#fcModel').value = cfg.model;
-    panel.querySelector('#fcAnime').checked = cfg.anime;
-    panel.querySelector('#fcDebug').checked = cfg.debug;
-    panel.querySelector('#fcHover').checked = cfg.hoverReveal;
-    panel.querySelector('#fcFps').checked = cfg.showFps;
-    panel.querySelector('#fcGuard').checked = cfg.guard;
-    panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
-    panel.querySelector('#fcSharp').value = String(cfg.sharpness);
+    panel.querySelector('#fcShowFps').checked = cfg.showFps;
+    panel.querySelector('#fcWatermark').checked = cfg.showWatermark;
+    panel.querySelector('#fcWarnings').checked = cfg.showWarnings;
     const hd = panel.querySelector('#fcHDR');
     hd.checked = cfg.hdr;
     if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
+    syncPanelProfileSelection();
   }
 
-  let rt = null, rtRes = 0, rtModel = '', device = null, videoEl = null;
+  let rt = null, rtRes = 0, rtModel = '', rtGuard = null, rtGeneration = 0;
+  let device = null, recoveringDevice = false, deviceRecoveryEpoch = 0;
+  let deviceRecoveryVideo = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
   const blitBg = new Map();
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null, lastPresentedTex = null;
@@ -81,16 +309,40 @@
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
   let dedupReads = [], dedupReadIdx = 0; // readback ring: classifies overlap now
   let queue = [], running = false, processingFrame = false;
+  let videoFrameCallbackId = null, videoFrameCallbackVideo = null;
+  let pumpRafId = null, playbackLoopEpoch = 0;
   let pairSeq = 0; // generation counter for in-flight classify continuations
-  let hzNext = 0; // display-match mode: absolute time of the next output vsync tick
+  let pairDecisionChain = Promise.resolve();
+  const classifyTextureUse = new Map();
+  let hzNext = 0, hzPhaseMs = 0; // exact absolute target clock + decoded-media phase
   let intervalMs = 42, uniqueIntervalMs = 42, lastArrival = 0, lastUniqueTs = 0;
-  let msAvg = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
+  let decodedIntervalMs = 42, lastDecodedMediaTimeMs = null, lastDecodedPresentedFrames = null;
+  const decodedIntervalSamples = [];
+  const decodedCadenceShift = { intervalMs: 0, samples: 0, direction: 0 };
+  let msAvg = 0, lastMidCostAt = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
+  const midCostSamples = [];
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
   let bar = null, barSeeking = false, wm = null;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
-  let schedT = 0, rafFloor = 100, uiTick = 0, motionAvg = 0, lateAvg = 0;
+  let schedT = 0, rafFloor = 100, nextUiUpdateAt = 0, motionAvg = 0, lateAvg = 0;
+
+  function syncHudVisibility() {
+    if (!hud) return;
+    const text = hud.textContent || '';
+    const critical = text.startsWith('FG:') || text.startsWith('FG error:') || text.startsWith('FC:');
+    hud.style.display = critical || (running && (cfg.debug || cfg.showFps)) ? 'block' : 'none';
+  }
+  const UI_UPDATE_INTERVAL_MS = 1000 / 15;
+  const refreshEstimate = { floorMs: rafFloor, slowCandidateMs: 0, slowSamples: 0, stableSamples: 0 };
+  let outputRatePlanKey = '';
+  let outputRatePlanIdentity = null;
+  let outputRatePlanSnapshot = null;
+  let outputRatePlanCandidate = null;
+  let outputRatePlanCandidateSamples = 0;
+  const OUTPUT_RATE_TRANSITION_SAMPLES = 16;
+  let gpuProbeActive = false, gpuProbeStartedAt = 0, gpuProbeKey = '';
   let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
   let barH = 0; // control-bar height, measured once (content is static)
   let overlayFit = 'fill', overlayFitRequested = 'fill', overlayFitSupported = true;
@@ -107,7 +359,514 @@
   const sys = { gpu: '-', f16: false, hdrOk: false, hdrOn: false };
   try { sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch {}
 
-  const log = (...a) => console.log('[framegen]', ...a);
+  const benchSessionErrors = [];
+  let benchTelemetry = null, benchEpoch = 0, benchAppliedTune = null;
+
+  function resetDecodedSourceCadence() {
+    decodedIntervalMs = 42;
+    lastDecodedMediaTimeMs = null;
+    lastDecodedPresentedFrames = null;
+    decodedIntervalSamples.length = 0;
+    decodedCadenceShift.intervalMs = 0;
+    decodedCadenceShift.samples = 0;
+    decodedCadenceShift.direction = 0;
+  }
+
+  function updateDecodedSourceCadence(metadata, wallIntervalMs) {
+    const mediaTimeMs = Number(metadata?.mediaTime) * 1000;
+    const presentedFrames = Number(metadata?.presentedFrames);
+    let sampleMs = wallIntervalMs;
+    let frameDelta = 1;
+    if (Number.isFinite(mediaTimeMs)) {
+      if (lastDecodedMediaTimeMs !== null) {
+        sampleMs = mediaTimeMs - lastDecodedMediaTimeMs;
+        if (Number.isFinite(presentedFrames) && lastDecodedPresentedFrames !== null) {
+          frameDelta = presentedFrames - lastDecodedPresentedFrames;
+          if (Number.isInteger(frameDelta) && frameDelta > 1) sampleMs /= frameDelta;
+        }
+      }
+      lastDecodedMediaTimeMs = mediaTimeMs;
+    }
+    if (Number.isFinite(presentedFrames)) lastDecodedPresentedFrames = presentedFrames;
+    if (!Number.isFinite(sampleMs) || sampleMs <= 0.5 || sampleMs >= 2000) {
+      decodedCadenceShift.intervalMs = 0;
+      decodedCadenceShift.samples = 0;
+      decodedCadenceShift.direction = 0;
+      return frameDelta;
+    }
+    if (decodedIntervalSamples.length >= 8
+        && Math.abs(sampleMs - decodedIntervalMs) / decodedIntervalMs > 0.12) {
+      const direction = sampleMs > decodedIntervalMs ? 1 : -1;
+      if (decodedCadenceShift.samples > 0
+          && direction === decodedCadenceShift.direction) {
+        decodedCadenceShift.samples++;
+        decodedCadenceShift.intervalMs += (sampleMs - decodedCadenceShift.intervalMs)
+          / decodedCadenceShift.samples;
+      } else {
+        decodedCadenceShift.intervalMs = sampleMs;
+        decodedCadenceShift.samples = 1;
+        decodedCadenceShift.direction = direction;
+      }
+      // Quantized 60 FPS timestamps commonly alternate around 12.5/20.8 ms.
+      // Only a consistent run is a real source-rate transition.
+      if (decodedCadenceShift.samples < 4) return;
+      sampleMs = decodedCadenceShift.intervalMs;
+      decodedCadenceShift.intervalMs = 0;
+      decodedCadenceShift.samples = 0;
+      decodedCadenceShift.direction = 0;
+      resetOutputCadence(true);
+      delayMs = DELAY_MS;
+      lastTex = null;
+      schedT = 0;
+      lastUniqueTs = 0;
+      const playbackRate = Math.max(0.01,
+        Math.abs(Number(videoEl?.playbackRate) || 1));
+      intervalMs = sampleMs / playbackRate;
+      uniqueIntervalMs = intervalMs;
+      decodedIntervalSamples.length = 0;
+      decodedIntervalMs = sampleMs;
+    } else {
+      decodedCadenceShift.intervalMs = 0;
+      decodedCadenceShift.samples = 0;
+      decodedCadenceShift.direction = 0;
+    }
+    decodedIntervalSamples.push(sampleMs);
+    if (decodedIntervalSamples.length > 32) decodedIntervalSamples.shift();
+    decodedIntervalMs = Cadence.estimateSourceCadence(decodedIntervalSamples, decodedIntervalMs).intervalMs;
+    return frameDelta;
+  }
+
+  function autoPolicyFactor(midCostMs) {
+    const costMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
+    let factor = 6;
+    while (factor > 2 && (factor - 1) * costMs > uniqueIntervalMs * 0.85) factor--;
+    const displayHz = rafMs > 1 ? 1000 / rafMs : 60;
+    while (factor > 2 && (1000 / uniqueIntervalMs) * factor > displayHz) factor--;
+    factor = Math.max(2, factor - autoPenalty);
+    const motionCeiling = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
+    if (factor > motionCeiling) factor = motionCeiling;
+    return {
+      factor,
+      runnable: (factor - 1) * costMs <= uniqueIntervalMs * 1.1,
+    };
+  }
+
+  function cappedAutoTargetHz(limit, sourceHz, midCostMs) {
+    const policy = autoPolicyFactor(midCostMs);
+    if (!policy.runnable) return Math.min(limit, sourceHz);
+    const uniqueHz = uniqueIntervalMs > 1 ? 1000 / uniqueIntervalMs : sourceHz;
+    // Anime/on-twos still presents every decoded anchor. Only generated mids
+    // follow the unique-pair cadence, so n*uniqueHz would undercount the result.
+    const policyHz = sourceHz + (policy.factor - 1) * uniqueHz;
+    return Math.min(limit, policyHz);
+  }
+
+  function currentOutputRatePlan({ midCostMs = null, startGpuProbe = false } = {}) {
+    const sourceReady = decodedIntervalSamples.length >= 8;
+    const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+    const learnedCostMs = Number.isFinite(midCostMs) && midCostMs > 0
+      ? midCostMs
+      : (msAvg || 10);
+    const context = {
+      targetFps: cfg.targetFps,
+      sourceHz: sourceReady ? playbackRate * 1000 / decodedIntervalMs : null,
+      sourceReady,
+      displayReady: refreshEstimate.ready === true || refreshEstimate.stableSamples >= 10,
+    };
+    const cappedAuto = cfg.factor === 'auto' && cfg.fpsLimit !== null;
+    const requestedTargetFps = cappedAuto && context.sourceHz
+      ? cappedAutoTargetHz(cfg.fpsLimit, context.sourceHz, learnedCostMs)
+      : (cappedAuto ? cfg.fpsLimit : cfg.targetFps);
+    let plan = Cadence.resolveOutputRate(cappedAuto ? 'target' : cfg.factor, rafFloor, {
+      ...context,
+      targetFps: requestedTargetFps,
+      midCostMs: learnedCostMs,
+      strictCeiling: cappedAuto,
+    });
+    if (cappedAuto) plan = { ...plan, mode: 'auto' };
+    const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${cfg.fpsLimit ?? 'unlimited'}:${Number(plan.minimumHz || 0).toFixed(2)}`;
+    const now = performance.now();
+    const probeTimeoutMs = sourceReady
+      ? Math.max(1500, 2 * (1000 / context.sourceHz) + 250)
+      : 1500;
+    if (gpuProbeActive
+        && (gpuProbeKey !== planProbeKey || now - gpuProbeStartedAt > probeTimeoutMs)) {
+      gpuProbeActive = false;
+    }
+    if (!gpuProbeActive && startGpuProbe && plan.state === 'no-2x-gpu-range'
+        && (!gpuProbeStartedAt || now - gpuProbeStartedAt >= 2500)) {
+      gpuProbeActive = true;
+      gpuProbeStartedAt = now;
+      gpuProbeKey = planProbeKey;
+    }
+    if (!gpuProbeActive) return { ...plan, admissionCostMs: learnedCostMs, gpuProbe: false };
+
+    const probe = Cadence.resolveOutputRate('target', rafFloor, {
+      ...context,
+      targetFps: plan.minimumHz,
+      midCostMs: 0.1,
+    });
+    return {
+      ...probe,
+      mode: plan.mode,
+      requestedHz: plan.requestedHz,
+      state: 'probing-gpu',
+      clampReason: 'gpu-probe',
+      warning: 'Checking GPU capacity at 2x',
+      admissionCostMs: 0.1,
+      gpuProbe: true,
+    };
+  }
+
+  function usesExactCadence() {
+    return Cadence.isCadenceMode(cfg.factor)
+      || (cfg.factor === 'auto' && cfg.fpsLimit !== null);
+  }
+
+  function outputRateLabel() {
+    if (cfg.factor === 'auto' && cfg.fpsLimit !== null) {
+      return `Auto · max ${Number(cfg.fpsLimit.toFixed(2))} FPS`;
+    }
+    return Cadence.outputRateLabel(cfg.factor, cfg.targetFps);
+  }
+
+  function outputRateIdentity(plan) {
+    return {
+      state: plan.state,
+      clampReason: plan.clampReason || null,
+      minimumHz: Number(plan.minimumHz) || 0,
+      outputHz: Number(plan.outputHz) || 0,
+    };
+  }
+  function outputRateIdentityChange(previous, nextIdentity) {
+    const relativeChange = (left, right) => {
+      if (!(left > 0) || !(right > 0)) return left === right ? 0 : Infinity;
+      return Math.abs(left - right) / Math.max(left, right);
+    };
+    return previous.state !== nextIdentity.state
+      || previous.clampReason !== nextIdentity.clampReason
+      || relativeChange(previous.outputHz, nextIdentity.outputHz) > 0.02;
+  }
+  function stableOutputRatePlan(plan) {
+    const stable = outputRatePlanSnapshot;
+    if (!stable) return plan;
+    return {
+      ...plan,
+      state: stable.state,
+      clampReason: stable.clampReason,
+      // Source cadence is already stabilized independently. Keep its exact 2x
+      // floor current without resetting the output clock when output/state did
+      // not materially change.
+      minimumHz: plan.minimumHz,
+      outputHz: stable.outputHz,
+      interpolationAllowed: stable.interpolationAllowed,
+      clamped: stable.clamped,
+      warning: stable.warning,
+      gpuProbe: stable.gpuProbe === true,
+    };
+  }
+  function syncOutputRatePlan(plan) {
+    if (!usesExactCadence()) return plan;
+    const nextIdentity = outputRateIdentity(plan);
+    const previous = outputRatePlanIdentity;
+    if (!previous) {
+      outputRatePlanIdentity = nextIdentity;
+      outputRatePlanSnapshot = { ...plan };
+      outputRatePlanCandidate = null;
+      outputRatePlanCandidateSamples = 0;
+      outputRatePlanKey = `${nextIdentity.state}:${nextIdentity.clampReason || ''}`;
+      return plan;
+    }
+    if (!outputRateIdentityChange(previous, nextIdentity)) {
+      outputRatePlanCandidate = null;
+      outputRatePlanCandidateSamples = 0;
+      return stableOutputRatePlan(plan);
+    }
+
+    if (outputRatePlanCandidate
+        && !outputRateIdentityChange(outputRatePlanCandidate, nextIdentity)) {
+      outputRatePlanCandidateSamples++;
+    } else {
+      outputRatePlanCandidate = nextIdentity;
+      outputRatePlanCandidateSamples = 1;
+    }
+    if (outputRatePlanCandidateSamples < OUTPUT_RATE_TRANSITION_SAMPLES) {
+      return stableOutputRatePlan(plan);
+    }
+
+    if (benchTelemetry) {
+      benchTelemetry.ratePlanResets++;
+      benchTelemetry.ratePlanBufferedFrames += queue.reduce((count, entry) =>
+        count + (entry.benchEpoch === benchTelemetry.epoch ? 1 : 0), 0);
+      benchTelemetry.abandonedMids += curJob
+        ? Math.max(0, curJob.ts.length - curJob.next)
+        : 0;
+    }
+    // Already scheduled textures remain valid under the old cadence epoch.
+    // Preserve and drain them; only future planning switches to the new clock.
+    resetOutputCadence(false);
+    outputRatePlanIdentity = nextIdentity;
+    outputRatePlanSnapshot = { ...plan };
+    outputRatePlanCandidate = null;
+    outputRatePlanCandidateSamples = 0;
+    outputRatePlanKey = `${nextIdentity.state}:${nextIdentity.clampReason || ''}`;
+    return plan;
+  }
+  const log = (...a) => {
+    console.log('[framegen]', ...a);
+    if (!PRODUCT_BENCH) return;
+    const message = a.map(v => v instanceof Error ? (v.stack || v.message) : String(v)).join(' ');
+    if (a.some(v => v instanceof Error)
+        || /(^|\s)(error|failed|skipped|runT|prep|classify|decide|pump|fallback|lost)(\s|$)/i.test(message)) {
+      if (benchSessionErrors.length < 100) benchSessionErrors.push({ atMs: performance.now(), message });
+    }
+  };
+
+  function benchPercentile(values, fraction) {
+    if (!values.length) return null;
+    const ordered = [...values].sort((a, b) => a - b);
+    return ordered[Math.max(0, Math.ceil(ordered.length * fraction) - 1)];
+  }
+  function benchRate(intervals) {
+    if (!intervals.length) return null;
+    const total = intervals.reduce((sum, value) => sum + value, 0);
+    return total > 0 ? 1000 * intervals.length / total : null;
+  }
+  function resetBenchTelemetry() {
+    if (!PRODUCT_BENCH) throw new Error('product benchmark telemetry is disabled');
+    benchTelemetry = {
+      epoch: ++benchEpoch,
+      resetAtMs: performance.now(),
+      sourceCallbacks: 0,
+      sourceProcessed: 0,
+      sourceBusySkipped: 0,
+      sourcePresentedFrameGaps: 0,
+      sourceMetadataDuplicates: 0,
+      rafCallbacks: 0,
+      scheduled: 0,
+      scheduledSource: 0,
+      scheduledMid: 0,
+      presented: 0,
+      presentedSource: 0,
+      presentedMid: 0,
+      dropped: 0,
+      droppedSource: 0,
+      droppedMid: 0,
+      queued: 0,
+      queueHighWater: 0,
+      sourcePoolExhausted: 0,
+      midPoolExhausted: 0,
+      classificationSuperseded: 0,
+      pairPlans: 0,
+      skippedPairs: 0,
+      plannedMids: 0,
+      ratePlanResets: 0,
+      ratePlanBufferedFrames: 0,
+      abandonedMids: 0,
+      sourceGapHistoryBreaks: 0,
+      plannedFactorHistogram: {},
+      sourceCallbackIntervalsMs: { values: new Float64Array(20000), length: 0 },
+      sourceMediaIntervalsMs: { values: new Float64Array(20000), length: 0 },
+      rafIntervalsMs: { values: new Float64Array(20000), length: 0 },
+      pumpWorkMs: { values: new Float64Array(20000), length: 0 },
+      sourceWorkMs: { values: new Float64Array(20000), length: 0 },
+      lateMs: { values: new Float64Array(20000), length: 0 },
+      lastSourceAtMs: null,
+      lastSourceMediaTimeMs: null,
+      lastSourcePresentedFrames: null,
+      lastRafAtMs: null,
+      sampleOverflow: false,
+    };
+    return snapshotBenchTelemetry();
+  }
+  function pushBenchSample(target, value) {
+    if (!Number.isFinite(value) || value < 0) {
+      if (benchTelemetry) benchTelemetry.sampleOverflow = true;
+      return;
+    }
+    if (target.length >= target.values.length) {
+      if (benchTelemetry) benchTelemetry.sampleOverflow = true;
+      return;
+    }
+    target.values[target.length++] = value;
+  }
+  function benchSamples(target) {
+    return Array.from(target.values.subarray(0, target.length));
+  }
+  function recordBenchSource(now, metadata) {
+    const telemetry = benchTelemetry;
+    if (!telemetry) return;
+    telemetry.sourceCallbacks++;
+    if (telemetry.lastSourceAtMs !== null) {
+      pushBenchSample(telemetry.sourceCallbackIntervalsMs, now - telemetry.lastSourceAtMs);
+    }
+    telemetry.lastSourceAtMs = now;
+    const mediaTimeMs = Number(metadata?.mediaTime) * 1000;
+    if (Number.isFinite(mediaTimeMs)) {
+      if (telemetry.lastSourceMediaTimeMs !== null) {
+        pushBenchSample(telemetry.sourceMediaIntervalsMs, mediaTimeMs - telemetry.lastSourceMediaTimeMs);
+      }
+      telemetry.lastSourceMediaTimeMs = mediaTimeMs;
+    }
+    const presentedFrames = Number(metadata?.presentedFrames);
+    if (Number.isFinite(presentedFrames)) {
+      if (telemetry.lastSourcePresentedFrames !== null) {
+        const delta = presentedFrames - telemetry.lastSourcePresentedFrames;
+        if (delta <= 0) telemetry.sourceMetadataDuplicates++;
+        else if (delta > 1) telemetry.sourcePresentedFrameGaps += delta - 1;
+      }
+      telemetry.lastSourcePresentedFrames = presentedFrames;
+    }
+  }
+  function recordBenchRaf(now) {
+    const telemetry = benchTelemetry;
+    if (!telemetry) return;
+    telemetry.rafCallbacks++;
+    if (telemetry.lastRafAtMs !== null) {
+      pushBenchSample(telemetry.rafIntervalsMs, now - telemetry.lastRafAtMs);
+    }
+    telemetry.lastRafAtMs = now;
+  }
+  function schedulePresentation(tex, at, mid) {
+    const entry = { tex, at, mid };
+    const telemetry = benchTelemetry;
+    if (telemetry) {
+      entry.benchEpoch = telemetry.epoch;
+      telemetry.scheduled++;
+      if (mid) telemetry.scheduledMid++;
+      else telemetry.scheduledSource++;
+    }
+    const evicted = Cadence.enqueuePresentation(queue, entry);
+    if (telemetry) {
+      telemetry.queued++;
+      if (evicted && evicted.benchEpoch === telemetry.epoch) {
+        telemetry.queued--;
+        telemetry.dropped++;
+        if (evicted.mid) telemetry.droppedMid++;
+        else telemetry.droppedSource++;
+      }
+      telemetry.queueHighWater = Math.max(telemetry.queueHighWater, telemetry.queued);
+    }
+    if (evicted) {
+      dropped++;
+      dropWin.push(performance.now());
+      if (dropWin.length > 512) dropWin.splice(0, dropWin.length - 512);
+    }
+  }
+  function recordBenchPresentationBatch(lastIndex, now) {
+    const telemetry = benchTelemetry;
+    if (!telemetry) return;
+    for (let i = 0; i <= lastIndex; i++) {
+      const entry = queue[i];
+      if (entry.benchEpoch !== telemetry.epoch) continue;
+      telemetry.queued--;
+      if (i === lastIndex) {
+        telemetry.presented++;
+        if (entry.mid) telemetry.presentedMid++;
+        else telemetry.presentedSource++;
+        pushBenchSample(telemetry.lateMs, Math.max(0, now - entry.at));
+      } else {
+        telemetry.dropped++;
+        if (entry.mid) telemetry.droppedMid++;
+        else telemetry.droppedSource++;
+      }
+    }
+  }
+  function recordBenchPairPlan(factor, run, plannedMids) {
+    const telemetry = benchTelemetry;
+    if (!telemetry) return;
+    telemetry.pairPlans++;
+    telemetry.plannedFactorHistogram[factor] = (telemetry.plannedFactorHistogram[factor] || 0) + 1;
+    if (!run) telemetry.skippedPairs++;
+    telemetry.plannedMids += plannedMids;
+  }
+  function snapshotBenchTelemetry() {
+    const telemetry = benchTelemetry;
+    if (!telemetry) return null;
+    const now = performance.now();
+    const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
+    const sourceCallbackIntervalsMs = benchSamples(telemetry.sourceCallbackIntervalsMs);
+    const sourceMediaIntervalsMs = benchSamples(telemetry.sourceMediaIntervalsMs);
+    const rafIntervalsMs = benchSamples(telemetry.rafIntervalsMs);
+    const pumpWorkMs = benchSamples(telemetry.pumpWorkMs);
+    const sourceWorkMs = benchSamples(telemetry.sourceWorkMs);
+    const lateMs = benchSamples(telemetry.lateMs);
+    return {
+      schemaVersion: 1,
+      epoch: telemetry.epoch,
+      durationMs: now - telemetry.resetAtMs,
+      counters: {
+        sourceCallbacks: telemetry.sourceCallbacks,
+        sourceProcessed: telemetry.sourceProcessed,
+        sourceBusySkipped: telemetry.sourceBusySkipped,
+        sourcePresentedFrameGaps: telemetry.sourcePresentedFrameGaps,
+        sourceMetadataDuplicates: telemetry.sourceMetadataDuplicates,
+        rafCallbacks: telemetry.rafCallbacks,
+        scheduled: telemetry.scheduled,
+        scheduledSource: telemetry.scheduledSource,
+        scheduledMid: telemetry.scheduledMid,
+        presented: telemetry.presented,
+        presentedSource: telemetry.presentedSource,
+        presentedMid: telemetry.presentedMid,
+        dropped: telemetry.dropped,
+        droppedSource: telemetry.droppedSource,
+        droppedMid: telemetry.droppedMid,
+        pending: telemetry.queued,
+        queueHighWater: telemetry.queueHighWater,
+        sourcePoolExhausted: telemetry.sourcePoolExhausted,
+        midPoolExhausted: telemetry.midPoolExhausted,
+        classificationSuperseded: telemetry.classificationSuperseded,
+        pairPlans: telemetry.pairPlans,
+        skippedPairs: telemetry.skippedPairs,
+        plannedMids: telemetry.plannedMids,
+        ratePlanResets: telemetry.ratePlanResets,
+        ratePlanBufferedFrames: telemetry.ratePlanBufferedFrames,
+        abandonedMids: telemetry.abandonedMids,
+        sourceGapHistoryBreaks: telemetry.sourceGapHistoryBreaks,
+      },
+      plannedFactorHistogram: { ...telemetry.plannedFactorHistogram },
+      observed: {
+        sourceCallbackHz: benchRate(sourceCallbackIntervalsMs),
+        sourceHz: benchRate(sourceMediaIntervalsMs),
+        rafHz: benchRate(rafIntervalsMs),
+      },
+      lateness: {
+        count: lateMs.length,
+        p95Ms: benchPercentile(lateMs, 0.95),
+        maxMs: lateMs.length ? Math.max(...lateMs) : null,
+      },
+      samples: {
+        sourceCallbackIntervalsMs, sourceMediaIntervalsMs, rafIntervalsMs,
+        pumpWorkMs, sourceWorkMs, lateMs,
+      },
+      sampleOverflow: telemetry.sampleOverflow,
+      errors: benchSessionErrors.map(error => ({ ...error })),
+      product: {
+        running,
+        factor: cfg.factor,
+        targetFps: cfg.targetFps,
+        targetState: ratePlan.state,
+        requestedTargetHz: ratePlan.requestedHz,
+        minimumTargetHz: ratePlan.minimumHz,
+        displayCapacityHz: ratePlan.capacityHz,
+        effectiveTargetHz: ratePlan.outputHz,
+        targetClampReason: ratePlan.clampReason,
+        effectiveFactor: effN,
+        resolution: cfg.res,
+        model: rtModel || cfg.model,
+        modelAsset: MODELS[rtModel || cfg.model] || null,
+        videoWidth: videoEl ? videoEl.videoWidth : 0,
+        videoHeight: videoEl ? videoEl.videoHeight : 0,
+        gpu: sys.gpu,
+        integrated: !!sys.integrated,
+        deviceFeatures: device ? [...device.features].sort() : [],
+        convTune: benchAppliedTune ? JSON.parse(JSON.stringify(benchAppliedTune)) : null,
+        scheduler: { msAvg, intervalMs, decodedIntervalMs, uniqueIntervalMs, delayMs, lateAvg, rafMs, rafFloor },
+        cuts,
+        duplicates: dups,
+      },
+    };
+  }
 
   // Do not replace the browser's video compositor merely because Framegen is
   // armed.  Its native path can be visibly sharper than a canvas on Windows.
@@ -201,39 +960,192 @@
   // ---------- device / runtime ----------
   // memoized: the hover-preload and the FC click may race - only one build runs
   let rtBuilding = null;
-  async function ensureRuntime() {
-    while (rtBuilding) await rtBuilding;
-    if (device && rt && rtRes === cfg.res && rtModel === cfg.model) return;
-    rtBuilding = buildRuntime();
-    try { await rtBuilding; } finally { rtBuilding = null; }
+  function runtimeMatches(res = cfg.res, model = cfg.model, guard = cfg.guard) {
+    return !!(device && rt && rtRes === res && rtModel === model && rtGuard === guard);
   }
-  async function loadConvTune() {
+  async function ensureRuntime() {
+    await settingsReady;
+    // Converge on the latest complete identity. A profile may change while model
+    // assets are fetching or WebGPU pipelines are compiling.
+    while (!runtimeMatches()) {
+      while (rtBuilding) await rtBuilding;
+      if (runtimeMatches()) return;
+      const request = Object.freeze({ res: cfg.res, model: cfg.model, guard: cfg.guard });
+      rtBuilding = buildRuntime(request);
+      try { await rtBuilding; } finally { rtBuilding = null; }
+    }
+  }
+
+  function discardDeviceResources(lostDevice) {
+    if (device !== lostDevice) return;
+
+    clearTimeout(tuneTimer);
+    tuneTimer = 0;
+    rtGeneration++;
+    pairSeq++;
+    pairDecisionChain = Promise.resolve();
+    processingFrame = false;
+    curJob = null;
+    queue = [];
+    cmpRing = [];
+    lastTex = null;
+    outputRatePlanKey = '';
+    outputRatePlanIdentity = null;
+    outputRatePlanSnapshot = null;
+    outputRatePlanCandidate = null;
+    outputRatePlanCandidateSamples = 0;
+    gpuProbeActive = false;
+    gpuProbeKey = '';
+    msAvg = 0;
+    lastMidCostAt = 0;
+    midCostSamples.length = 0;
+
+    try { if (rt?.destroy) rt.destroy(); } catch {}
+    try { if (sr?.destroy) sr.destroy(); } catch {}
+    for (const tex of srOut.values()) {
+      try { tex.destroy(); } catch {}
+    }
+    srOut.clear();
+
+    rt = null;
+    rtRes = 0;
+    rtModel = '';
+    rtGuard = null;
+    sr = null;
+    blitPipe = null;
+    blitSampler = null;
+    blitBg.clear();
+    frameTex = [];
+    frameIdx = 0;
+    texW = 0;
+    texH = 0;
+    midTexs = [];
+    midIdx = 0;
+    dedupPipe = null;
+    dedupBg = new Map();
+    dedupStats = null;
+    dedupSampler = null;
+    dedupReads = [];
+    dedupReadIdx = 0;
+    capTex = null;
+    downPipe = null;
+    capBgs = new WeakMap();
+    sys.hdrOn = false;
+
+    try { overlayCtx?.unconfigure(); } catch {}
+    device = null;
+  }
+
+  async function handleDeviceLost(lostDevice, info) {
+    if (device !== lostDevice) return;
+    deviceRecoveryEpoch++;
+    if ((running || recoveringDevice) && videoEl?.isConnected) {
+      deviceRecoveryVideo = videoEl;
+    }
+    invalidatePlaybackLoops();
+    running = false;
+    switching = true;
+
+    if (overlay) {
+      overlay.style.transition = 'none';
+      overlay.style.opacity = '0';
+      overlay.style.display = 'none';
+    }
+    if (hud) {
+      hud.style.display = 'block';
+      hud.textContent = 'FG: GPU reset detected - recovering...';
+    }
+
+    log('device lost', info?.reason || 'unknown', info?.message || '');
+    discardDeviceResources(lostDevice);
+    if (recoveringDevice) return;
+    recoveringDevice = true;
+
+    try {
+      let recovered = false;
+      for (let attempt = 0; attempt < 3 && deviceRecoveryVideo?.isConnected; attempt++) {
+        const recoveryEpoch = deviceRecoveryEpoch;
+        let recoveryError = null;
+        for (let buildAttempt = 0; buildAttempt < 2; buildAttempt++) {
+          try {
+            await ensureRuntime();
+            recoveryError = null;
+            break;
+          } catch (error) {
+            recoveryError = error;
+            await Promise.resolve();
+          }
+        }
+        if (recoveryEpoch !== deviceRecoveryEpoch) {
+          continue;
+        }
+        if (recoveryError) throw recoveryError;
+        const resumeVideo = deviceRecoveryVideo;
+        if (resumeVideo?.isConnected && videoEl === resumeVideo) {
+          try {
+            switching = false;
+            await start(resumeVideo);
+          } catch (error) {
+            if (recoveryEpoch !== deviceRecoveryEpoch) {
+              running = false;
+              switching = true;
+              continue;
+            }
+            throw error;
+          }
+          if (recoveryEpoch !== deviceRecoveryEpoch || !runtimeMatches()) {
+            running = false;
+            switching = true;
+            continue;
+          }
+          recovered = true;
+          deviceRecoveryVideo = null;
+          advise('GPU connection restored', 3500);
+          break;
+        }
+      }
+      if (deviceRecoveryVideo && !recovered) {
+        throw new Error('GPU device was lost repeatedly during recovery');
+      }
+    } catch (error) {
+      log('device recovery failed', error);
+      if (hud) {
+        hud.style.display = 'block';
+        hud.textContent = 'FG: GPU recovery failed - reload this page';
+      }
+    } finally {
+      switching = false;
+      recoveringDevice = false;
+      deviceRecoveryVideo = null;
+    }
+  }
+  async function loadConvTune(res = cfg.res, model = cfg.model) {
     try {
       // fcTune3: earlier generations DROPPED the tuner's w4/v2 flags on persist,
       // so every calibrated user silently ran the legacy kernels (~+30% mid,
       // ~2x SR). New key = one recalibration, then the full tune sticks.
-      const key = 'fcTune3|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model];
+      const key = 'fcTune3|' + sys.gpu + '|' + res + '|' + MODELS[model];
       const st = await chrome.storage.local.get('fcTune');
       return (st.fcTune && st.fcTune[key]) || null;
     } catch { return null; }
   }
-  async function calibrateConvTune(rtMod) {
+  async function calibrateConvTune(rtMod, res = rtRes, model = rtModel, c1 = rtC1, c2 = rtC2) {
     // one-shot per (GPU, quality): bench kernel variants on the real conv shape,
     // persist the winner - picked up on the next runtime build
     try {
-      const key = 'fcTune3|' + sys.gpu + '|' + cfg.res + '|' + MODELS[cfg.model]; // keep in sync with loadConvTune
+      const key = 'fcTune3|' + sys.gpu + '|' + res + '|' + MODELS[model]; // keep in sync with loadConvTune
       const st = await chrome.storage.local.get('fcTune');
       const all = st.fcTune || {};
       if (all[key]) return;
-      const [mw, mh] = SIZES[cfg.res];
-      const best = await rtMod.tuneConvRB(device, { ci: rtC2, co: rtC2, w16: mw / 16, h16: mh / 16, s2ci: rtC1 });
+      const [mw, mh] = SIZES[res];
+      const best = await rtMod.tuneConvRB(device, { ci: c2, co: c2, w16: mw / 16, h16: mh / 16, s2ci: c1 });
       // persist EVERY flag the runtime reads - dropping w4/v2 here is exactly
       // the bug that kept calibrated users on legacy kernels (fcTune2 era)
       all[key] = { coc: best.coc, slab: best.slab, sg: !!best.sg, wgx: best.wgx || 8, wgy: best.wgy || 8,
         w4: !!best.w4, v2: !!best.v2 };
       if (best.s2) all[key].s2 = { coc: best.s2.coc, w4: !!best.s2.w4 };
       await chrome.storage.local.set({ fcTune: all });
-      log('conv tune', cfg.res, JSON.stringify(best));
+      log('conv tune', res, JSON.stringify(best));
     } catch (e) { log('tune skipped', e); }
   }
   // the calibration burst is 200-400ms of GPU work - injected 4s into playback it
@@ -241,13 +1153,14 @@
   // moment (paused / FC off) instead; after 2 minutes of nonstop playback run anyway
   // (tuned kernels are worth one hiccup - up to +20% on some rungs).
   let tuneTimer = 0;
-  function scheduleConvTune(rtMod) {
+  function scheduleConvTune(rtMod, identity) {
     const t0 = performance.now();
     clearTimeout(tuneTimer);
     const tick = () => {
-      if (!rt || rtRes !== cfg.res || rtModel !== cfg.model) return; // runtime changed - resched rides the rebuild
+      if (!runtimeMatches(identity.res, identity.model, identity.guard)
+          || !runtimeMatches()) return; // runtime changed - resched rides the rebuild
       if (!running || !videoEl || videoEl.paused || performance.now() - t0 > 120000) {
-        calibrateConvTune(rtMod);
+        calibrateConvTune(rtMod, identity.res, identity.model, identity.c1, identity.c2);
         return;
       }
       tuneTimer = setTimeout(tick, 3000);
@@ -255,7 +1168,7 @@
     tuneTimer = setTimeout(tick, 4000);
   }
   let rtC1 = 0, rtC2 = 0;
-  async function buildRuntime() {
+  async function buildRuntime({ res: buildRes, model: buildModel, guard: buildGuard }) {
     if (!device) {
       const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in Chrome settings (chrome://settings/system), restart Chrome, and update your GPU driver. Very old GPUs are not supported.';
       if (!navigator.gpu) throw new Error(GPU_HELP);
@@ -265,10 +1178,14 @@
       const feats = f16 ? ['shader-f16'] : [];
       if (adapter.features.has('subgroups')) feats.push('subgroups'); // tuner may pick sg kernels
       if (adapter.features.has('timestamp-query')) feats.push('timestamp-query'); // calibration measures on GPU timestamps (2.4x faster burst)
-      device = await adapter.requestDevice({ requiredFeatures: feats });
+      const createdDevice = await adapter.requestDevice({ requiredFeatures: feats });
+      device = createdDevice;
+      createdDevice.lost
+        .then(info => handleDeviceLost(createdDevice, info))
+        .catch(error => log('device loss handler', error));
       classifyAdapter(adapter);
     }
-    if (rt && rtRes === cfg.res && rtModel === cfg.model) return;
+    if (runtimeMatches(buildRes, buildModel, buildGuard)) return;
     if (rt && rt.destroy) { // free the old runtime's VRAM now, not at GC time
       try { rt.destroy(); } catch {}
       rt = null;
@@ -280,41 +1197,67 @@
       fetch(url('assets/' + stem + '.bin')).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
       fetch(url('assets/' + stem + '.json')).then(r => { if (!r.ok) throw 0; return r.json(); })]);
     let bin, man;
+    let runtimeModel = buildModel;
     try {
-      [bin, man] = await fetchSet(MODELS[cfg.model]);
+      [bin, man] = await fetchSet(MODELS[buildModel]);
     } catch (e) {
       // a dead runtime (extension was reloaded/updated) is not a missing model -
       // nothing works until the page reloads, so say exactly that and stop
       if (!chrome.runtime?.id) throw new Error('extension reloaded - refresh the page (F5)');
-      if (cfg.model === 'v6') throw e;
-      log('model ' + cfg.model + ' not bundled - falling back to v6');
-      cfg.model = 'v6';
+      if (buildModel === 'v6') throw e;
+      log('model ' + buildModel + ' not bundled - falling back to v6');
+      runtimeModel = 'v6';
+      if (cfg.model === buildModel) cfg.model = runtimeModel;
       [bin, man] = await fetchSet(MODELS.v6);
     }
     const rtMod = await import(url('rt/rt.js'));
-    const [mw, mh] = SIZES[cfg.res];
+    const [mw, mh] = SIZES[buildRes];
     rtC1 = man['block0.conv0.0.0.weight'].shape[0];
     rtC2 = man['block0.conv0.1.0.weight'].shape[0];
-    const convTune = await loadConvTune();
+    const convTune = await loadConvTune(buildRes, runtimeModel);
     rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
-      staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
-    rtRes = cfg.res; rtModel = cfg.model;
-    if (!convTune) scheduleConvTune(rtMod);
-    ensureMidTextures(texW || mw, texH || mh);
-    log('runtime up @', cfg.res);
+      staticGuard: buildGuard, weightsBin: bin, weightsManifest: man, convTune });
+    rtRes = buildRes; rtModel = runtimeModel; rtGuard = buildGuard;
+    rtGeneration++;
+    if (!convTune) scheduleConvTune(rtMod,
+      { res: buildRes, model: runtimeModel, guard: buildGuard, c1: rtC1, c2: rtC2 });
+    midTexs.forEach(t => t.destroy());
+    midTexs = [];
+    for (let i = 0; i < 24; i++) {
+      midTexs.push(device.createTexture({ label: 'fcmid' + i, size: [mw, mh],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
+    }
+    blitBg.clear();
+    log('runtime up @', buildRes, runtimeModel, buildGuard ? 'guard' : 'no-guard');
   }
 
   let poolGen = 0; // labels must be unique across reallocations: label-keyed
   // caches (dedup) must never hit an entry built for a destroyed generation
-  function ensureFrameTextures(w, h) {
-    if (texW === w && texH === h && frameTex.length === 12) return;
+  const MIN_FRAME_TEXTURES = 12;
+  const MAX_FRAME_TEXTURES = Cadence.MAX_PENDING_PRESENTATIONS + 2;
+  const FRAME_TEXTURE_STEPS = [MIN_FRAME_TEXTURES, 16, 20, MAX_FRAME_TEXTURES];
+  let resetFramePoolOnNextCapture = false;
+  function requiredFrameTextureCount(nextDelayMs, wallPairMs) {
+    const required = Math.ceil(nextDelayMs / Math.max(1, wallPairMs)) + 3;
+    return FRAME_TEXTURE_STEPS.find(count => count >= required) || MAX_FRAME_TEXTURES;
+  }
+  function ensureFrameTextures(w, h, requiredCount = MIN_FRAME_TEXTURES) {
+    const sameDimensions = texW === w && texH === h;
+    if (sameDimensions && !resetFramePoolOnNextCapture
+        && frameTex.length >= requiredCount) return;
+    const textureCount = sameDimensions && !resetFramePoolOnNextCapture
+      ? Math.max(frameTex.length, requiredCount)
+      : requiredCount;
+    resetFramePoolOnNextCapture = false;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
     lastPresentedTex = null;
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
     pairSeq++; // in-flight classify continuations must not prep destroyed textures
+    pairDecisionChain = Promise.resolve();
     poolGen++;
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < textureCount; i++) {
       frameTex.push(device.createTexture({ label: 'fcfr' + poolGen + '_' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
@@ -460,7 +1403,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // ---------- overlay presentation ----------
   function ensureOverlay() {
-    if (overlay) return;
+    if (overlay) {
+      if (device && !blitSampler) {
+        blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+        configureOverlay();
+      }
+      return;
+    }
     overlay = document.createElement('canvas');
     // a SIBLING of the video with a modest z-index: above the video, below the controls
     overlay.style.cssText = 'position:absolute; pointer-events:none; z-index:2;'
@@ -555,6 +1504,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       if (bar) uiHost.appendChild(bar);
       if (splitEl) uiHost.appendChild(splitEl);
       if (warnEl) uiHost.appendChild(warnEl);
+      if (adviseEl) uiHost.appendChild(adviseEl);
       if (flashEl) uiHost.appendChild(flashEl);
       if (wm) uiHost.appendChild(wm);
     }
@@ -652,8 +1602,14 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   const srOut = new Map();
   async function ensureSR() {
     if (sr || !sys.f16 || !device) return; // SR shaders need shader-f16
-    if (srBuilding) { await srBuilding; return; }
+    if (srBuilding) {
+      await srBuilding;
+      if (!sr && sys.f16 && device) return ensureSR();
+      return;
+    }
     srBuilding = (async () => {
+      const buildDevice = device;
+      const buildGeneration = rtGeneration;
       const url = (p) => chrome.runtime.getURL(p);
       const [bin, man] = await Promise.all([
         fetch(url('assets/rt_sr.bin')).then(r => r.arrayBuffer()),
@@ -664,8 +1620,13 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // (w4v2 won every grid we benched); output stays bit-identical.
       const convTune = await loadConvTune().catch(() => null);
       // sr.js feature-gates sg itself, so the default is safe everywhere
-      sr = await createSR(device, { weightsBin: bin, weightsManifest: man,
+      const built = await createSR(buildDevice, { weightsBin: bin, weightsManifest: man,
         convTune: convTune || { coc: 8, slab: 12, sg: true, w4: true, v2: true } });
+      if (device !== buildDevice || rtGeneration !== buildGeneration) {
+        try { if (built?.destroy) built.destroy(); } catch {}
+        return;
+      }
+      sr = built;
       log('SR up', JSON.stringify(convTune || 'default-w4v2'));
     })();
     try { await srBuilding; } finally { srBuilding = null; }
@@ -1012,7 +1973,17 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
 
   // one-shot amber advisory plate (integrated-GPU hint etc.), positioned above warn
   let adviseEl = null, adviseUntil = 0;
+  function hideWarnings() {
+    overSince = 0;
+    adviseUntil = 0;
+    if (warnEl) {
+      warnEl.style.opacity = '0';
+      warnEl.style.transform = 'translateY(-6px)';
+    }
+    if (adviseEl) adviseEl.style.opacity = '0';
+  }
   function advise(text, ms) {
+    if (!cfg.showWarnings) return;
     if (!adviseEl) {
       adviseEl = document.createElement('div');
       adviseEl.style.cssText = 'position:fixed; z-index:2147483646; pointer-events:none;'
@@ -1027,6 +1998,10 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   }
   function updateAdvise(now, vr) {
     if (!adviseEl) return;
+    if (!cfg.showWarnings) {
+      adviseEl.style.opacity = '0';
+      return;
+    }
     const show = now < adviseUntil;
     if (show) {
       adviseEl.style.left = Math.max(8, vr.left + vr.width / 2 - adviseEl.offsetWidth / 2) + 'px';
@@ -1035,7 +2010,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     adviseEl.style.opacity = show ? '1' : '0';
   }
 
-  // overload plate: fixed factors are never lowered, we just tell the user
+  // overload plate: fixed output choices remain visible while the runtime fails safe
   function ensureWarn() {
     if (warnEl) return;
     warnEl = document.createElement('div');
@@ -1048,20 +2023,28 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     document.body.appendChild(warnEl);
   }
   function updateWarn(now, vr) {
+    if (!cfg.showWarnings) {
+      hideWarnings();
+      return;
+    }
     ensureWarn();
     const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
+    const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
     // fixed factor: over budget OR visibly dropping. auto: even 2x is being skipped
     const dropRate = fpsWin.length ? (dropWin.length / 2) / fpsWin.length : 0; // drops vs shown, per sec
     const dropping = cfg.fg && dropRate > 0.12;
     const fixedOver = cfg.fg && cfg.factor !== 'auto' && (load > 1.02 || dropping);
     const autoOver = cfg.fg && cfg.factor === 'auto' && autoSkipT && now - autoSkipT < 1200;
-    if ((fixedOver || autoOver) && !overSince) {
-      overSince = now;
-      warnEl.textContent = fixedOver
-        ? '⚠ Frames are dropping - lower the factor/quality or switch to auto'
-        : '⚠ GPU cannot keep up even at 2x - set quality to eco';
+    const rateClamped = cfg.fg && !!ratePlan.warning && ratePlan.state !== 'measuring';
+    if (fixedOver || autoOver || rateClamped) {
+      if (!overSince) overSince = now;
+      warnEl.textContent = rateClamped
+        ? `⚠ ${ratePlan.warning}`
+        : fixedOver
+          ? '⚠ Frames are dropping - lower the output rate/quality or switch to auto'
+          : '⚠ GPU cannot keep up even at 2x - set quality to eco';
     }
-    if (!fixedOver && !autoOver && load < 0.92) overSince = 0;
+    if (!fixedOver && !autoOver && !rateClamped && load < 0.92) overSince = 0;
     const show = overSince && now - overSince > 1500; // sustained, not a warmup blip
     if (show) { // offsetWidth forces layout - only pay it while the warning is up
       warnEl.style.left = (vr.left + vr.width / 2 - warnEl.offsetWidth / 2) + 'px';
@@ -1071,32 +2054,44 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     warnEl.style.transform = show ? 'translateY(0)' : 'translateY(-6px)';
   }
 
-  function pump(now) {
+  function pump(now, epoch) {
     diag.rafCalls++;
-    if (!running) return;
+    if (!running || epoch !== playbackLoopEpoch) return;
     // SPA navigation can replace the <video> element entirely: rVFC dies with it
     // and the canvas would keep showing the dead stream's frames forever.
     // Feeds recycle player elements - carry the FC intent to the replacement.
     if (videoEl && !videoEl.isConnected) { stop(); if (inFeed()) reattach(); return; }
+    const workStartedAt = performance.now();
     try { pumpBody(now); } catch (e) { log('pump', e); }
-    requestAnimationFrame(pump);
+    finally {
+      if (benchTelemetry) pushBenchSample(benchTelemetry.pumpWorkMs,
+        performance.now() - workStartedAt);
+      armPumpLoop(epoch);
+    }
   }
   function pumpBody(now) {
-    driveJob(now); // just-in-time mid submission
+    recordBenchRaf(now);
     if (lastPumpT) {
       const d = now - lastPumpT;
       // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) -
       // auto must not re-inflate on every momentary lull
       if (d > 1 && d < 100) {
         rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
-        rafFloor = Math.min(rafFloor + 0.02, d); // true vsync: snaps down, creeps up
+        Cadence.updateDisplayInterval(refreshEstimate, d);
+        rafFloor = refreshEstimate.floorMs;
+        const agrees = Math.abs(d - rafFloor) / rafFloor <= 0.06;
+        refreshEstimate.stableSamples = agrees
+          ? Math.min(32, refreshEstimate.stableSamples + 1)
+          : 0;
       }
+      if (d >= 100) refreshEstimate.stableSamples = 0;
     }
     lastPumpT = now;
-    // UI geometry work (rect reads + style writes force reflows on heavy pages)
-    // runs at rAF/4 - presentation below stays per-tick
-    uiTick = (uiTick + 1) & 3;
-    if (uiTick === 0) {
+    // UI geometry is independent of display refresh. A fixed 15 Hz service rate
+    // keeps controls as responsive as they were on a 60 Hz display without
+    // multiplying forced layout/style work on 144-240 Hz displays.
+    if (now >= nextUiUpdateAt) {
+      nextUiUpdateAt = now + UI_UPDATE_INTERVAL_MS;
     { // our control bar floats above the video bottom, HUD in the top-right corner
       const vr = videoEl.getBoundingClientRect(); // read ONCE per tick, shared with positionOverlay
       lastVr = vr; lastVrT = now; // shared with pointer/UI placement to avoid extra layout reads
@@ -1124,8 +2119,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       hud.style.left = (vr.left + 8) + 'px';
       hud.style.top = (vr.top + 8) + 'px';
       hud.style.maxWidth = Math.max(120, vr.width - 16) + 'px';
-      // brand mark: bottom-left, always on while running
-      wm.style.display = 'block';
+      // Enabled by default; the full settings page can hide it.
+      wm.style.display = cfg.showWatermark ? 'block' : 'none';
       wm.style.left = (vr.left + 10) + 'px';
       wm.style.top = (vr.bottom - 26) + 'px';
       if (btn.style.display !== 'none') placeSideButtons(vr); // stay pinned while running
@@ -1144,8 +2139,13 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     updateBar();
     } // end of throttled UI block
     if (queue.length > 1) queue.sort((a, b) => a.at - b.at);
-    let due = -1;
-    for (let i = 0; i < queue.length; i++) if (queue[i].at <= now) due = i;
+    const dueSelection = Cadence.selectDuePresentation(queue, now, {
+      targetHz: usesExactCadence()
+        ? stableOutputRatePlan(currentOutputRatePlan()).outputHz || 0
+        : 0,
+      displayCapacityHz: Cadence.measureDisplayHz(rafFloor).capacityHz,
+    });
+    const due = dueSelection.presentIndex;
     // drop pressure: leaky integrator (tau 300ms) - a burst of drops is visible in
     // milliseconds instead of averaging out over seconds
     dropPressure *= Math.exp((lastPressureT - now) / 300);
@@ -1160,8 +2160,12 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       const late = now - queue[due].at;
       lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
       present(queue[due].tex, queue[due].mid);
+      recordBenchPresentationBatch(due, now);
       queue.splice(0, due + 1); // drop in place - slice would allocate per presented frame
     }
+    // Queue the current canvas blit before future inference so an urgent
+    // presentation is never trapped behind the next pair's compute work.
+    driveJob(now);
     while (dropWin.length && dropWin[0] < now - 2000) dropWin.shift();
     // AIMD controller, evaluated EVERY frame: aggressive decrease on pressure,
     // additive recovery after a long clean stretch
@@ -1183,7 +2187,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       if (cfg.debug) {
         const ds = diagnosticSnapshot(now);
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
-        const mode = cfg.factor === 'auto' ? (autoPenalty ? `auto-${autoPenalty}` : 'auto') : 'fixed';
+        const mode = cfg.factor === 'auto' && autoPenalty && cfg.fpsLimit === null
+          ? `Auto-${autoPenalty}` : outputRateLabel();
         hud.textContent = [
           `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
           `${msAvg.toFixed(1)}ms@${cfg.res}p`,
@@ -1201,7 +2206,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
           `canvas ${ds.canvas.backing?.join('x') ?? '-'} css ${ds.canvas.css?.join('x') ?? '-'} @${ds.canvas.dpr}`,
         ].join('  ·  ');
       } else {
-        hud.textContent = `FG ${fpsWin.length}fps ×${effN} · ${msAvg.toFixed(0)}ms`;
+        hud.textContent = `FG ${fpsWin.length}fps · ${outputRateLabel()} · ${msAvg.toFixed(0)}ms`;
       }
       if (panel && panel.style.display === 'block') updateStatus();
     }
@@ -1218,11 +2223,39 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     for (let i = 0; i < queue.length; i++) if (queue[i].tex === t) return true;
     return false;
   }
+  function texInCompareRing(t) {
+    for (let i = 0; i < cmpRing.length; i++) if (cmpRing[i].tex === t) return true;
+    return false;
+  }
+  function retainClassifyTexture(t) {
+    classifyTextureUse.set(t, (classifyTextureUse.get(t) || 0) + 1);
+  }
+  function releaseClassifyTexture(t) {
+    const count = classifyTextureUse.get(t) || 0;
+    if (count <= 1) classifyTextureUse.delete(t);
+    else classifyTextureUse.set(t, count - 1);
+  }
+  function texInClassification(t) {
+    return classifyTextureUse.has(t);
+  }
+  function texInCurrentJob(t) {
+    return !!curJob && (curJob.previous === t || curJob.current === t);
+  }
   function submitMid() {
     const k = curJob.next;
-    const disp = curJob.at + curJob.ts[k] * intervalMs;
+    const timingGeneration = rtGeneration;
+    const gpuProbe = curJob.gpuProbe === true;
+    const disp = curJob.ats ? curJob.ats[k] : curJob.at + curJob.ts[k] * curJob.intervalMs;
     let guard = midTexs.length; // don't clobber queued mids
     while (guard-- > 0 && texQueued(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
+    if (texQueued(midTexs[midIdx])) {
+      if (benchTelemetry) benchTelemetry.midPoolExhausted++;
+      const anchor = curJob.ts[k] < 0.5 ? curJob.previous : curJob.current;
+      schedulePresentation(anchor, disp, false);
+      curJob.next++;
+      if (curJob.next >= curJob.ts.length) curJob = null;
+      return false;
+    }
     const out = midTexs[midIdx];
     midIdx = (midIdx + 1) % midTexs.length;
     const t0 = performance.now();
@@ -1232,14 +2265,37 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     // trunk share and the auto controller under-committed. Single-mid jobs (x2)
     // have no k=1 - sample k=0 there, prep has usually drained by its slot.
     if ((k & 3) === 1 || curJob.ts.length === 1) { // a drain-probe promise per submit adds up at high factors
-      device.queue.onSubmittedWorkDone().then(() => {
-        const ms = performance.now() - t0;
-        msAvg = msAvg ? msAvg * 0.85 + ms * 0.15 : ms;
-      });
+      device.queue.onSubmittedWorkDone()
+        .then(() => {
+          if (timingGeneration !== rtGeneration) return;
+          const elapsedMs = performance.now() - t0;
+          // queue completion is observed on the main thread and includes prior
+          // queue backlog. Use the lower quartile of a rolling window as the
+          // achievable clean per-mid service time; a sustained slowdown still
+          // replaces the full window and lowers admission within ~250ms.
+          midCostSamples.push(elapsedMs);
+          if (midCostSamples.length > 16) midCostSamples.shift();
+          const orderedCosts = [...midCostSamples].sort((a, b) => a - b);
+          const cleanCostMs = orderedCosts[Math.floor((orderedCosts.length - 1) * 0.25)];
+          msAvg = msAvg ? msAvg * 0.8 + cleanCostMs * 0.2 : cleanCostMs;
+          lastMidCostAt = performance.now();
+          if (gpuProbe) {
+            gpuProbeActive = false;
+            outputRatePlanKey = '';
+          }
+        })
+        .catch(() => {
+          if (timingGeneration !== rtGeneration) return;
+          if (gpuProbe) {
+            gpuProbeActive = false;
+            outputRatePlanKey = '';
+          }
+        });
     }
-    queue.push({ tex: out, at: disp, mid: true });
+    schedulePresentation(out, disp, true);
     curJob.next++;
     if (curJob.next >= curJob.ts.length) curJob = null;
+    return true;
   }
   function flushJob() {
     while (curJob && curJob.next < curJob.ts.length) submitMid();
@@ -1249,36 +2305,54 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     if (!curJob || switching) return;
     const lead = 2 * (msAvg || 10) + 8; // submit when the display slot is one compute away
     while (curJob && curJob.next < curJob.ts.length) {
-      const disp = curJob.at + curJob.ts[curJob.next] * intervalMs;
+      const disp = curJob.ats ? curJob.ats[curJob.next]
+        : curJob.at + curJob.ts[curJob.next] * curJob.intervalMs;
       if (disp - now > lead) break;
       submitMid();
     }
   }
 
-  async function onFrame(_now, metadata) {
+  async function onFrame(_callbackNow, metadata, epoch) {
     diag.rvfcCalls++;
-    if (!running) return;
+    if (!running || epoch !== playbackLoopEpoch) return;
+    armVideoFrameLoop(epoch);
     if (metadata) {
       if (metadata.mediaTime === diag.mediaTime) diag.repeatedMediaCallbacks++;
       diag.mediaTime = metadata.mediaTime;
       diag.presentedFrames = metadata.presentedFrames;
     }
-    videoEl.requestVideoFrameCallback(onFrame);
-    if (useNativePassthrough()) {
-      effN = 1;
-      return;
-    }
-    if (overlay.style.visibility !== 'visible'
-        || videoEl.videoWidth !== overlaySourceWidth || videoEl.videoHeight !== overlaySourceHeight) {
+    if (videoEl.videoWidth !== overlaySourceWidth || videoEl.videoHeight !== overlaySourceHeight) {
       positionOverlay();
     }
     if (!overlayFitSupported) return;
-    if (processingFrame) return;
+    const sourceCallbackAt = performance.now();
+    recordBenchSource(sourceCallbackAt, metadata);
+    if (processingFrame) {
+      if (benchTelemetry) benchTelemetry.sourceBusySkipped++;
+      return;
+    }
+    if (benchTelemetry) benchTelemetry.sourceProcessed++;
     processingFrame = true;
+    const workStartedAt = performance.now();
     try {
-      const arrival = performance.now();
+      const arrival = sourceCallbackAt;
       const dt = arrival - lastArrival;
-      if (dt > 5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
+      if (dt > 0.5 && dt < 500) intervalMs = intervalMs * 0.9 + dt * 0.1;
+      const decodedFrameDelta = updateDecodedSourceCadence(metadata, dt);
+      if (decodedFrameDelta > 1) {
+        // rVFC is best-effort: Chromium may coalesce source callbacks under
+        // pressure. Never interpolate across that missing anchor as though the
+        // current frame followed the previous one at the normal source cadence.
+        curJob = null;
+        pairSeq++;
+        pairDecisionChain = Promise.resolve();
+        lastTex = null;
+        lastUniqueTs = 0;
+        hzNext = 0;
+        hzPhaseMs = 0;
+        schedT = 0;
+        if (benchTelemetry) benchTelemetry.sourceGapHistoryBreaks++;
+      }
       lastArrival = arrival;
       // PLL-smoothed schedule clock: decode jitter must not shake presentation.
       // Track the arrival rhythm softly (8%), resync hard on seeks/stalls (>80ms off)
@@ -1287,7 +2361,34 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
         ? arrival : expected + 0.08 * (arrival - expected);
       if (!videoEl.videoWidth || !videoEl.videoHeight) return;
       const [vw, vh] = poolDims();
-      ensureFrameTextures(vw, vh);
+      // presentation delay must cover the batch compute time (own + the previous
+      // batch draining), or high factors drop their early mids as already-stale.
+      // The source pool grows only when the buffered history actually needs it.
+      const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2));
+      const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
+      const playbackRate = Math.max(0.01, Math.abs(Number(videoEl.playbackRate) || 1));
+      const wallPairMs = decodedIntervalMs / playbackRate;
+      const cadenceConfigured = usesExactCadence() && cfg.fg;
+      const dTarget = Cadence.computePresentationDelayMs({
+        cadenceMode: cadenceConfigured,
+        sourceIntervalMs: wallPairMs,
+        midCostMs: msAvg || 10,
+        burstPadMs: burstPad,
+        floorMs,
+        maxDelayMs: cadenceConfigured ? 2500 : 180,
+      });
+      const riseLimit = cadenceConfigured ? Math.max(2, wallPairMs) : 2;
+      let nextDelayMs = delayMs
+        + Math.max(-2, Math.min(riseLimit, dTarget - delayMs));
+      const sourcePoolCount = requiredFrameTextureCount(nextDelayMs, wallPairMs);
+      const historyBudgetMs = (sourcePoolCount - 2) * wallPairMs;
+      if (nextDelayMs > historyBudgetMs && delayMs > historyBudgetMs) {
+        resetOutputCadence(true);
+        lastTex = null;
+      }
+      nextDelayMs = Math.min(nextDelayMs, historyBudgetMs);
+      ensureFrameTextures(vw, vh, sourcePoolCount);
+      delayMs = nextDelayMs;
       // note on importExternalTexture (evaluated, rejected): interpolation needs the
       // PREVIOUS frame too, and external textures expire with the video frame - the
       // copy is unavoidable for history and for presenting source frames. Prep/dedup
@@ -1296,49 +2397,74 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // NEVER overwrite a texture that is still queued for presentation or needed
       // as an interpolation input - reuse of live textures = timeline soup
       let guard = frameTex.length;
-      while (guard-- > 0 && (frameTex[frameIdx] === lastTex || texQueued(frameTex[frameIdx]))) {
+      while (guard-- > 0 && (frameTex[frameIdx] === lastTex
+          || texQueued(frameTex[frameIdx]) || texInCompareRing(frameTex[frameIdx])
+          || texInClassification(frameTex[frameIdx]) || texInCurrentJob(frameTex[frameIdx]))) {
         frameIdx = (frameIdx + 1) % frameTex.length;
+      }
+      if (frameTex[frameIdx] === lastTex
+          || texQueued(frameTex[frameIdx]) || texInCompareRing(frameTex[frameIdx])
+          || texInClassification(frameTex[frameIdx]) || texInCurrentJob(frameTex[frameIdx])) {
+        if (benchTelemetry) benchTelemetry.sourcePoolExhausted++;
+        resetOutputCadence(true);
+        lastTex = null;
+        return;
       }
       const tex = frameTex[frameIdx];
       frameIdx = (frameIdx + 1) % frameTex.length;
       captureFrame(tex, vw, vh);
-      // presentation delay must cover the batch compute time (own + the previous
-      // batch draining), or high factors drop their early mids as already-stale.
-      // Slewed ±2ms/frame so pacing never jumps.
-      // lazy submission: a mid only waits for ITS OWN compute, not the whole batch;
-      // sustained lateness (external GPU bursts) buys extra buffer, up to +60ms
-      const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2));
-      // light, stable runs earn a lower floor: 60ms of buffer is safety for heavy
-      // factors and jittery GPUs, but a fast card doing 2-3x with no lateness only
-      // needs ~40ms - streams/interactive feel snappier without dropping a frame
-      const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
-      const dTarget = Math.min(180, Math.max(floorMs, 2 * (msAvg || 10) + 25 + burstPad));
-      delayMs += Math.max(-2, Math.min(2, dTarget - delayMs));
       const srcAt = schedT + delayMs;
-      if (cfg.compare) { cmpRing.push({ tex, at: srcAt }); if (cmpRing.length > 6) cmpRing.shift(); }
-      const hzMode = cfg.factor === 'hz' && cfg.fg;
-      if (!hzMode) queue.push({ tex, at: srcAt, mid: false });
+      const schedulingIntervalMs = cadenceConfigured ? wallPairMs : intervalMs;
+      const pairTiming = {
+        startAt: schedT - schedulingIntervalMs + delayMs,
+        intervalMs: schedulingIntervalMs,
+        sourceIntervalMs: wallPairMs,
+        cadenceIntervalMs: wallPairMs,
+      };
+      let ratePlan = cadenceConfigured ? currentOutputRatePlan({ startGpuProbe: true }) : null;
+      if (ratePlan) ratePlan = syncOutputRatePlan(ratePlan);
+      pairTiming.ratePlan = ratePlan;
+      if (cfg.compare) {
+        cmpRing.push({ tex, at: srcAt });
+        const compareDepth = Math.min(frameTex.length - 2,
+          Math.max(6, Math.ceil(delayMs / Math.max(1, wallPairMs)) + 2));
+        while (cmpRing.length > compareDepth) cmpRing.shift();
+      }
+      const cadenceMode = cadenceConfigured && ratePlan.interpolationAllowed;
+      if (!cadenceMode) schedulePresentation(tex, srcAt, false);
       const prev = lastTex;
       if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
         effN = 1;
         lastUniqueTs = arrival;
       } else if (prev) {
-        // the dedup readback is a full GPU->CPU roundtrip and must not block
-        // the frame loop (awaiting it here starves 120fps sources of every
-        // other input frame). The continuation runs a few ms later, well
-        // inside the presentation buffer; pairSeq guards against a newer pair
-        // (or a pool realloc / source change) having superseded this one.
-        const seq = ++pairSeq;
-        classifyPair(prev, tex)
+        // Start readbacks immediately so classification overlaps across source
+        // frames, but apply their decisions in source order. Per-pair
+        // supersession dropped valid work whenever the next source frame arrived
+        // before the previous GPU readback completed.
+        const seq = pairSeq;
+        retainClassifyTexture(prev);
+        retainClassifyTexture(tex);
+        const classification = classifyPair(prev, tex);
+        pairDecisionChain = pairDecisionChain
+          .then(() => classification)
           .then((r) => {
-            if (!running || seq !== pairSeq) return;
-            try { decidePair(r, prev, tex, arrival, srcAt, hzMode); }
+            if (!running || seq !== pairSeq) {
+              if (benchTelemetry) benchTelemetry.classificationSuperseded++;
+              return;
+            }
+            try { decidePair(r, prev, tex, arrival, srcAt, cadenceMode, cadenceConfigured, pairTiming); }
             catch (e) { log('decide', e); }
           })
-          .catch((e) => log('classify', e));
+          .catch((e) => {
+            if (seq === pairSeq) log('classify', e);
+          })
+          .finally(() => {
+            releaseClassifyTexture(prev);
+            releaseClassifyTexture(tex);
+          });
       } else {
         lastUniqueTs = arrival;
-        if (hzMode) queue.push({ tex, at: srcAt, mid: false });
+        if (cadenceMode) schedulePresentation(tex, srcAt, false);
       }
       lastTex = tex;
     } catch (e) {
@@ -1352,99 +2478,248 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       }
     } finally {
       processingFrame = false;
+      if (benchTelemetry) pushBenchSample(benchTelemetry.sourceWorkMs,
+        performance.now() - workStartedAt);
     }
   }
 
   // everything from "is this pair worth interpolating" to prepPair/curJob:
   // runs when the dedup readback lands
-  function decidePair({ dup, cut }, prev, tex, arrival, srcAt, hzMode) {
-        if (cut) { cuts++; diag.cutSkips++; lastUniqueTs = arrival; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
-        else if (cfg.anime && dup) { dups++; diag.duplicateSkips++; if (hzMode) queue.push({ tex, at: srcAt, mid: false }); }
-        else {
-          const du = arrival - lastUniqueTs;
-          if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
-          lastUniqueTs = arrival;
-          const ms = msAvg || 10;
-          let n, run = true, hzTs = null;
-          if (cfg.factor === 'hz') {
-            // display-match: one output frame per vsync tick, exactly on the grid.
-            // 24fps@60Hz -> alternating 2/3 mids per source interval (x2.5); source
-            // frames display only when a tick lands within 8% of them.
-            // the raf-floor estimate jitters (3.2ms "312Hz" moments) - snap it to
-            // the nearest REAL refresh rate so the divisor grid stays sane
-            const RATES = [360, 240, 165, 144, 120, 100, 90, 75, 60]; // 90 missing = 90Hz panels snapped to 100 and drifted every tick
-            const rawHz = (rafFloor > 2 && rafFloor < 90) ? 1000 / rafFloor : 60;
-            let snapHz = 60;
-            for (const r of RATES) if (Math.abs(rawHz - r) / r < Math.abs(rawHz - snapHz) / snapHz) snapHz = r;
-            const vs = 1000 / snapHz;
-            // high-Hz displays: full rate is unaffordable AND unnecessary - any
-            // divisor of the display rate keeps a perfect tick grid. Climb to the
-            // highest divisor that fits the GPU budget and the x6 product cap.
-            const srcFps = 1000 / uniqueIntervalMs;
-            let m = 1;
-            // hz mode dares past the x6 product cap: the tick grid keeps pacing
-            // honest and the budget governor steps down a divisor when needed.
-            // x20 ceiling: anime-on-twos has ~12 UNIQUE fps, so a 240Hz grid
-            // means 19 mids per real pair (t-step 0.05). The budget governor is
-            // the real guard; this cap only fences absurdity.
-            while (m < 10 && ((1000 / (vs * m) - srcFps) * ms > 0.85 * 1000
-                              || 1000 / (vs * m) > srcFps * 20 + 1)) m++;
-            const vsOut = vs * m;
-            const T0 = schedT - intervalMs + delayMs, T1 = T0 + intervalMs;
-            if (hzNext < T0 - vsOut || hzNext > T1 + vsOut) hzNext = T0 + vsOut; // (re)sync
-            hzTs = [];
-            while (hzNext < T1 - 0.25 * vsOut) {
-              const t = (hzNext - T0) / intervalMs;
-              if (t <= 0.08) queue.push({ tex: prev, at: hzNext, mid: false });
-              else if (t < 0.97) hzTs.push(t);
-              hzNext += vsOut;
-            }
-            n = hzTs.length + 1;
-            if (hzTs.length === 0 || hzTs.length * ms > uniqueIntervalMs * 0.9) {
-              queue.push({ tex, at: srcAt, mid: false }); // can't afford / nothing due
-              run = false;
-            }
-          } else if (cfg.factor === 'auto') {
-            // smart auto: as much as fits in 85% of the per-unique-frame budget,
-            // but never past the display refresh (extra frames would be thrown away)
-            n = 6;
-            while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.85) n--;
-            // cap by what the compositor actually presents, no optimism margin
-            const dispHz = rafMs > 1 ? 1000 / rafMs : 60;
-            while (n > 2 && (1000 / uniqueIntervalMs) * n > dispHz) n--;
-            n = Math.max(2, n - autoPenalty); // drop-rate feedback (see pump)
-            // fast scenes: interpolation artifacts scale with motion while the eye
-            // can't rate smoothness anyway - cap the factor by measured motion
-            const mcap = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
-            if (n > mcap) n = mcap;
-            if ((n - 1) * ms > uniqueIntervalMs * 1.1) { run = false; autoSkipT = arrival; } // even 2x won't fit
-          } else {
-            // fixed by the user = a CEILING: under sustained overload we step down
-            // to what actually fits the frame budget (the overload plate explains),
-            // because piling up the queue looks far worse than a lower factor
-            n = cfg.factor;
-            while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.9) n--;
-            if ((n - 1) * ms > uniqueIntervalMs * 1.15) run = false; // even 2x won't fit
-          }
-          effN = n;
-          if (run && switching && hzTs) queue.push({ tex, at: srcAt, mid: false });
-          if (run && !switching) {
-            flushJob(); // leftovers of the previous pair go out before the new prep
-            try {
-              diag.prepCalls++;
-              rt.prepPair(prev, tex);
-              let ts = hzTs;
-              if (!ts) { ts = []; for (let k = 1; k < n; k++) ts.push(k / n); }
-              curJob = { ts, next: 0, at: schedT - intervalMs + delayMs };
-            } catch (e) {
-              log('prep', e);
-              if (hzTs) queue.push({ tex, at: srcAt, mid: false });
-            }
-          }
-        }
+  function planPairCadence(interpolate, ms, timing) {
+    const ratePlan = timing.ratePlan;
+    const outputHz = ratePlan.outputHz;
+    const srcFps = 1000 / timing.sourceIntervalMs;
+    // A target at or below the decoded unique-frame rate is a decimation job,
+    // not frame generation. Keep exact ticks but fill them from source anchors.
+    const shouldInterpolate = interpolate && Cadence.targetNeedsInterpolation(srcFps, outputHz);
+    const startAt = timing.startAt;
+    const cadence = Cadence.planSourceCadencePresentations({ nextAt: hzNext, phaseMs: hzPhaseMs,
+      startAt, sourceIntervalMs: timing.cadenceIntervalMs, outputHz,
+      interpolate: shouldInterpolate });
+    hzNext = cadence.nextAt;
+    hzPhaseMs = cadence.nextPhaseMs;
+    return { ...cadence, startAt, intervalMs: timing.cadenceIntervalMs,
+      sourceIntervalMs: timing.sourceIntervalMs };
+  }
+
+  function scheduleCadenceAnchors(presentations, prev, tex) {
+    for (const presentation of presentations) {
+      if (presentation.kind === 'interpolate') continue;
+      schedulePresentation(presentation.kind === 'current' ? tex : prev, presentation.at, false);
+    }
+  }
+
+  function decidePair({ dup, cut }, prev, tex, arrival, srcAt, cadenceMode, cadenceConfigured, pairTiming) {
+    const noInterpolation = cut || (cfg.anime && dup);
+    if (cut) { cuts++; diag.cutSkips++; lastUniqueTs = arrival; }
+    else if (cfg.anime && dup) { dups++; diag.duplicateSkips++; }
+    else {
+      const du = arrival - lastUniqueTs;
+      if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
+      lastUniqueTs = arrival;
+    }
+
+    const ms = pairTiming.ratePlan?.admissionCostMs || msAvg || 10;
+    if (cadenceConfigured && !cadenceMode) {
+      effN = 1;
+      recordBenchPairPlan(1, false, 0);
+      return;
+    }
+    if (cadenceMode) {
+      // Every source interval advances one target clock, including cuts, anime
+      // duplicates and intervals that need decimation. Exactly one presentation
+      // is scheduled per target tick; there is no extra source-frame fallback.
+      const cadence = planPairCadence(!noInterpolation, ms, pairTiming);
+      const mids = cadence.presentations.filter(item => item.kind === 'interpolate');
+      scheduleCadenceAnchors(cadence.presentations, prev, tex);
+      const n = Math.max(1, cadence.presentations.length);
+      effN = n;
+
+      if (cadence.overflowed) {
+        schedulePresentation(tex, srcAt, false); // pathological gap: resync safely
+        recordBenchPairPlan(n, false, 0);
+        return;
+      }
+      if (noInterpolation || mids.length === 0) {
+        recordBenchPairPlan(n, false, 0);
+        return;
+      }
+
+      const canRun = !switching && mids.length * ms <= cadence.sourceIntervalMs * 0.9;
+      recordBenchPairPlan(n, canRun, canRun ? mids.length : 0);
+      if (!canRun) {
+        scheduleCadenceAnchors(Cadence.fallbackCadencePresentations(mids), prev, tex);
+        return;
+      }
+
+      flushJob(); // leftovers of the previous pair go out before the new prep
+      try {
+        diag.prepCalls++;
+        rt.prepPair(prev, tex);
+        curJob = { ts: mids.map(item => item.t), next: 0, at: cadence.startAt,
+          intervalMs: cadence.intervalMs, ats: mids.map(item => item.at),
+          gpuProbe: pairTiming.ratePlan?.gpuProbe === true, previous: prev, current: tex };
+      } catch (e) {
+        log('prep', e);
+        scheduleCadenceAnchors(Cadence.fallbackCadencePresentations(mids), prev, tex);
+      }
+      return;
+    }
+
+    if (noInterpolation) return;
+    let n, run = true;
+    if (cfg.factor === 'auto') {
+      // smart auto: as much as fits the unique-frame budget, display service,
+      // drop feedback and current motion. Capped Auto reuses the same policy.
+      const policy = autoPolicyFactor(ms);
+      n = policy.factor;
+      run = policy.runnable;
+      if (!run) autoSkipT = arrival;
+    } else {
+      // fixed by the user = a CEILING: under sustained overload we step down
+      // to what actually fits the frame budget (the overload plate explains),
+      // because piling up the queue looks far worse than a lower factor
+      n = cfg.factor;
+      while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.9) n--;
+      if ((n - 1) * ms > uniqueIntervalMs * 1.15) run = false; // even 2x won't fit
+    }
+    effN = n;
+    recordBenchPairPlan(n, run && !switching, run ? Math.max(0, n - 1) : 0);
+    if (run && !switching) {
+      flushJob(); // leftovers of the previous pair go out before the new prep
+      try {
+        diag.prepCalls++;
+        rt.prepPair(prev, tex);
+        const ts = [];
+        for (let k = 1; k < n; k++) ts.push(k / n);
+        curJob = { ts, next: 0, at: schedT - intervalMs + delayMs, intervalMs,
+          previous: prev, current: tex };
+      } catch (e) { log('prep', e); }
+    }
   }
 
   // ---------- lifecycle / UI ----------
+  function invalidatePlaybackLoops() {
+    playbackLoopEpoch++;
+    if (videoFrameCallbackId !== null && videoFrameCallbackVideo) {
+      try { videoFrameCallbackVideo.cancelVideoFrameCallback(videoFrameCallbackId); } catch {}
+    }
+    videoFrameCallbackId = null;
+    videoFrameCallbackVideo = null;
+    if (pumpRafId !== null) {
+      try { cancelAnimationFrame(pumpRafId); } catch {}
+    }
+    pumpRafId = null;
+    return playbackLoopEpoch;
+  }
+
+  function armVideoFrameLoop(epoch) {
+    const armedVideo = videoEl;
+    if (!running || epoch !== playbackLoopEpoch || !armedVideo) return;
+    let callbackId = null;
+    callbackId = armedVideo.requestVideoFrameCallback((now, metadata) => {
+      if (videoFrameCallbackId === callbackId) {
+        videoFrameCallbackId = null;
+        videoFrameCallbackVideo = null;
+      }
+      if (!running || epoch !== playbackLoopEpoch || videoEl !== armedVideo) return;
+      onFrame(now, metadata, epoch);
+    });
+    videoFrameCallbackId = callbackId;
+    videoFrameCallbackVideo = armedVideo;
+  }
+
+  function armPumpLoop(epoch) {
+    if (!running || epoch !== playbackLoopEpoch) return;
+    let callbackId = null;
+    callbackId = requestAnimationFrame((now) => {
+      if (pumpRafId === callbackId) pumpRafId = null;
+      if (!running || epoch !== playbackLoopEpoch) return;
+      pump(now, epoch);
+    });
+    pumpRafId = callbackId;
+  }
+
+  function resetOutputCadence(clearQueue = false) {
+    hzNext = 0;
+    hzPhaseMs = 0;
+    outputRatePlanKey = '';
+    outputRatePlanIdentity = null;
+    outputRatePlanSnapshot = null;
+    outputRatePlanCandidate = null;
+    outputRatePlanCandidateSamples = 0;
+    curJob = null;
+    pairSeq++;
+    pairDecisionChain = Promise.resolve();
+    overSince = 0;
+    if (!clearQueue) return;
+    if (benchTelemetry) {
+      for (const entry of queue) {
+        if (entry.benchEpoch !== benchTelemetry.epoch) continue;
+        benchTelemetry.queued--;
+        benchTelemetry.dropped++;
+        if (entry.mid) benchTelemetry.droppedMid++;
+        else benchTelemetry.droppedSource++;
+      }
+    }
+    queue = [];
+    cmpRing = [];
+    fpsWin = [];
+  }
+
+  function setOutputRate(value, persist = true) {
+    const legacyTarget = value === 'fps60' ? 60 : value === 'fps120' ? 120 : null;
+    const next = Cadence.sanitizeOutputRate(value);
+    if (legacyTarget !== null) cfg.targetFps = legacyTarget;
+    if (cfg.factor === next) {
+      syncPanel();
+      if (persist) saveCfg();
+      return;
+    }
+    cfg.factor = next;
+    delayMs = DELAY_MS;
+    resetOutputCadence(true);
+    syncPanel();
+    if (persist) saveCfg();
+  }
+
+  function setTargetFps(value, persist = true) {
+    const next = Cadence.sanitizeTargetFps(value, cfg.targetFps);
+    if (cfg.targetFps === next) {
+      syncPanel();
+      return;
+    }
+    cfg.targetFps = next;
+    delayMs = DELAY_MS;
+    resetOutputCadence(true);
+    syncPanel();
+    if (persist) saveCfg();
+  }
+
+  function setFpsLimit(value, persist = true) {
+    const next = canonicalFpsLimit(value);
+    if (cfg.fpsLimit === next) {
+      syncPanel();
+      return;
+    }
+    cfg.fpsLimit = next;
+    delayMs = DELAY_MS;
+    resetOutputCadence(true);
+    syncPanel();
+    if (persist) saveCfg();
+  }
+
+  function setFrameGeneration(enabled, persist = true) {
+    const next = !!enabled;
+    if (cfg.fg === next) return;
+    cfg.fg = next;
+    delayMs = DELAY_MS;
+    resetOutputCadence(true);
+    overSince = 0;
+    syncPanel();
+    if (persist) saveCfg();
+  }
+
   // cross-origin video taints the pixel path (SecurityError on copy). Our DNR rule
   // injects ACAO:* on media responses, so reloading the element in CORS mode makes
   // it readable - one reload, playback position preserved, reverted on failure.
@@ -1488,8 +2763,13 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   }
 
   function onSrcChange() {
-    queue = []; curJob = null; lastTex = null; cmpRing = []; schedT = 0; lastUniqueTs = 0; hzNext = 0;
-    pairSeq++; // kill in-flight classify continuations from the dead stream
+    resetOutputCadence(true);
+    delayMs = DELAY_MS;
+    resetFramePoolOnNextCapture = true;
+    lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
+    resetDecodedSourceCadence();
+    lastPumpT = 0;
+    refreshEstimate.stableSamples = 0;
     overlayFitSupported = false;
     overlaySourceWidth = 0;
     overlaySourceHeight = 0;
@@ -1502,17 +2782,40 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       overlay.style.pointerEvents = 'none';
     }
   }
+  function onPlaybackRateChange() {
+    resetOutputCadence(true);
+    delayMs = DELAY_MS;
+    resetFramePoolOnNextCapture = true;
+    lastTex = null;
+    schedT = 0;
+    lastArrival = 0;
+    lastUniqueTs = 0;
+    intervalMs = decodedIntervalMs
+      / Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+    uniqueIntervalMs = intervalMs;
+  }
   let srcWatchEl = null;
   async function start(v) {
     if (running && videoEl === v) return; // re-entry insurance: never double-arm the rVFC/rAF loops
+    running = false;
+    const startEpoch = invalidatePlaybackLoops();
     videoEl = v;
     trackSourceVideo(v);
+    delayMs = DELAY_MS;
+    resetFramePoolOnNextCapture = true;
     if (srcWatchEl !== v) {
-      if (srcWatchEl) srcWatchEl.removeEventListener('emptied', onSrcChange);
+      if (srcWatchEl) {
+        srcWatchEl.removeEventListener('emptied', onSrcChange);
+        srcWatchEl.removeEventListener('seeking', onSrcChange);
+        srcWatchEl.removeEventListener('ratechange', onPlaybackRateChange);
+      }
       srcWatchEl = v;
       v.addEventListener('emptied', onSrcChange);
+      v.addEventListener('seeking', onSrcChange);
+      v.addEventListener('ratechange', onPlaybackRateChange);
     }
     await ensureRuntime();
+    if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
     ensureOverlay();
     positionOverlay();
     overlay.style.opacity = '0';
@@ -1535,6 +2838,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
           hud.style.display = 'block';
           hud.textContent = 'FC: video lacks CORS - reloading…';
           await makeReadable(videoEl); // throws a friendly error if the CDN refuses
+          if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
           // seed is cosmetic (seamless fade-in): if the decoder still has no frame,
           // skip it - the rVFC pipeline below presents the first real frame anyway
           try {
@@ -1547,9 +2851,14 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       }
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
-    queue = []; lastTex = null; curJob = null; schedT = 0; hzNext = 0;
+    resetOutputCadence(true);
+    lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
+    resetDecodedSourceCadence();
+    lastPumpT = 0;
+    refreshEstimate.stableSamples = 0;
     lastVr = null; // the cached rect belongs to the previous video element
     dropped = 0; dups = 0; cuts = 0;
+    if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
     running = true;
     useNativePassthrough();
     hud.style.display = 'block';
@@ -1560,24 +2869,32 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     }
     diag.pumpStarts++;
     diag.sourceLoopStarts++;
-    videoEl.requestVideoFrameCallback(onFrame);
-    requestAnimationFrame(pump);
+    armVideoFrameLoop(startEpoch);
+    armPumpLoop(startEpoch);
     btn.style.background = 'rgba(25,195,125,.9)';
   }
   function stop() {
     running = false;
     diag.loopStops++;
+    invalidatePlaybackLoops();
+    const stopEpoch = playbackLoopEpoch;
     if (overlay) { // fade out, then release - the raw video underneath is identical
       overlay.style.opacity = '0';
-      setTimeout(() => { if (!running && overlay) overlay.style.display = 'none'; }, 260);
+      setTimeout(() => {
+        if (!running && stopEpoch === playbackLoopEpoch && overlay) {
+          overlay.style.display = 'none';
+        }
+      }, 260);
     }
     hud.style.display = 'none';
     if (wm) wm.style.display = 'none';
     if (bar) bar.style.display = 'none';
-    overSince = 0;
-    if (warnEl) warnEl.style.opacity = '0';
+    hideWarnings();
     if (splitEl) splitEl.style.display = 'none';
-    queue = []; lastTex = null; curJob = null;
+    resetOutputCadence(true);
+    delayMs = DELAY_MS;
+    lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
+    resetDecodedSourceCadence();
     btn.style.background = '';
   }
 
@@ -1602,10 +2919,20 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   function updateStatus() {
     const st = panel && panel.querySelector('#fcStatus');
     if (!st) return;
+    const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
+    const label = outputRateLabel();
+    const rateState = !ratePlan.interpolationAllowed && usesExactCadence()
+      ? `${label} · ${ratePlan.warning}`
+      : ratePlan.clamped
+        ? `${label} → ${Number(ratePlan.outputHz.toFixed(2))} FPS (${ratePlan.clampReason})`
+        : ratePlan.outputHz
+          ? `${label} (~${Number(ratePlan.outputHz.toFixed(2))} FPS)`
+          : label;
     const srState = cfg.sr ? (!sys.f16 ? 'unavailable (no f16)' : (sr ? 'on x2' : 'loading…')) : 'off';
     const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
       `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
+      `output rate: ${rateState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
       `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
       'flow upsample: edge-guided source warp',
@@ -1614,7 +2941,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       const vramMB = texW * texH * 4 * (frameTex.length + midTexs.length) / 1048576;
       const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
       lines.push(
-        `out: ${fpsWin.length}fps · factor x${effN}${cfg.factor === 'auto' ? ' (auto)' : ' (fixed)'}`,
+        `out: ${fpsWin.length}fps · effective pair x${effN}`,
         `display: ~${rafMs > 1 ? (1000 / rafMs).toFixed(0) : '-'}Hz`,
         `mid: ${msAvg.toFixed(1)}ms @ ${cfg.res}p`,
         `GPU load (ours, est.): ~${load.toFixed(0)}%`,
@@ -1633,17 +2960,17 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // loop: the user may flip the select again mid-rebuild - converge on the latest.
       // model counts too: a model-only change used to skip the loop entirely and
       // silently keep the old weights until the next res change or restart
-      while (rtRes !== cfg.res || rtModel !== cfg.model) {
+      while (!runtimeMatches()) {
         curJob = null; // abandon un-submitted mids of the old pair
         queue = queue.filter((it) => !it.mid);
-        msAvg = 0; // cost at the new size is different - relearn
+        msAvg = 0; lastMidCostAt = 0; midCostSamples.length = 0; // new size, relearn
         await ensureRuntime();
         queue = queue.filter((it) => !it.mid); // stragglers that slipped in mid-rebuild
       }
     } finally { switching = false; }
   }
 
-  // keep the whole panel on screen - it grows when "advanced" unfolds
+  // Keep the quick panel inside the viewport on small and embedded players.
   function clampPanel() {
     if (!panel || panel.style.display !== 'block') return;
     const r = panel.getBoundingClientRect();
@@ -1651,109 +2978,136 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     if (r.right > innerWidth - 10) panel.style.left = Math.max(10, innerWidth - r.width - 10) + 'px';
   }
 
+  async function openAdvancedSettings() {
+    const button = panel?.querySelector('#fcOpenSettings');
+    if (button) button.disabled = true;
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'fcOpenOptions' });
+      if (!response?.ok) throw new Error(response?.error || 'Could not open settings');
+    } catch (messageError) {
+      try {
+        await chrome.runtime.openOptionsPage();
+      } catch (directError) {
+        log('open settings', directError || messageError);
+      }
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   function buildPanel() {
     panel = document.createElement('div');
+    panel.className = 'fc-panel';
     panel.style.cssText = 'position:fixed; left:0; top:0; z-index:2147483647;'
-      + 'background:rgba(14,15,17,.96); color:#ddd; border:1px solid rgba(255,255,255,.14);'
-      + 'border-radius:14px; box-shadow:0 8px 32px rgba(0,0,0,.5);'
-      + 'padding:14px 16px; font:12px/1.5 system-ui; display:none; width:270px; box-sizing:border-box;'
+      + 'background:#111315; color:#ddd; border:1px solid #303338;'
+      + 'border-radius:12px; box-shadow:0 8px 24px rgba(0,0,0,.4);'
+      + 'padding:14px 16px 15px; font:12px/1.5 system-ui; display:none; width:332px; box-sizing:border-box;'
       + 'max-height:calc(100vh - 20px); overflow-y:auto; overscroll-behavior:contain;';
     panel.innerHTML = `
-      <div class="fc-title">Framegen <span style="color:#667;font:400 10px system-ui">v${VERSION}</span></div>
-      <label class="fc-row"><span>Smoothness<small>neural frame generation</small></span>
-        <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <label class="fc-row"><span>Resolution boost<small>2x neural upscale - generated frames, or the whole video when Smoothness is off</small></span>
-        <input class="fc-sw" type="checkbox" id="fcSR"></label>
-      <label class="fc-row"><span>HDR<small>brightness expansion (needs an HDR display)</small></span>
-        <input class="fc-sw" type="checkbox" id="fcHDR"></label>
-      <label class="fc-row"><span>Inference resolution<small>higher improves motion detail and costs more GPU</small></span>
-        <select class="fc-sel" id="fcRes">
-          <option value="288">288p — super eco</option><option value="360">360p — eco</option>
-          <option value="480">480p — balanced</option>
-          <option value="720">720p — high quality</option>
-          <option value="1080">1080p — ultra quality</option>
+      <div class="fc-panel-head">
+        <div class="fc-brand">
+          <span class="fc-brand-dot" aria-hidden="true"></span>
+          <strong>Framegen</strong>
+          <span class="fc-version">v${VERSION}</span>
+        </div>
+        <a class="fc-icon-link" href="https://github.com/MONZikWasTaken/Framegen"
+          target="_blank" rel="noopener noreferrer" title="Open Framegen on GitHub"
+          aria-label="Open Framegen on GitHub">
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true">
+            <path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.17.08 1.78 1.2 1.78 1.2 1.04 1.78 2.72 1.27 3.38.97.1-.75.4-1.27.74-1.56-2.57-.3-5.27-1.29-5.27-5.69 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.47.11-3.06 0 0 .97-.31 3.16 1.18a10.96 10.96 0 0 1 5.75 0c2.19-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.77.11 3.06.74.81 1.19 1.84 1.19 3.1 0 4.41-2.71 5.39-5.29 5.68.42.36.79 1.06.79 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .7Z"/>
+          </svg>
+        </a>
+      </div>
+      <label class="fc-row fc-profile-row"><span>Profile<small>Apply a saved setup</small></span>
+        <select class="fc-sel fc-profile" id="fcProfile" disabled>
+          <option>Loading profiles…</option>
         </select></label>
-      <details class="fc-details">
-        <summary>advanced</summary>
-        <label class="fc-row"><span>Frame factor</span>
-          <select class="fc-sel" id="fcFactor">
-            <option value="auto">auto</option>
-            <option value="hz">display Hz</option>
-            <option value="2">2×</option><option value="3">3×</option>
-            <option value="4">4×</option><option value="5">5×</option>
-            <option value="6">6×</option>
-          </select></label>
-        <label class="fc-row"><span>Model<small>interpolation weights</small></span>
-          <select class="fc-sel" id="fcModel">
-            <option value="v6">v6 (stable)</option>
-            <option value="v7s">v7 small</option>
-          </select></label>
-        <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
-          <input class="fc-sw" type="checkbox" id="fcAnime"></label>
-        <label class="fc-row"><span>Hover controls</span>
-          <input class="fc-sw" type="checkbox" id="fcHover"></label>
-        <label class="fc-row"><span>FPS counter<small>badge in the top-left</small></span>
-          <input class="fc-sw" type="checkbox" id="fcFps"></label>
-        <label class="fc-row"><span>Subtitle guard<small>static regions are not warped</small></span>
-          <input class="fc-sw" type="checkbox" id="fcGuard"></label>
-        <label class="fc-row"><span>Compare<small>original / FC split slider</small></span>
-          <input class="fc-sw" type="checkbox" id="fcCompare"></label>
-        <label class="fc-row"><span>Sharpness<small>edge enhancement; high values can halo</small></span>
-          <select class="fc-sel" id="fcSharp">
-            <option value="0">off</option><option value="1">low</option>
-            <option value="2">medium</option><option value="3">high</option>
-          </select></label>
-        <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
-          <input class="fc-sw" type="checkbox" id="fcDebug"></label>
-        <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
-        <div id="fcStatus" style="font:11px/1.6 monospace;color:#9c9;white-space:pre">-</div>
-      </details>`;
+      <div class="fc-divider"></div>
+      <label class="fc-row"><span>Frame generation<small>Create smoother motion</small></span>
+        <input class="fc-sw" type="checkbox" id="fcFG"></label>
+      <label class="fc-row"><span>Output rate<small>Choose how playback is paced</small></span>
+        <select class="fc-sel" id="fcFactor">
+          <option value="auto">Auto · recommended</option>
+          <option value="hz">Match display</option>
+          <option value="target">Custom FPS</option>
+          <option value="2">2× source</option><option value="3">3× source</option>
+          <option value="4">4× source</option><option value="5">5× source</option>
+          <option value="6">6× source</option>
+        </select></label>
+      <label class="fc-target-control">
+        <span class="fc-target-head"><span><span id="fcRateSliderTitle">FPS limit</span>
+          <small id="fcRateSliderHint">Common rates · Auto may run lower</small></span>
+          <output id="fcTargetFpsValue" for="fcTargetFps">Unlimited</output></span>
+        <input class="fc-target-slider" id="fcTargetFps" type="range" min="0" max="17"
+          step="1" value="17" aria-label="FPS limit">
+        <span class="fc-target-scale" id="fcRateSliderScale" aria-hidden="true">
+          <span>15</span><span>60</span><span>120</span><span>240</span><span>∞</span>
+        </span>
+      </label>
+      <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
+        <input class="fc-sw" type="checkbox" id="fcSR"></label>
+      <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
+        <input class="fc-sw" type="checkbox" id="fcHDR"></label>
+      <label class="fc-row"><span>Quality<small>Balance detail and GPU load</small></span>
+        <select class="fc-sel" id="fcRes">
+          <option value="288">Low power</option><option value="360">Efficient</option>
+          <option value="480">Balanced</option>
+          <option value="720">High</option>
+          <option value="1080">Ultra</option>
+        </select></label>
+      <label class="fc-row"><span>FPS counter<small>Show frame rate and render time</small></span>
+        <input class="fc-sw" type="checkbox" id="fcShowFps"></label>
+      <label class="fc-row"><span>Watermark<small>Show the Framegen label on video</small></span>
+        <input class="fc-sw" type="checkbox" id="fcWatermark"></label>
+      <label class="fc-row"><span>Warnings<small>Show non-critical notices over video</small></span>
+        <input class="fc-sw" type="checkbox" id="fcWarnings"></label>
+      <button class="fc-open-settings" id="fcOpenSettings" type="button">
+        <span>Advanced settings</span>
+        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
+          <path fill="currentColor" d="m6 3 5 5-5 5-1.2-1.2L8.6 8 4.8 4.2 6 3Z"/>
+        </svg>
+      </button>`;
     document.body.appendChild(panel);
-    panel.querySelector('.fc-details').addEventListener('toggle', () => requestAnimationFrame(clampPanel));
     const F = panel.querySelector('#fcFactor'), R = panel.querySelector('#fcRes');
-    const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
-    const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
-    const Sh = panel.querySelector('#fcSharp');
     syncPanel();
-    F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
-    const Md = panel.querySelector('#fcModel');
-    // rebuild directly, like res: the storage listener can't carry it - cfg.model
-    // is already updated by the time the onChanged event compares against it, so
-    // the originating tab never saw a "change" (other tabs did - stale cfg there)
-    Md.onchange = async () => {
-      cfg.model = Md.value; saveCfg();
-      if (running && !toggling) {
-        toggling = true;
-        try { await switchRes(); }
-        catch (e) { log('model switch', e); }
-        finally { toggling = false; }
-      }
+    loadPanelProfiles().catch(e => log('profiles', e));
+    panel.querySelector('#fcOpenSettings').onclick = openAdvancedSettings;
+    panel.querySelector('#fcProfile').onchange = async event => {
+      const select = event.currentTarget;
+      select.disabled = true;
+      try { await applyPanelProfile(select.value); }
+      catch (e) { log('apply profile', e); }
+      finally { select.disabled = false; syncPanelProfileSelection(); }
     };
-    A.onchange = () => { cfg.anime = A.checked; saveCfg(); };
-    D.onchange = () => { cfg.debug = D.checked; saveCfg(); };
-    Hv.onchange = () => { cfg.hoverReveal = Hv.checked; saveCfg(); };
-    const Fp = panel.querySelector('#fcFps');
-    Fp.onchange = () => { cfg.showFps = Fp.checked; saveCfg(); };
-    const Gd = panel.querySelector('#fcGuard');
-    Gd.onchange = async () => { // the guard is baked into the flow kernel - rebuild
-      cfg.guard = Gd.checked; saveCfg();
-      if (running && !toggling) {
-        toggling = true;
-        try { rtRes = -1; await switchRes(); }
-        catch (e) { log('guard switch', e); }
-        finally { toggling = false; }
-      } else { rtRes = -1; }
-    };
-    Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
-    Sh.onchange = () => { cfg.sharpness = +Sh.value; saveCfg(); configureOverlay(); };
+    F.onchange = () => setOutputRate(F.value);
+    const Tf = panel.querySelector('#fcTargetFps');
+    Tf.oninput = () => updateRateSliderPresentation(Tf);
+    Tf.onchange = () => cfg.factor === 'auto'
+      ? setFpsLimit(fpsLimitFromSlider(Tf))
+      : setTargetFps(Tf.value);
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
-    Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
+    Fg.onchange = () => setFrameGeneration(Fg.checked);
     Sr.onchange = () => {
       cfg.sr = Sr.checked; saveCfg();
       if (cfg.sr && device) ensureSR().catch(e => log('sr', e));
     };
     const Hd = panel.querySelector('#fcHDR');
     Hd.onchange = () => { cfg.hdr = Hd.checked; saveCfg(); configureOverlay(); };
+    panel.querySelector('#fcShowFps').onchange = event => {
+      cfg.showFps = event.currentTarget.checked;
+      saveCfg();
+      syncHudVisibility();
+    };
+    panel.querySelector('#fcWatermark').onchange = event => {
+      cfg.showWatermark = event.currentTarget.checked;
+      saveCfg();
+      if (!cfg.showWatermark && wm) wm.style.display = 'none';
+    };
+    panel.querySelector('#fcWarnings').onchange = event => {
+      cfg.showWarnings = event.currentTarget.checked;
+      saveCfg();
+      if (!cfg.showWarnings) hideWarnings();
+    };
     R.onchange = async () => {
       cfg.res = +R.value; saveCfg();
       if (running && !toggling) { // hot-swap, no visible restart
@@ -1803,16 +3157,28 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
         font:600 12px/1 system-ui;box-shadow:0 2px 12px rgba(0,0,0,.4);
         transition:background .15s,transform .15s}
       .fc-side:hover{transform:scale(1.1);background:rgba(45,45,45,.85)}
-      .fc-title{font:600 14px system-ui;color:#fff;display:flex;align-items:center;gap:7px;margin-bottom:8px}
-      .fc-title::before{content:'';width:8px;height:8px;border-radius:50%;background:#19c37d}
-      .fc-row{display:flex;justify-content:space-between;align-items:center;gap:18px;
-        padding:7px 0;margin:0;border:0;width:auto;cursor:pointer;
+      .fc-panel-head{height:30px;display:flex;align-items:center;justify-content:space-between;
+        margin:0 0 8px;padding:0;border:0}
+      .fc-brand{display:flex;align-items:center;gap:7px;color:#f4f5f5;font:12px/1 system-ui}
+      .fc-brand strong{font:650 14px/1 system-ui;color:#f4f5f5}
+      .fc-brand-dot{width:8px;height:8px;border-radius:50%;background:#19c37d}
+      .fc-version{color:#747980;font:400 10px/1 system-ui}
+      .fc-icon-link{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
+        border-radius:7px;color:#92979e;text-decoration:none;outline:none;
+        transition:background .15s,color .15s}
+      .fc-icon-link:hover{background:#202327;color:#f2f3f3}
+      .fc-icon-link:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-divider{height:1px;background:#292c30;margin:7px 0}
+      .fc-row{display:flex;justify-content:space-between;align-items:center;gap:14px;
+        padding:8px 0;margin:0;border:0;width:auto;cursor:default;
         font:12px/1.4 system-ui;color:#e8e8e8;text-align:left}
+      .fc-row[hidden]{display:none}
       .fc-row>span{display:block;flex:1 1 auto;min-width:0;margin:0;padding:0;
         font:12px/1.4 system-ui;color:#e8e8e8;text-align:left;
         letter-spacing:normal;text-transform:none;white-space:normal}
       .fc-row small{display:block;color:#8a8f98;font:400 10px/1.3 system-ui;
         margin:1px 0 0;padding:0;letter-spacing:normal;text-transform:none}
+      .fc-profile-row{padding-top:5px;padding-bottom:7px}
       .fc-sw{appearance:none;-webkit-appearance:none;width:36px;height:20px;border-radius:20px;
         background:#3d4148;position:relative;cursor:pointer;outline:none;margin:0;
         transition:background .2s;flex:none}
@@ -1820,13 +3186,15 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
         background:#fff;top:2px;left:2px;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.4)}
       .fc-sw:checked{background:#19c37d}
       .fc-sw:checked::after{left:18px}
+      .fc-sw:focus-visible{outline:2px solid #19c37d;outline-offset:2px}
       /* customizable select (Chrome base-select): button + popup in the same glass */
       .fc-sel, .fc-sel::picker(select){appearance:base-select}
-      .fc-sel{background:rgba(255,255,255,.07);color:#eee;border:1px solid rgba(255,255,255,.14);
-        border-radius:8px;padding:5px 11px;font:12px system-ui;outline:none;cursor:pointer;
-        flex:none;min-width:118px;display:flex;align-items:center;justify-content:space-between;
+      .fc-sel{background:#1b1e21;color:#eee;border:1px solid #383c41;
+        border-radius:8px;padding:6px 10px;font:12px system-ui;outline:none;cursor:pointer;
+        flex:none;min-width:154px;max-width:174px;display:flex;align-items:center;justify-content:space-between;
         gap:8px;transition:background .15s,border-color .15s}
-      .fc-sel:hover{background:rgba(255,255,255,.12);border-color:rgba(255,255,255,.28)}
+      .fc-sel:hover{background:#22262a;border-color:#50555c}
+      .fc-sel:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
       .fc-sel:open{border-color:rgba(25,195,125,.6)}
       .fc-sel::picker-icon{color:#8a8f98;font-size:9px;transition:rotate .15s}
       .fc-sel:open::picker-icon{rotate:180deg}
@@ -1838,12 +3206,34 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       .fc-sel option:hover{background:rgba(255,255,255,.09)}
       .fc-sel option:checked{background:rgba(25,195,125,.16);color:#8ee7bd}
       .fc-sel option::checkmark{color:#19c37d}
-      .fc-details summary{cursor:pointer;color:#8a8f98;font:11px system-ui;list-style:none;
-        display:flex;align-items:center;gap:5px;padding:6px 0 2px;user-select:none}
-      .fc-details summary::before{content:'';width:0;height:0;border-left:4px solid #8a8f98;
-        border-top:3.5px solid transparent;border-bottom:3.5px solid transparent;transition:transform .15s}
-      .fc-details[open] summary::before{transform:rotate(90deg)}
-      .fc-details summary::-webkit-details-marker{display:none}`;
+      .fc-target-control{display:block;padding:2px 0 8px;margin:0;cursor:pointer}
+      .fc-target-control[hidden]{display:none}
+      .fc-target-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
+        margin:0 0 4px;color:#e8e8e8;font:12px/1.35 system-ui}
+      .fc-target-head>span{display:block}
+      .fc-target-head small{display:block;margin-top:1px;color:#8a8f98;font:400 10px/1.3 system-ui}
+      .fc-target-head output{min-width:72px;color:#7fe0b5;font:600 11px/1.35 system-ui;
+        font-variant-numeric:tabular-nums;text-align:right}
+      .fc-target-slider{--fc-fill:12%;appearance:none;-webkit-appearance:none;display:block;
+        width:100%;height:20px;margin:0;background:transparent;cursor:pointer;outline:none}
+      .fc-target-slider::-webkit-slider-runnable-track{height:3px;border-radius:3px;
+        background:linear-gradient(to right,#19c37d 0 var(--fc-fill),#3d4148 var(--fc-fill) 100%)}
+      .fc-target-slider::-webkit-slider-thumb{appearance:none;-webkit-appearance:none;width:15px;height:15px;
+        margin-top:-6px;border:2px solid #111315;border-radius:50%;background:#f2f4f3;
+        box-shadow:0 0 0 1px #62686f}
+      .fc-target-slider:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-target-scale{position:relative;display:block;height:10px;margin-top:-2px;
+        color:#656b73;font:500 9px/1 system-ui;font-variant-numeric:tabular-nums;pointer-events:none}
+      .fc-target-scale>span{position:absolute;
+        left:calc(var(--fc-mark-position) + var(--fc-mark-offset));top:0;
+        transform:translateX(-50%);white-space:nowrap}
+      .fc-open-settings{width:100%;height:35px;display:flex;align-items:center;justify-content:space-between;
+        margin-top:10px;padding:0 11px;border-radius:8px;border:1px solid #383c41;background:#1b1e21;
+        color:#e2e4e5;font:600 11px system-ui;cursor:pointer;outline:none;
+        transition:background .15s,border-color .15s}
+      .fc-open-settings:hover{background:#22262a;border-color:#50555c}
+      .fc-open-settings:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
+      .fc-open-settings:disabled{opacity:.55;cursor:wait}`;
     (document.head || document.documentElement).appendChild(css);
     btn = document.createElement('button');
     btn.textContent = 'FG';
@@ -1886,15 +3276,22 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.2';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
         const v = videoEl || biggestVideo();
-        const respond = async () => { await probeAdapter(); try { sendResponse({
+        const respond = async () => { await probeAdapter();
+          const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
+          try { sendResponse({
           version: VERSION, gpu: sys.gpu, integrated: sys.integrated, f16: sys.f16,
           hasVideo: !!v, running, fps: fpsWin.length, effN,
           ms: +(msAvg || 0).toFixed(1), res: cfg.res, factor: cfg.factor,
+          targetFps: cfg.targetFps, fpsLimit: cfg.fpsLimit,
+          rateLabel: outputRateLabel(), targetHz: ratePlan.requestedHz,
+          effectiveTargetHz: ratePlan.outputHz, rateClamped: ratePlan.clamped,
+          targetState: ratePlan.state, targetReason: ratePlan.clampReason,
+          targetWarning: ratePlan.warning,
           drops: dropped, model: rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model,
         }); } catch {} };
         if (running) respond();
@@ -1910,6 +3307,109 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     });
   } catch { /* messaging unavailable in some frames */ }
 
+  function installProductBenchBridge() {
+    if (!PRODUCT_BENCH) return;
+    const reply = (id, ok, value, error) => window.postMessage({
+      source: 'framegen-product-bench-extension',
+      token: PRODUCT_BENCH.token,
+      id,
+      ok,
+      value,
+      error,
+    }, location.origin);
+    window.addEventListener('message', event => {
+      if (event.source !== window) return;
+      const message = event.data;
+      if (!message || message.source !== 'framegen-product-bench-fixture'
+          || message.token !== PRODUCT_BENCH.token || !Number.isInteger(message.id)) return;
+      (async () => {
+        switch (message.command) {
+          case 'ping':
+            return { bridgeVersion: 2, extensionVersion: VERSION };
+          case 'configure': {
+            if (running) throw new Error('configure requires a stopped product path');
+            const requestedFactor = message.payload?.factor;
+            const numericFactor = Number(requestedFactor);
+            const factor = numericFactor === 3 || numericFactor === 4
+              ? numericFactor : Cadence.sanitizeOutputRate(requestedFactor);
+            const targetFps = factor === 'target'
+              ? Cadence.sanitizeTargetFps(message.payload?.targetFps)
+              : cfg.targetFps;
+            const requestedResolution = Number(message.payload?.resolution ?? 720);
+            if (![3, 4, 'target'].includes(factor) || (factor === 'target' && targetFps === null)) {
+              throw new Error('factor must be 3, 4 or target with a positive targetFps');
+            }
+            if (!SIZES[requestedResolution]) throw new Error('resolution is not supported');
+            Object.assign(cfg, {
+              factor,
+              targetFps,
+              anime: false,
+              debug: false,
+              res: requestedResolution,
+              hoverReveal: false,
+              compare: false,
+              fg: true,
+              sr: false,
+              hdr: false,
+              showFps: false,
+              showWatermark: false,
+              guard: true,
+              model: 'v7s',
+            });
+            sanitizeCfg();
+            syncPanel();
+            benchAppliedTune = null;
+            return { factor: cfg.factor, targetFps: cfg.targetFps,
+              resolution: cfg.res, model: cfg.model };
+          }
+          case 'prepare': {
+            if (running) throw new Error('prepare requires a stopped product path');
+            await ensureRuntime();
+            let convTune = await loadConvTune();
+            if (!convTune) {
+              const rtMod = await import(chrome.runtime.getURL('rt/rt.js'));
+              await calibrateConvTune(rtMod);
+              convTune = await loadConvTune();
+              if (!convTune) throw new Error('conv autotune did not produce a persisted result');
+              rtRes = 0;
+              await ensureRuntime();
+            }
+            clearTimeout(tuneTimer);
+            benchAppliedTune = convTune;
+            return { convTune: JSON.parse(JSON.stringify(convTune)), gpu: sys.gpu,
+              deviceFeatures: [...device.features].sort() };
+          }
+          case 'start': {
+            const video = biggestVideo();
+            if (!video) throw new Error('no ready benchmark video');
+            await start(video);
+            return { running, width: video.videoWidth, height: video.videoHeight };
+          }
+          case 'reset':
+            if (!running) throw new Error('cannot reset telemetry while stopped');
+            return resetBenchTelemetry();
+          case 'snapshot':
+            if (!benchTelemetry) throw new Error('telemetry has not been reset');
+            return snapshotBenchTelemetry();
+          case 'stop':
+            stop();
+            return { running };
+          default:
+            throw new Error('unknown product benchmark command');
+        }
+      })().then(value => reply(message.id, true, value, null))
+        .catch(error => reply(message.id, false, null, error.stack || error.message || String(error)));
+    });
+    window.postMessage({
+      source: 'framegen-product-bench-extension',
+      token: PRODUCT_BENCH.token,
+      id: 0,
+      ok: true,
+      value: { bridgeVersion: 2, extensionVersion: VERSION },
+      error: null,
+    }, location.origin);
+  }
+
   const bootObs = new MutationObserver(() => boot());
   const boot = () => {
     if (btn) { bootObs.disconnect(); return; } // UI exists - stop watching the whole DOM
@@ -1917,4 +3417,5 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   };
   boot();
   if (!btn) bootObs.observe(document.documentElement, { childList: true, subtree: true });
+  installProductBenchBridge();
 })();

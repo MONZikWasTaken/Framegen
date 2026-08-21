@@ -15,6 +15,13 @@
   .tabs button { flex: 1; border: none; background: none; color: #9aa0aa; font: 600 11px system-ui;
                  padding: 5px 0; border-radius: 7px; cursor: pointer; transition: background .15s, color .15s; }
   .tabs button.act { background: #2c2f36; color: #fff; }
+  .full-settings { width: 100%; height: 34px; display: flex; align-items: center;
+                   justify-content: space-between; margin: 0 0 10px; padding: 0 10px;
+                   border: 1px solid #28684f; border-radius: 7px; background: #17241f;
+                   color: #8be2bc; font: 600 11px system-ui; cursor: pointer; }
+  .full-settings:hover { border-color: #3d9672; background: #1b2b24; color: #a4edcd; }
+  .full-settings:focus-visible { outline: 2px solid #19c37d; outline-offset: 2px; }
+  .full-settings svg { flex: 0 0 auto; }
   #state { font: 600 12px system-ui; margin-bottom: 8px; color: #aab; }
   #state.on { color: #7ee2b8; }
   hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 8px 0; }
@@ -41,6 +48,12 @@
     <button id="tabStatus" class="act">Status</button>
     <button id="tabHelp">Help</button>
   </div>
+  <button id="fullSettings" class="full-settings" type="button">
+    <span>Full settings</span>
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="currentColor" d="M3 2h4v2H4v8h8V9h2v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm6 0h5v5h-2V5.4L7.7 9.7 6.3 8.3 10.6 4H9V2Z"/>
+    </svg>
+  </button>
 
   <div id="status">
     <div id="state">-</div>

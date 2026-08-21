@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Collision diagnostics</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #111; color: #ddd; font: 13px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; }
+    main { max-width: 1320px; margin: 0 auto; padding: 20px; }
+    h1 { margin: 0 0 8px; font-size: 20px; }
+    #status { margin: 0 0 12px; }
+    pre { margin: 0 0 16px; padding: 12px; overflow: auto; border: 1px solid #333; background: #181818; }
+    #views { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 12px; }
+    figure { margin: 0; }
+    figcaption { margin: 0 0 4px; }
+    canvas { display: block; width: 100%; height: auto; border: 1px solid #444; background: #000; }
+    .pass { color: #88d49b; }
+    .fail { color: #ff9292; }
+    @media (max-width: 760px) { #views { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>v7s collision diagnostics</h1>
+    <p id="status" role="status">Loading WebGPU and v7s...</p>
+    <pre id="summary">waiting</pre>
+    <div id="views">
+      <figure><figcaption>Exact GT</figcaption><canvas id="gt"></canvas></figure>
+      <figure><figcaption>Production final</figcaption><canvas id="final"></canvas></figure>
+      <figure><figcaption>Warp 0</figcaption><canvas id="warp0"></canvas></figure>
+      <figure><figcaption>Warp 1</figcaption><canvas id="warp1"></canvas></figure>
+      <figure><figcaption>Pre-refine blend</figcaption><canvas id="preRefine"></canvas></figure>
+      <figure><figcaption>Reconstructed final</figcaption><canvas id="postRefine"></canvas></figure>
+      <figure><figcaption>Mask (white = source 0)</figcaption><canvas id="mask"></canvas></figure>
+      <figure><figcaption>Warp disagreement</figcaption><canvas id="disagreement"></canvas></figure>
+      <figure><figcaption>Refine residual (signed)</figcaption><canvas id="residual"></canvas></figure>
+      <figure><figcaption>Production abs error (4x)</figcaption><canvas id="error"></canvas></figure>
+    </div>
+  </main>
+
+  <script type="module">
+    import { createRT } from './rt/rt.js';
+
+    const WIDTH = 1280;
+    const HEIGHT = 720;
+    const START_SECONDS = 2.7;
+    const END_SECONDS = 2.8;
+    const OUTPUT_FPS = 240;
+    const FRAME = 17;
+    const T = FRAME / 24;
+    const TARGET_SECONDS = START_SECONDS + FRAME / OUTPUT_FPS;
+    const RADIUS = 0.06 * HEIGHT;
+    const FLOW_INTERIOR_MARGIN = 4;
+    const ROI = { left: 820, top: 300, right: 1036, bottom: 516 };
+    const BACKGROUND_RGB = [13, 15, 23];
+    const FOREGROUND_RGB_DISTANCE = 32;
+    const FOREGROUND_TOLERANCE_PX = 2;
+    const EDGE_THRESHOLD = 24;
+    const EDGE_TOLERANCE_PX = 2;
+    const searchParams = new URLSearchParams(location.search);
+    const requestedMaskStrength = searchParams.has('maskStrength') ? Number(searchParams.get('maskStrength')) : null;
+    const RUNTIME_CONFIG = Object.freeze({
+      experimentalMaskSharpen: requestedMaskStrength === null ? null : {
+        strength: requestedMaskStrength,
+        disagreementLow: searchParams.has('disagreementLow') ? Number(searchParams.get('disagreementLow')) : 0.02,
+        disagreementHigh: searchParams.has('disagreementHigh') ? Number(searchParams.get('disagreementHigh')) : 0.2,
+      },
+    });
+    const DEBUG_KEYS = ['warp0', 'warp1', 'flow', 'mask', 'refineResidual'];
+    const statusElement = document.getElementById('status');
+    const summaryElement = document.getElementById('summary');
+    const canvasIds = ['gt', 'final', 'warp0', 'warp1', 'preRefine', 'postRefine', 'mask', 'disagreement', 'residual', 'error'];
+    for (const id of canvasIds) {
+      const canvas = document.getElementById(id);
+      canvas.width = WIDTH;
+      canvas.height = HEIGHT;
+    }
+    window.__collisionDiagnosticResult = { state: 'loading', pass: false };
+
+    const FIXTURE_SOURCE = {
+      repository: 'https://github.com/MONZikWasTaken/framegen-fps-booster',
+      commit: '6ac9465a82f61d14d404468ea774b226c6d06871',
+      path: 'src/scene.js',
+    };
+
+    const SCENE_WGSL = `
+struct VOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+@vertex fn vs(@builtin(vertex_index) i: u32) -> VOut {
+  var p = array<vec2f,3>(vec2f(-1.,-1.), vec2f(3.,-1.), vec2f(-1.,3.));
+  var o: VOut;
+  o.pos = vec4f(p[i], 0., 1.);
+  o.uv = (p[i] * 0.5) + vec2f(0.5, 0.5);
+  return o;
+}
+struct U { t: f32, aspect: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+fn box(p: vec2f, c: vec2f, r: f32) -> f32 {
+  let d = abs(p - c) - vec2f(r, r);
+  return length(max(d, vec2f(0.))) + min(max(d.x, d.y), 0.);
+}
+@fragment fn fs(in: VOut) -> @location(0) vec4f {
+  var uv = in.uv;
+  uv.x = uv.x * u.aspect;
+  var col = vec3f(0.05, 0.06, 0.09);
+  for (var k = 0u; k < 3u; k = k + 1u) {
+    let ph = f32(k) * 2.094;
+    let cx = (0.5 + 0.45 * sin(u.t * 1.7 + ph)) * u.aspect;
+    let cy = 0.30 + 0.18 * f32(k) + 0.05 * sin(u.t * 2.3 + ph);
+    let d = length(uv - vec2f(cx, cy)) - 0.06;
+    let hue = vec3f(0.9, 0.4 + 0.2*f32(k), 0.3 + 0.3*f32(k));
+    col = mix(col, hue, smoothstep(0.006, 0.0, d));
+  }
+  let ang = u.t * 1.1;
+  let ca = cos(ang); let sa = sin(ang);
+  let center = vec2f(0.5 * u.aspect, 0.72);
+  let q = uv - center;
+  let rq = vec2f(ca*q.x - sa*q.y, sa*q.x + ca*q.y);
+  let b = box(rq, vec2f(0.,0.), 0.07);
+  col = mix(col, vec3f(0.2, 0.8, 1.0), smoothstep(0.006, 0.0, b));
+  return vec4f(col, 1.0);
+}`;
+
+    function createScene(device, label) {
+      const module = device.createShaderModule({ label: `${label} shader`, code: SCENE_WGSL });
+      const texture = device.createTexture({
+        label,
+        size: [WIDTH, HEIGHT],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      });
+      const uniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      const pipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+      });
+      return {
+        texture,
+        render(seconds) {
+          device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([seconds, WIDTH / HEIGHT, 0, 0]));
+          const encoder = device.createCommandEncoder();
+          const pass = encoder.beginRenderPass({
+            colorAttachments: [{
+              view: texture.createView(),
+              loadOp: 'clear',
+              storeOp: 'store',
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            }],
+          });
+          pass.setPipeline(pipeline);
+          pass.setBindGroup(0, bindGroup);
+          pass.draw(3);
+          pass.end();
+          device.queue.submit([encoder.finish()]);
+          return texture;
+        },
+      };
+    }
+
+    async function fetchBytes(url) {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+      return response.arrayBuffer();
+    }
+
+    async function sha256Hex(bytes) {
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+      return [...digest].map((value) => value.toString(16).padStart(2, '0')).join('');
+    }
+
+    async function readRgba8(device, texture) {
+      const bytesPerRow = Math.ceil((WIDTH * 4) / 256) * 256;
+      const buffer = device.createBuffer({ size: bytesPerRow * HEIGHT, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const encoder = device.createCommandEncoder();
+      encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow, rowsPerImage: HEIGHT }, [WIDTH, HEIGHT]);
+      device.queue.submit([encoder.finish()]);
+      await buffer.mapAsync(GPUMapMode.READ);
+      const mapped = new Uint8Array(buffer.getMappedRange());
+      const pixels = new Uint8Array(WIDTH * HEIGHT * 4);
+      for (let y = 0; y < HEIGHT; y++) pixels.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + WIDTH * 4), y * WIDTH * 4);
+      buffer.unmap();
+      buffer.destroy();
+      return pixels;
+    }
+
+    function halfToNumber(bits) {
+      const sign = bits & 0x8000 ? -1 : 1;
+      const exponent = (bits >>> 10) & 0x1f;
+      const fraction = bits & 0x03ff;
+      if (exponent === 0) return sign * fraction * 2 ** -24;
+      if (exponent === 0x1f) return fraction ? NaN : sign * Infinity;
+      return sign * (1 + fraction / 1024) * 2 ** (exponent - 15);
+    }
+
+    async function readDebugTextures(device, outputs) {
+      const bytesPerRow = Math.ceil((WIDTH * 8) / 256) * 256;
+      const buffers = Object.fromEntries(DEBUG_KEYS.map((key) => [key, device.createBuffer({
+        label: `${key} readback`,
+        size: bytesPerRow * HEIGHT,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })]));
+      const encoder = device.createCommandEncoder();
+      for (const key of DEBUG_KEYS) {
+        encoder.copyTextureToBuffer({ texture: outputs[key] }, { buffer: buffers[key], bytesPerRow, rowsPerImage: HEIGHT }, [WIDTH, HEIGHT]);
+      }
+      device.queue.submit([encoder.finish()]);
+      await Promise.all(DEBUG_KEYS.map((key) => buffers[key].mapAsync(GPUMapMode.READ)));
+      const decoded = {};
+      for (const key of DEBUG_KEYS) {
+        const pixels = new Float32Array(WIDTH * HEIGHT * 4);
+        const mapped = buffers[key].getMappedRange();
+        for (let y = 0; y < HEIGHT; y++) {
+          const row = new Uint16Array(mapped, y * bytesPerRow, WIDTH * 4);
+          const outputOffset = y * WIDTH * 4;
+          for (let i = 0; i < WIDTH * 4; i++) pixels[outputOffset + i] = halfToNumber(row[i]);
+        }
+        decoded[key] = pixels;
+        buffers[key].unmap();
+        buffers[key].destroy();
+      }
+      return decoded;
+    }
+
+    function createDebugTexture(device, label) {
+      return device.createTexture({
+        label,
+        size: [WIDTH, HEIGHT],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+    }
+
+    const clamp01 = (value) => Math.min(1, Math.max(0, value));
+
+    function reconstruct(debug) {
+      const preRefine = new Float32Array(WIDTH * HEIGHT * 4);
+      const postRefine = new Float32Array(WIDTH * HEIGHT * 4);
+      for (let i = 0; i < preRefine.length; i += 4) {
+        const mask = debug.mask[i + 1];
+        for (let channel = 0; channel < 3; channel++) {
+          const pre = debug.warp0[i + channel] * mask + debug.warp1[i + channel] * (1 - mask);
+          preRefine[i + channel] = pre;
+          postRefine[i + channel] = clamp01(pre + debug.refineResidual[i + channel]);
+        }
+        preRefine[i + 3] = 1;
+        postRefine[i + 3] = 1;
+      }
+      return { preRefine, postRefine };
+    }
+
+    function smoothstep(edge0, edge1, value) {
+      const t = clamp01((value - edge0) / (edge1 - edge0));
+      return t * t * (3 - 2 * t);
+    }
+
+    function candidateImage(debug, config) {
+      const pixels = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+      for (let i = 0; i < pixels.length; i += 4) {
+        const originalMask = 1 / (1 + Math.exp(-debug.mask[i]));
+        const disagreementGate = config.mode === 'global'
+          ? 1
+          : smoothstep(config.disagreementLow, config.disagreementHigh, debug.mask[i + 2]);
+        const uncertaintyGate = config.mode === 'uncertain-disagreement'
+          ? smoothstep(config.uncertaintyLow, config.uncertaintyHigh, 1 - Math.abs(2 * originalMask - 1))
+          : 1;
+        const activation = disagreementGate * uncertaintyGate;
+        const logitScale = 1 + (config.strength - 1) * activation;
+        const mask = 1 / (1 + Math.exp(-debug.mask[i] * logitScale));
+        for (let channel = 0; channel < 3; channel++) {
+          const blended = debug.warp0[i + channel] * mask + debug.warp1[i + channel] * (1 - mask);
+          pixels[i + channel] = Math.round(clamp01(blended + debug.refineResidual[i + channel]) * 255);
+        }
+        pixels[i + 3] = 255;
+      }
+      return pixels;
+    }
+
+    function rgbDistanceSquared(pixels, offset, color) {
+      const dr = pixels[offset] - color[0];
+      const dg = pixels[offset + 1] - color[1];
+      const db = pixels[offset + 2] - color[2];
+      return dr * dr + dg * dg + db * db;
+    }
+
+    function foregroundMask(pixels, region) {
+      const width = region.right - region.left;
+      const height = region.bottom - region.top;
+      const data = new Uint8Array(width * height);
+      const thresholdSquared = FOREGROUND_RGB_DISTANCE * FOREGROUND_RGB_DISTANCE;
+      let count = 0;
+      for (let y = region.top; y < region.bottom; y++) {
+        for (let x = region.left; x < region.right; x++) {
+          const offset = (y * WIDTH + x) * 4;
+          const index = (y - region.top) * width + x - region.left;
+          if (rgbDistanceSquared(pixels, offset, BACKGROUND_RGB) >= thresholdSquared) {
+            data[index] = 1;
+            count++;
+          }
+        }
+      }
+      return { data, width, height, count };
+    }
+
+    function maskHasNearby(mask, x, y, tolerance) {
+      for (let dy = -tolerance; dy <= tolerance; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= mask.height) continue;
+        for (let dx = -tolerance; dx <= tolerance; dx++) {
+          const xx = x + dx;
+          if (xx >= 0 && xx < mask.width && mask.data[yy * mask.width + xx]) return true;
+        }
+      }
+      return false;
+    }
+
+    function foregroundAreaMetrics(actual, expected, region) {
+      const actualMask = foregroundMask(actual, region);
+      const expectedMask = foregroundMask(expected, region);
+      let falsePositiveAreaPx = 0;
+      let missingAreaPx = 0;
+      for (let y = 0; y < actualMask.height; y++) {
+        for (let x = 0; x < actualMask.width; x++) {
+          const index = y * actualMask.width + x;
+          if (actualMask.data[index] && !maskHasNearby(expectedMask, x, y, FOREGROUND_TOLERANCE_PX)) falsePositiveAreaPx++;
+          if (expectedMask.data[index] && !maskHasNearby(actualMask, x, y, FOREGROUND_TOLERANCE_PX)) missingAreaPx++;
+        }
+      }
+      return {
+        actualForegroundAreaPx: actualMask.count,
+        expectedForegroundAreaPx: expectedMask.count,
+        falsePositiveAreaPx,
+        missingAreaPx,
+        falsePositiveAreaRatio: falsePositiveAreaPx / Math.max(1, expectedMask.count),
+        missingAreaRatio: missingAreaPx / Math.max(1, expectedMask.count),
+      };
+    }
+
+    function edgeMetrics(actual, expected, region) {
+      const luminance = (pixels, x, y) => {
+        const offset = (y * WIDTH + x) * 4;
+        return (77 * pixels[offset] + 150 * pixels[offset + 1] + 29 * pixels[offset + 2]) / 256;
+      };
+      const isEdge = (pixels, x, y) => {
+        const horizontal = Math.abs(luminance(pixels, x + 1, y) - luminance(pixels, x - 1, y));
+        const vertical = Math.abs(luminance(pixels, x, y + 1) - luminance(pixels, x, y - 1));
+        return Math.max(horizontal, vertical) >= EDGE_THRESHOLD;
+      };
+      const width = region.right - region.left;
+      const height = region.bottom - region.top;
+      const actualEdges = new Uint8Array(width * height);
+      const expectedEdges = new Uint8Array(width * height);
+      for (let y = region.top + 1; y < region.bottom - 1; y++) {
+        for (let x = region.left + 1; x < region.right - 1; x++) {
+          const index = (y - region.top) * width + x - region.left;
+          actualEdges[index] = isEdge(actual, x, y) ? 1 : 0;
+          expectedEdges[index] = isEdge(expected, x, y) ? 1 : 0;
+        }
+      }
+      const hasNearby = (edges, x, y) => {
+        for (let dy = -EDGE_TOLERANCE_PX; dy <= EDGE_TOLERANCE_PX; dy++) {
+          const yy = y + dy;
+          if (yy < 0 || yy >= height) continue;
+          for (let dx = -EDGE_TOLERANCE_PX; dx <= EDGE_TOLERANCE_PX; dx++) {
+            const xx = x + dx;
+            if (xx >= 0 && xx < width && edges[yy * width + xx]) return true;
+          }
+        }
+        return false;
+      };
+      let predicted = 0;
+      let expectedCount = 0;
+      let matchedPredicted = 0;
+      let matchedExpected = 0;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const index = y * width + x;
+          if (actualEdges[index]) {
+            predicted++;
+            if (hasNearby(expectedEdges, x, y)) matchedPredicted++;
+          }
+          if (expectedEdges[index]) {
+            expectedCount++;
+            if (hasNearby(actualEdges, x, y)) matchedExpected++;
+          }
+        }
+      }
+      const precision = predicted ? matchedPredicted / predicted : (expectedCount ? 0 : 1);
+      const recall = expectedCount ? matchedExpected / expectedCount : (predicted ? 0 : 1);
+      return {
+        f1: precision + recall ? (2 * precision * recall) / (precision + recall) : 0,
+        precision,
+        recall,
+        predicted,
+        expected: expectedCount,
+      };
+    }
+
+    function candidateSweep(debug, groundTruth, production) {
+      const configs = [
+        { id: 'global-1.5', mode: 'global', strength: 1.5 },
+        { id: 'global-2', mode: 'global', strength: 2 },
+        { id: 'global-3', mode: 'global', strength: 3 },
+        { id: 'global-4', mode: 'global', strength: 4 },
+        { id: 'global-6', mode: 'global', strength: 6 },
+        { id: 'global-8', mode: 'global', strength: 8 },
+        { id: 'disagreement-2', mode: 'disagreement', strength: 2, disagreementLow: 0.02, disagreementHigh: 0.2 },
+        { id: 'disagreement-4', mode: 'disagreement', strength: 4, disagreementLow: 0.02, disagreementHigh: 0.2 },
+        { id: 'disagreement-8', mode: 'disagreement', strength: 8, disagreementLow: 0.02, disagreementHigh: 0.2 },
+        { id: 'disagreement-16', mode: 'disagreement', strength: 16, disagreementLow: 0.02, disagreementHigh: 0.2 },
+        { id: 'disagreement-wide-4', mode: 'disagreement', strength: 4, disagreementLow: 0.005, disagreementHigh: 0.05 },
+        { id: 'disagreement-wide-8', mode: 'disagreement', strength: 8, disagreementLow: 0.005, disagreementHigh: 0.05 },
+        { id: 'uncertain-disagreement-1.25', mode: 'uncertain-disagreement', strength: 1.25, disagreementLow: 0.02, disagreementHigh: 0.1, uncertaintyLow: 0.55, uncertaintyHigh: 0.9 },
+        { id: 'uncertain-disagreement-1.5', mode: 'uncertain-disagreement', strength: 1.5, disagreementLow: 0.02, disagreementHigh: 0.1, uncertaintyLow: 0.55, uncertaintyHigh: 0.9 },
+        { id: 'uncertain-disagreement-2', mode: 'uncertain-disagreement', strength: 2, disagreementLow: 0.02, disagreementHigh: 0.1, uncertaintyLow: 0.55, uncertaintyHigh: 0.9 },
+        { id: 'uncertain-disagreement-3', mode: 'uncertain-disagreement', strength: 3, disagreementLow: 0.02, disagreementHigh: 0.1, uncertaintyLow: 0.55, uncertaintyHigh: 0.9 },
+      ];
+      const baseline = {
+        config: { id: 'production', mode: 'production', strength: 1 },
+        roi: roiMetricsBytes(production, groundTruth),
+        foreground: foregroundAreaMetrics(production, groundTruth, ROI),
+        edge: edgeMetrics(production, groundTruth, ROI),
+      };
+      const candidates = configs.map((config) => {
+        const image = candidateImage(debug, config);
+        return {
+          config,
+          roi: roiMetricsBytes(image, groundTruth),
+          foreground: foregroundAreaMetrics(image, groundTruth, ROI),
+          edge: edgeMetrics(image, groundTruth, ROI),
+        };
+      });
+      return { baseline, candidates };
+    }
+
+    function percentile(values, fraction) {
+      if (!values.length) return null;
+      const sorted = [...values].sort((a, b) => a - b);
+      const position = (sorted.length - 1) * fraction;
+      const lower = Math.floor(position);
+      const upper = Math.ceil(position);
+      if (lower === upper) return sorted[lower];
+      return sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+    }
+
+    function summarize(values) {
+      if (!values.length) return { count: 0, mean: null, p50: null, p90: null, maximum: null };
+      return {
+        count: values.length,
+        mean: values.reduce((sum, value) => sum + value, 0) / values.length,
+        p50: percentile(values, 0.5),
+        p90: percentile(values, 0.9),
+        maximum: Math.max(...values),
+      };
+    }
+
+    function roiMetricsFloat(actual, expectedBytes) {
+      let absoluteSum = 0;
+      let squaredSum = 0;
+      let maximum = 0;
+      let channels = 0;
+      for (let y = ROI.top; y < ROI.bottom; y++) {
+        for (let x = ROI.left; x < ROI.right; x++) {
+          const offset = (y * WIDTH + x) * 4;
+          for (let channel = 0; channel < 3; channel++) {
+            const difference = Math.abs(actual[offset + channel] * 255 - expectedBytes[offset + channel]);
+            absoluteSum += difference;
+            squaredSum += difference * difference;
+            maximum = Math.max(maximum, difference);
+            channels++;
+          }
+        }
+      }
+      const mae = absoluteSum / channels;
+      const mse = squaredSum / channels;
+      return { mae, psnr: mse === 0 ? null : 10 * Math.log10((255 * 255) / mse), maximum, channels };
+    }
+
+    function roiMetricsBytes(actual, expected) {
+      let absoluteSum = 0;
+      let squaredSum = 0;
+      let maximum = 0;
+      let channels = 0;
+      for (let y = ROI.top; y < ROI.bottom; y++) {
+        for (let x = ROI.left; x < ROI.right; x++) {
+          const offset = (y * WIDTH + x) * 4;
+          for (let channel = 0; channel < 3; channel++) {
+            const difference = Math.abs(actual[offset + channel] - expected[offset + channel]);
+            absoluteSum += difference;
+            squaredSum += difference * difference;
+            maximum = Math.max(maximum, difference);
+            channels++;
+          }
+        }
+      }
+      const mae = absoluteSum / channels;
+      const mse = squaredSum / channels;
+      return { mae, psnr: mse === 0 ? null : 10 * Math.log10((255 * 255) / mse), maximum, channels };
+    }
+
+    function reconstructionMetrics(postRefine, production) {
+      let sum = 0;
+      let maximum = 0;
+      let equal = 0;
+      let count = 0;
+      for (let i = 0; i < production.length; i += 4) {
+        for (let channel = 0; channel < 3; channel++) {
+          const reconstructed = Math.round(clamp01(postRefine[i + channel]) * 255);
+          const difference = Math.abs(reconstructed - production[i + channel]);
+          sum += difference;
+          maximum = Math.max(maximum, difference);
+          equal += difference === 0 ? 1 : 0;
+          count++;
+        }
+      }
+      return { meanAbsByteDiff: sum / count, maxAbsByteDiff: maximum, exactByteFraction: equal / count, pass: maximum <= 1 };
+    }
+
+    function blendAndRefineMetrics(debug, reconstructed, groundTruth) {
+      let oracleSum = 0;
+      let informative = 0;
+      let correctChoice = 0;
+      let improved = 0;
+      let worsened = 0;
+      let unchanged = 0;
+      let pixels = 0;
+      for (let y = ROI.top; y < ROI.bottom; y++) {
+        for (let x = ROI.left; x < ROI.right; x++) {
+          const offset = (y * WIDTH + x) * 4;
+          let error0 = 0;
+          let error1 = 0;
+          let preError = 0;
+          let postError = 0;
+          for (let channel = 0; channel < 3; channel++) {
+            const gt = groundTruth[offset + channel];
+            error0 += Math.abs(debug.warp0[offset + channel] * 255 - gt);
+            error1 += Math.abs(debug.warp1[offset + channel] * 255 - gt);
+            preError += Math.abs(reconstructed.preRefine[offset + channel] * 255 - gt);
+            postError += Math.abs(reconstructed.postRefine[offset + channel] * 255 - gt);
+          }
+          error0 /= 3;
+          error1 /= 3;
+          preError /= 3;
+          postError /= 3;
+          oracleSum += Math.min(error0, error1);
+          if (Math.abs(error0 - error1) >= 4) {
+            informative++;
+            const choseWarp0 = debug.mask[offset + 1] >= 0.5;
+            if ((choseWarp0 && error0 <= error1) || (!choseWarp0 && error1 < error0)) correctChoice++;
+          }
+          if (postError < preError - 0.25) improved++;
+          else if (postError > preError + 0.25) worsened++;
+          else unchanged++;
+          pixels++;
+        }
+      }
+      const pre = roiMetricsFloat(reconstructed.preRefine, groundTruth);
+      const post = roiMetricsFloat(reconstructed.postRefine, groundTruth);
+      const oracleHardMae = oracleSum / pixels;
+      return {
+        oracleHardMae,
+        preRefineMae: pre.mae,
+        postRefineMae: post.mae,
+        blendingPenaltyVsOracleHard: pre.mae - oracleHardMae,
+        informativePixels: informative,
+        maskHardChoiceAccuracy: informative ? correctChoice / informative : null,
+        refineDeltaMae: post.mae - pre.mae,
+        refineImprovedPixelFraction: improved / pixels,
+        refineWorsenedPixelFraction: worsened / pixels,
+        refineUnchangedPixelFraction: unchanged / pixels,
+      };
+    }
+
+    function circleCenter(index, seconds) {
+      const phase = index * 2.094;
+      const x = (0.5 + 0.45 * Math.sin(seconds * 1.7 + phase)) * WIDTH;
+      const sceneY = 0.30 + 0.18 * index + 0.05 * Math.sin(seconds * 2.3 + phase);
+      return { x, y: (1 - sceneY) * HEIGHT };
+    }
+
+    function insideCircle(x, y, center, radius) {
+      return (x - center.x) ** 2 + (y - center.y) ** 2 <= radius ** 2;
+    }
+
+    function flowMetrics(debug) {
+      const targetCenters = [circleCenter(1, TARGET_SECONDS), circleCenter(2, TARGET_SECONDS)];
+      const anchorTimes = [START_SECONDS, END_SECONDS];
+      const objects = {};
+      for (let objectOffset = 0; objectOffset < 2; objectOffset++) {
+        const shaderIndex = objectOffset + 1;
+        const targetCenter = targetCenters[objectOffset];
+        const branches = {};
+        for (let branch = 0; branch < 2; branch++) {
+          const anchorCenter = circleCenter(shaderIndex, anchorTimes[branch]);
+          const laterAnchorCenter = circleCenter(2, anchorTimes[branch]);
+          const expected = { x: anchorCenter.x - targetCenter.x, y: anchorCenter.y - targetCenter.y };
+          const endpointErrors = [];
+          let biasX = 0;
+          let biasY = 0;
+          let within2 = 0;
+          let samples = 0;
+          const radius = RADIUS - FLOW_INTERIOR_MARGIN;
+          const left = Math.max(0, Math.floor(targetCenter.x - radius));
+          const right = Math.min(WIDTH, Math.ceil(targetCenter.x + radius));
+          const top = Math.max(0, Math.floor(targetCenter.y - radius));
+          const bottom = Math.min(HEIGHT, Math.ceil(targetCenter.y + radius));
+          for (let y = top; y < bottom; y++) {
+            for (let x = left; x < right; x++) {
+              const px = x + 0.5;
+              const py = y + 0.5;
+              if (!insideCircle(px, py, targetCenter, radius)) continue;
+              if (shaderIndex === 1 && insideCircle(px, py, targetCenters[1], RADIUS)) continue;
+              const sourceX = px + expected.x;
+              const sourceY = py + expected.y;
+              if (shaderIndex === 1 && insideCircle(sourceX, sourceY, laterAnchorCenter, RADIUS)) continue;
+              const offset = (y * WIDTH + x) * 4 + branch * 2;
+              const predictedX = debug.flow[offset];
+              const predictedY = debug.flow[offset + 1];
+              if (!Number.isFinite(predictedX) || !Number.isFinite(predictedY)) continue;
+              const dx = predictedX - expected.x;
+              const dy = predictedY - expected.y;
+              const error = Math.hypot(dx, dy);
+              endpointErrors.push(error);
+              biasX += dx;
+              biasY += dy;
+              within2 += error <= 2 ? 1 : 0;
+              samples++;
+            }
+          }
+          branches[`source${branch}`] = {
+            expectedFlowPx: expected,
+            samples,
+            epePx: summarize(endpointErrors),
+            biasPx: samples ? { x: biasX / samples, y: biasY / samples } : null,
+            within2PxFraction: samples ? within2 / samples : null,
+          };
+        }
+        objects[`circle${shaderIndex}`] = { targetCenter, branches };
+      }
+      return objects;
+    }
+
+    function maskMetrics(debug) {
+      const uncertainty = [];
+      const entropy = [];
+      const disagreement = [];
+      let nearHalf = 0;
+      let highDisagreement = 0;
+      let uncertainHighDisagreement = 0;
+      let pixels = 0;
+      for (let y = ROI.top; y < ROI.bottom; y++) {
+        for (let x = ROI.left; x < ROI.right; x++) {
+          const offset = (y * WIDTH + x) * 4;
+          const mask = clamp01(debug.mask[offset + 1]);
+          const value = 1 - Math.abs(2 * mask - 1);
+          const safeMask = Math.min(1 - 1e-7, Math.max(1e-7, mask));
+          const binaryEntropy = -safeMask * Math.log2(safeMask) - (1 - safeMask) * Math.log2(1 - safeMask);
+          const diff = debug.mask[offset + 2];
+          uncertainty.push(value);
+          entropy.push(binaryEntropy);
+          disagreement.push(diff);
+          const isNearHalf = Math.abs(mask - 0.5) <= 0.1;
+          const isHighDisagreement = diff > 0.02;
+          nearHalf += isNearHalf ? 1 : 0;
+          highDisagreement += isHighDisagreement ? 1 : 0;
+          uncertainHighDisagreement += isNearHalf && isHighDisagreement ? 1 : 0;
+          pixels++;
+        }
+      }
+      return {
+        pixels,
+        uncertainty: summarize(uncertainty),
+        binaryEntropy: summarize(entropy),
+        disagreement: summarize(disagreement),
+        nearHalfFraction: nearHalf / pixels,
+        disagreementAboveSparseRefineThresholdFraction: highDisagreement / pixels,
+        nearHalfAndHighDisagreementFraction: uncertainHighDisagreement / pixels,
+      };
+    }
+
+    function classify(flow, blending, mask) {
+      const flowMedians = Object.values(flow).flatMap((object) => Object.values(object.branches).map((branch) => branch.epePx.p50));
+      const worstMedianFlowEpePx = Math.max(...flowMedians);
+      const flowSupported = worstMedianFlowEpePx > 2;
+      const blendingSupported = blending.blendingPenaltyVsOracleHard > 0.5;
+      const refineState = blending.refineDeltaMae < -0.25 ? 'mitigates' : blending.refineDeltaMae > 0.25 ? 'contributes' : 'neutral-or-inconclusive';
+      const causes = [];
+      if (flowSupported) causes.push('flow/identity');
+      if (blendingSupported) causes.push('blending/visibility');
+      if (refineState === 'contributes') causes.push('refine');
+      return {
+        primary: causes.length > 1 ? 'mixed' : causes[0] || 'inconclusive',
+        flowIdentity: {
+          state: flowSupported ? 'supported' : 'not-supported-by-safe-interior-gate',
+          heuristic: 'supported when any safe-interior median endpoint error exceeds 2 px',
+          worstMedianFlowEpePx,
+        },
+        blendingVisibility: {
+          state: blendingSupported ? 'supported-conditional-on-fixed-warps' : 'not-supported-by-oracle-gap-gate',
+          heuristic: 'supported when pre-refine MAE exceeds per-pixel hard-warp oracle by more than 0.5 RGB8',
+          oracleGapRgb8: blending.blendingPenaltyVsOracleHard,
+          maskHardChoiceAccuracy: blending.maskHardChoiceAccuracy,
+          nearHalfAndHighDisagreementFraction: mask.nearHalfAndHighDisagreementFraction,
+        },
+        refine: {
+          state: refineState,
+          heuristic: 'contributes above +0.25 RGB8 MAE, mitigates below -0.25, otherwise neutral/inconclusive',
+          deltaMaeRgb8: blending.refineDeltaMae,
+        },
+        resolutionPresentation: {
+          state: 'external-presentation-excluded-for-this-fixture',
+          evidence: 'Metrics use native 1280x720 GPU texture readback without CSS scaling or the extension presentation path. Internal /8 flow and /4 refine resolution are not isolated.',
+        },
+        sourceExposure: {
+          state: 'exposure-codec-sensor-blur-excluded-for-this-fixture',
+          evidence: 'Both anchors are exact procedural renders. The 100 ms temporal gap remains, and this exclusion does not generalize to real video.',
+        },
+      };
+    }
+
+    function putRgba8(id, pixels) {
+      const canvas = document.getElementById(id);
+      canvas.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(pixels), WIDTH, HEIGHT), 0, 0);
+    }
+
+    function putFloatRgb(id, pixels, transform = (value) => clamp01(value)) {
+      const output = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+      for (let i = 0; i < output.length; i += 4) {
+        output[i] = transform(pixels[i], 0, i) * 255;
+        output[i + 1] = transform(pixels[i + 1], 1, i) * 255;
+        output[i + 2] = transform(pixels[i + 2], 2, i) * 255;
+        output[i + 3] = 255;
+      }
+      putRgba8(id, output);
+    }
+
+    function putMask(id, maskPixels, channel, transform) {
+      const output = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+      for (let i = 0; i < output.length; i += 4) {
+        const value = clamp01(transform(maskPixels[i + channel]));
+        output[i] = value * 255;
+        output[i + 1] = value * 255;
+        output[i + 2] = value * 255;
+        output[i + 3] = 255;
+      }
+      putRgba8(id, output);
+    }
+
+    function putErrorMap(id, actual, expected) {
+      const output = new Uint8ClampedArray(WIDTH * HEIGHT * 4);
+      for (let i = 0; i < output.length; i += 4) {
+        const difference = Math.max(
+          Math.abs(actual[i] - expected[i]),
+          Math.abs(actual[i + 1] - expected[i + 1]),
+          Math.abs(actual[i + 2] - expected[i + 2]),
+        );
+        output[i] = Math.min(255, difference * 4);
+        output[i + 1] = Math.min(255, Math.max(0, difference - 32) * 4);
+        output[i + 2] = Math.min(255, Math.max(0, difference - 96) * 4);
+        output[i + 3] = 255;
+      }
+      putRgba8(id, output);
+    }
+
+    async function main() {
+      window.__collisionDiagnosticResult = { state: 'running', pass: false };
+      if (!navigator.gpu) throw new Error('WebGPU is unavailable');
+      const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+      if (!adapter) throw new Error('No WebGPU adapter');
+      const requiredFeatures = ['shader-f16', 'subgroups'].filter((feature) => adapter.features.has(feature));
+      const device = await adapter.requestDevice({ requiredFeatures });
+      const weightsUrl = new URL('../extension/assets/rt_v7s.bin', import.meta.url);
+      const manifestUrl = new URL('../extension/assets/rt_v7s.json', import.meta.url);
+      const runtimeUrl = new URL('./rt/rt.js', import.meta.url);
+      const harnessUrl = new URL(location.pathname, location.origin);
+      const [weightsBin, manifestBytes, runtimeBytes, harnessBytes] = await Promise.all([
+        fetchBytes(weightsUrl), fetchBytes(manifestUrl), fetchBytes(runtimeUrl), fetchBytes(harnessUrl),
+      ]);
+      const weightsManifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+      const [weightsSha256, manifestSha256, runtimeSha256, harnessSha256] = await Promise.all([
+        sha256Hex(weightsBin), sha256Hex(manifestBytes), sha256Hex(runtimeBytes), sha256Hex(harnessBytes),
+      ]);
+      statusElement.textContent = 'Running v7s and reading diagnostic textures...';
+
+      const runtime = await createRT(device, {
+        w: WIDTH,
+        h: HEIGHT,
+        weightsBin,
+        weightsManifest,
+        textureInput: true,
+        textureOutput: true,
+        debugOutputs: true,
+        ...RUNTIME_CONFIG,
+      });
+      const sceneA = createScene(device, 'anchor A');
+      const sceneB = createScene(device, 'anchor B');
+      const sceneGt = createScene(device, 'exact GT');
+      sceneA.render(START_SECONDS);
+      sceneB.render(END_SECONDS);
+      sceneGt.render(TARGET_SECONDS);
+      const production = device.createTexture({
+        label: 'production output',
+        size: [WIDTH, HEIGHT],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
+      });
+      const debugOutputs = Object.fromEntries(DEBUG_KEYS.map((key) => [key, createDebugTexture(device, key)]));
+      device.pushErrorScope('validation');
+      runtime.prepPair(sceneA.texture, sceneB.texture);
+      runtime.runTDebug(T, production, debugOutputs);
+      await device.queue.onSubmittedWorkDone();
+      const [groundTruth, productionBytes, debug] = await Promise.all([
+        readRgba8(device, sceneGt.texture),
+        readRgba8(device, production),
+        readDebugTextures(device, debugOutputs),
+      ]);
+      const validationError = await device.popErrorScope();
+      if (validationError) throw new Error(`WebGPU validation: ${validationError.message}`);
+
+      const reconstructed = reconstruct(debug);
+      const reconstruction = reconstructionMetrics(reconstructed.postRefine, productionBytes);
+      if (!reconstruction.pass) throw new Error(`Debug reconstruction parity failed: max byte diff ${reconstruction.maxAbsByteDiff}`);
+      const stages = {
+        warp0: roiMetricsFloat(debug.warp0, groundTruth),
+        warp1: roiMetricsFloat(debug.warp1, groundTruth),
+        preRefine: roiMetricsFloat(reconstructed.preRefine, groundTruth),
+        postRefine: roiMetricsFloat(reconstructed.postRefine, groundTruth),
+        production: roiMetricsBytes(productionBytes, groundTruth),
+      };
+      const blending = blendAndRefineMetrics(debug, reconstructed, groundTruth);
+      const flow = flowMetrics(debug);
+      const mask = maskMetrics(debug);
+      const classification = classify(flow, blending, mask);
+      const compositingSweep = RUNTIME_CONFIG.experimentalMaskSharpen
+        ? null
+        : candidateSweep(debug, groundTruth, productionBytes);
+
+      putRgba8('gt', groundTruth);
+      putRgba8('final', productionBytes);
+      putFloatRgb('warp0', debug.warp0);
+      putFloatRgb('warp1', debug.warp1);
+      putFloatRgb('preRefine', reconstructed.preRefine);
+      putFloatRgb('postRefine', reconstructed.postRefine);
+      putMask('mask', debug.mask, 1, (value) => value);
+      putMask('disagreement', debug.mask, 2, (value) => value * 4);
+      putFloatRgb('residual', debug.refineResidual, (value) => clamp01(0.5 + value * 8));
+      putErrorMap('error', productionBytes, groundTruth);
+
+      const result = {
+        state: 'done',
+        pass: true,
+        model: 'v7s',
+        resolution: `${WIDTH}x${HEIGHT}`,
+        frame: FRAME,
+        t: T,
+        targetSeconds: TARGET_SECONDS,
+        anchorsSeconds: [START_SECONDS, END_SECONDS],
+        runtimeConfig: RUNTIME_CONFIG,
+        roi: ROI,
+        validation: { reconstruction, gpuValidationError: null },
+        stages,
+        blending,
+        flow,
+        mask,
+        classification,
+        compositingSweep,
+        metricDefinition: {
+          roiErrors: 'RGB8-equivalent MAE/PSNR/max inside the fixed collision ROI.',
+          oracleHard: 'Per-pixel lower bound selecting the lower-error debug warp; it is diagnostic and has no temporal-consistency constraint.',
+          flow: `Backward target-to-anchor endpoint error on analytic circle interiors, excluding ${FLOW_INTERIOR_MARGIN}px boundaries and later-drawn circle2 occlusion for circle1.`,
+          mask: 'Uncertainty=1-|2m-1|; binary entropy; near-half means |m-0.5|<=0.1; high disagreement means >0.02 normalized RGB.',
+          readback: 'Quality diagnostics only; GPU-to-CPU readback is not a performance timing.',
+        },
+        provenance: {
+          fixtureSource: FIXTURE_SOURCE,
+          harness: { path: 'web/collision_diagnostics.html', sizeBytes: harnessBytes.byteLength, sha256: harnessSha256 },
+          runtime: { path: 'web/rt/rt.js', sizeBytes: runtimeBytes.byteLength, sha256: runtimeSha256 },
+          weights: { path: 'extension/assets/rt_v7s.bin', sizeBytes: weightsBin.byteLength, sha256: weightsSha256 },
+          weightsManifest: { path: 'extension/assets/rt_v7s.json', sizeBytes: manifestBytes.byteLength, sha256: manifestSha256 },
+        },
+        environment: {
+          adapter: adapter.info || null,
+          enabledFeatures: [...device.features].sort(),
+          userAgent: navigator.userAgent,
+        },
+      };
+      window.__collisionDiagnosticResult = result;
+      summaryElement.textContent = JSON.stringify({
+        classification: result.classification,
+        stages: result.stages,
+        blending: result.blending,
+        flow: result.flow,
+        mask: result.mask,
+        compositingSweep: result.compositingSweep,
+        reconstruction: result.validation.reconstruction,
+      }, null, 2);
+      statusElement.textContent = `PASS: ${classification.primary}`;
+      statusElement.className = 'pass';
+      document.title = 'COLLISION DIAGNOSTICS DONE';
+
+      runtime.destroy();
+      production.destroy();
+      Object.values(debugOutputs).forEach((texture) => texture.destroy());
+    }
+
+    main().catch((error) => {
+      const message = String(error?.stack || error?.message || error);
+      window.__collisionDiagnosticResult = { state: 'error', pass: false, error: message };
+      summaryElement.textContent = message;
+      statusElement.textContent = 'FAIL';
+      statusElement.className = 'fail';
+      document.title = 'COLLISION DIAGNOSTICS ERROR';
+    });
+  </script>
+</body>
+</html>
