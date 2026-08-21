@@ -1620,12 +1620,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
       <label class="fc-row"><span>HDR<small>brightness expansion (needs an HDR display)</small></span>
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
-      <label class="fc-row"><span>Quality<small>GPU load</small></span>
+      <label class="fc-row"><span>Inference resolution<small>higher improves motion detail and costs more GPU</small></span>
         <select class="fc-sel" id="fcRes">
-          <option value="288">super eco</option><option value="360">eco</option>
-          <option value="480">balanced</option>
-          <option value="720">max</option>
-          <option value="1080">ultra</option>
+          <option value="288">288p — super eco</option><option value="360">360p — eco</option>
+          <option value="480">480p — balanced</option>
+          <option value="720">720p — high quality</option>
+          <option value="1080">1080p — ultra quality</option>
         </select></label>
       <details class="fc-details">
         <summary>advanced</summary>
