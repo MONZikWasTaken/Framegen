@@ -146,6 +146,19 @@
 
           <div class="setting-row">
             <div class="setting-copy">
+              <label for="sharpness">Sharpness</label>
+              <p id="sharpnessHint">Edge enhancement for the WebGPU canvas. High can create halos.</p>
+            </div>
+            <select id="sharpness" name="sharpness" aria-describedby="sharpnessHint">
+              <option value="0">Off</option>
+              <option value="1">Low</option>
+              <option value="2">Medium</option>
+              <option value="3">High</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
               <label for="anime">Animation mode</label>
               <p id="animeHint">Reduce artifacts when animation repeats the same source frame.</p>
             </div>

@@ -26,6 +26,7 @@ const customSettings = Object.freeze({
   fg: false,
   sr: true,
   hdr: true,
+  sharpness: 0,
   showFps: false,
   showWatermark: false,
   showWarnings: false,
@@ -388,7 +389,8 @@ test('advanced page keeps compact toolbar and exposes exact target FPS controls'
     assert.equal(matches.length, 1, `expected exactly one #${key} control`);
   }
 
-  const factorOptions = [...optionsHtml.matchAll(/<option value="(auto|hz|target|[2-6])">/g)]
+  const factorSelect = optionsHtml.match(/<select id="factor"[\s\S]*?<\/select>/)?.[0] || '';
+  const factorOptions = [...factorSelect.matchAll(/<option value="(auto|hz|target|[2-6])">/g)]
     .map(match => match[1]);
   assert.deepEqual(factorOptions, ['auto', 'hz', 'target', '2', '3', '4', '5', '6']);
   assert.match(optionsHtml, /class="profile-toolbar"/);

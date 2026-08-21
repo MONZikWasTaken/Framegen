@@ -38,7 +38,7 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
@@ -108,7 +108,7 @@
         resetOutputCadence(true);
       }
       if (previousCompare && !cfg.compare) cmpRing = [];
-      if ('hdr' in ch) configureOverlay();
+      if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
       if ('sr' in ch && cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
       if (runtimeChanged && running && videoEl && !toggling) {
         toggling = true;

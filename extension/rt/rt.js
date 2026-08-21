@@ -850,14 +850,14 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
-    let stat = mix(warpT(tex0, f32(x), f32(y)), warpT(tex1, f32(x), f32(y)), t);
+    let stat = mix(warpT(tex0, srcPos.x, srcPos.y), warpT(tex1, srcPos.x, srcPos.y), t);
     bgr = mix(bgr, stat, wStatic);
   }` : '';
   const wgslFloat = (value) => Number.isInteger(value) ? `${value}.0` : `${value}`;
   const COMPOSITE = experimentalMaskSharpen ? /* wgsl */`
   let logit = textureSampleLevel(t8m, samp, uv8, 0.0).x;
-  let w0 = warpT(tex0, f32(x) + fl.x, f32(y) + fl.y);
-  let w1 = warpT(tex1, f32(x) + fl.z, f32(y) + fl.w);
+  let w0 = warpT(tex0, srcPos.x + fl.x, srcPos.y + fl.y);
+  let w1 = warpT(tex1, srcPos.x + fl.z, srcPos.y + fl.w);
   let warpDelta = abs(w0 - w1);
   let disagreement = max(warpDelta.x, max(warpDelta.y, warpDelta.z));
   let gate = smoothstep(${wgslFloat(experimentalMaskSharpen.disagreementLow)}, ${wgslFloat(experimentalMaskSharpen.disagreementHigh)}, disagreement);
@@ -865,8 +865,8 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   let m = 1.0 / (1.0 + exp(-(logit * gain)));
   var bgr = w0 * m + w1 * (1.0 - m);` : /* wgsl */`
   let m = 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uv8, 0.0).x));
-  let w0 = warpT(tex0, f32(x) + fl.x, f32(y) + fl.y);
-  let w1 = warpT(tex1, f32(x) + fl.z, f32(y) + fl.w);
+  let w0 = warpT(tex0, srcPos.x + fl.x, srcPos.y + fl.y);
+  let w1 = warpT(tex1, srcPos.x + fl.z, srcPos.y + fl.w);
   var bgr = w0 * m + w1 * (1.0 - m);`;
   return /* wgsl */`
 @group(0) @binding(0) var t8f: texture_2d<f32>;  // flow/8: fx0,fy0,fx1,fy1
@@ -929,9 +929,20 @@ fn edgeUpsample(uv: vec2<f32>, guide: vec3<f32>) -> FlowMask {
 @compute @workgroup_size(${WGX}, ${WGY})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= ${W} || y >= ${H}) { return; }
-  let uv8 = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
-  let fl = textureSampleLevel(t8f, samp, uv8, 0.0) * 8.0;
+  let outDim = vec2<f32>(textureDimensions(outTex));
+  if (f32(x) >= outDim.x || f32(y) >= outDim.y) { return; }
+  let uv8 = (vec2<f32>(f32(x), f32(y)) + 0.5) / outDim;
+  let srcDim = vec2<f32>(textureDimensions(tex0));
+  let srcPos = (vec2<f32>(f32(x), f32(y)) + 0.5) * srcDim / outDim - 0.5;
+  let scale = vec4<f32>(srcDim.x / ${W}.0, srcDim.y / ${H}.0,
+                         srcDim.x / ${W}.0, srcDim.y / ${H}.0);
+  var flow = textureSampleLevel(t8f, samp, uv8, 0.0);
+  if (outDim.x > ${W}.0 || outDim.y > ${H}.0) {
+    let guide = (textureSampleLevel(tex0, samp, uv8, 0.0).rgb
+      + textureSampleLevel(tex1, samp, uv8, 0.0).rgb) * 0.5;
+    flow = edgeUpsample(uv8, guide).flow;
+  }
+  let fl = flow * 8.0 * scale;
 ${COMPOSITE}
 ${RES_ADD}
   bgr = clamp(bgr, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -1849,7 +1860,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       }
     }
     if (outTex) {
-      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex, guardTbuf)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(fgx, fgy); });
+      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex, guardTbuf)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(...flowDispatch(outTex)); });
     }
     const qs = device.createQuerySet({ type: 'timestamp', count: stages.length * 2 });
     const qbuf = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });

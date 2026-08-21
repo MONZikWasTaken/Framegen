@@ -7,7 +7,7 @@
   const STORE_KEY = 'fcProfileStore';
   const SETTINGS_KEYS = Object.freeze([
     'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
-    'fg', 'sr', 'hdr', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
+    'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
   ]);
   const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
   const RESOLUTIONS = Object.freeze([288, 360, 480, 720, 1080]);
@@ -31,6 +31,7 @@
     fg: true,
     sr: false,
     hdr: false,
+    sharpness: 0,
     showFps: true,
     showWatermark: true,
     showWarnings: true,
@@ -125,6 +126,7 @@
       fg: booleanValue(source.fg, DEFAULT_SETTINGS.fg),
       sr: booleanValue(source.sr, DEFAULT_SETTINGS.sr),
       hdr: booleanValue(source.hdr, DEFAULT_SETTINGS.hdr),
+      sharpness: [0, 1, 2, 3].includes(Number(source.sharpness)) ? Number(source.sharpness) : DEFAULT_SETTINGS.sharpness,
       showFps: booleanValue(source.showFps, DEFAULT_SETTINGS.showFps),
       showWatermark: booleanValue(source.showWatermark, DEFAULT_SETTINGS.showWatermark),
       showWarnings: booleanValue(source.showWarnings, DEFAULT_SETTINGS.showWarnings),
