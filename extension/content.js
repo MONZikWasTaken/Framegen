@@ -24,7 +24,7 @@
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
-    if (![0, 0.4, 0.8, 1.2].includes(cfg.sharpness)) cfg.sharpness = 0;
+    if (![0, 1, 2, 3].includes(cfg.sharpness)) cfg.sharpness = 0;
     if (!['linear', 'mitchell'].includes(cfg.sourceScaler)) cfg.sourceScaler = 'linear';
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
@@ -1763,8 +1763,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
         <label class="fc-row"><span>Sharpness<small>edge enhancement; high values can halo</small></span>
           <select class="fc-sel" id="fcSharp">
-            <option value="0">off</option><option value="0.4">low</option>
-            <option value="0.8">medium</option><option value="1.2">high</option>
+            <option value="0">off</option><option value="1">low</option>
+            <option value="2">medium</option><option value="3">high</option>
           </select></label>
         <label class="fc-row"><span>Source downscale<small>Windows A/B: Mitchell preserves more detail</small></span>
           <select class="fc-sel" id="fcScaler">
