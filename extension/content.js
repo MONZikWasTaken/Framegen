@@ -24,7 +24,7 @@
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
-    if (![0, 0.2, 0.4, 0.6].includes(cfg.sharpness)) cfg.sharpness = 0;
+    if (![0, 0.4, 0.8, 1.2].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
@@ -76,7 +76,7 @@
   let rt = null, rtRes = 0, rtModel = '', device = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
   const blitBg = new Map();
-  let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
+  let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null, lastPresentedTex = null;
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
   let dedupReads = [], dedupReadIdx = 0; // readback ring: classifies overlap now
@@ -292,6 +292,7 @@
     if (texW === w && texH === h && frameTex.length === 12) return;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
+    lastPresentedTex = null;
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
     pairSeq++; // in-flight classify continuations must not prep destroyed textures
     poolGen++;
@@ -522,6 +523,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       fragment: { module: mod, entryPoint: 'fs', targets: [{ format: hdr ? 'rgba16float' : 'rgba8unorm' }] } });
     blitBg.clear(); // bind groups belong to the old pipeline layout
     sys.hdrOn = hdr;
+    if (running && lastPresentedTex) requestAnimationFrame(() => present(lastPresentedTex, false));
   }
   // fullscreen renders in the browser's TOP LAYER: anything not inside the
   // fullscreen element is invisible there. Move the whole UI in (and back out) -
@@ -680,6 +682,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
         if (sr.process(tex, out, tex.width, tex.height)) tex = out;
       }
     }
+    lastPresentedTex = tex;
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{
       view: overlayCtx.getCurrentTexture().createView(),
@@ -1673,8 +1676,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
         <label class="fc-row"><span>Sharpness<small>edge enhancement; high values can halo</small></span>
           <select class="fc-sel" id="fcSharp">
-            <option value="0">off</option><option value="0.2">low</option>
-            <option value="0.4">medium</option><option value="0.6">high</option>
+            <option value="0">off</option><option value="0.4">low</option>
+            <option value="0.8">medium</option><option value="1.2">high</option>
           </select></label>
         <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
           <input class="fc-sw" type="checkbox" id="fcDebug"></label>
