@@ -101,7 +101,7 @@ inference, presentation, and canvas-size diagnostics for troubleshooting.
 |---|---|
 | **Factor** | `auto` is right for most people. Fixed 2×-6× if you want control, `display Hz` to sync exactly to your monitor |
 | **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
-| **Model** | `v7` (default, fastest) or `v6` (previous generation) |
+| **Model** | `v7` (default, fastest), `v6` (previous generation), or experimental `IFRNet` (quality-first) |
 | **Anime mode** | Keep on for anime; harmless elsewhere |
 | **SR 2×** | Neural upscale of inserted frames - costs GPU, sharper result |
 | **Compare** | The split slider, for seeing the difference yourself |
@@ -110,6 +110,28 @@ inference, presentation, and canvas-size diagnostics for troubleshooting.
 with a slow camera pan, an anime opening. That's where the difference hits
 hardest. On a 60 Hz screen you'll see 24→60; on a 144-240 Hz screen,
 considerably more.
+
+### Experimental IFRNet quality model
+
+IFRNet is an optional quality-first model for testing difficult motion and
+occlusions. It is deliberately not the default: it is much larger and more
+compute-intensive than v7, and this WebGPU port currently limits its internal
+resolution to 720p. The shipped extension stays on the fast v7 model unless
+you choose IFRNet in **Advanced → Model**.
+
+The IFRNet weights are not checked into this repository. Download the official
+`IFRNet_Vimeo90K.pth` checkpoint from the
+[IFRNet project](https://github.com/ltkong218/IFRNet), then generate and bundle
+the optional extension asset:
+
+```powershell
+python tools\export_ifrnet_weights.py path\to\IFRNet_Vimeo90K.pth assets\rt_ifrnet
+powershell -ExecutionPolicy Bypass -File tools\build_extension.ps1
+```
+
+Reload the unpacked extension and select **IFRNet (quality, experimental)**.
+The exporter preserves the official checkpoint tensor names in a compact
+Framegen WebGPU manifest, making the graph/weight mapping inspectable.
 
 ## FAQ
 

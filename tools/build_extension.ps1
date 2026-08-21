@@ -3,6 +3,7 @@ $root = Split-Path $PSScriptRoot -Parent
 New-Item -ItemType Directory -Force "$root\extension\rt" | Out-Null
 New-Item -ItemType Directory -Force "$root\extension\assets" | Out-Null
 Copy-Item "$root\web\rt\rt.js" "$root\extension\rt\rt.js" -Force
+Copy-Item "$root\web\rt\ifrnet.js" "$root\extension\rt\ifrnet.js" -Force
 Copy-Item "$root\web\rt\sr.js" "$root\extension\rt\sr.js" -Force
 Copy-Item "$root\assets\rt_tfact2.bin" "$root\extension\assets\" -Force
 Copy-Item "$root\assets\rt_tfact2.json" "$root\extension\assets\" -Force
@@ -13,6 +14,12 @@ Copy-Item "$root\assets\rt_sr.json" "$root\extension\assets\" -Force
 if (Test-Path "$root\assets\rt_v7s.bin") {
     Copy-Item "$root\assets\rt_v7s.bin" "$root\extension\assets\" -Force
     Copy-Item "$root\assets\rt_v7s.json" "$root\extension\assets\" -Force
+}
+# IFRNet is generated from the official checkpoint with
+# tools\export_ifrnet_weights.py. It is optional because it adds ~19 MiB.
+if (Test-Path "$root\assets\rt_ifrnet.bin") {
+    Copy-Item "$root\assets\rt_ifrnet.bin" "$root\extension\assets\" -Force
+    Copy-Item "$root\assets\rt_ifrnet.json" "$root\extension\assets\" -Force
 }
 # slim copies no longer shipped - tfact replaced them
 Remove-Item "$root\extension\assets\rt_slim.bin", "$root\extension\assets\rt_slim.json" -Force -ErrorAction SilentlyContinue

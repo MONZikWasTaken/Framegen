@@ -1,0 +1,63 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>IFRNet WebGPU parity probe</title>
+<script type="module">
+import { createIFRNetRT } from './rt/ifrnet.js';
+
+const query = new URLSearchParams(location.search);
+const [w, h] = (query.get('res') || '848x480').split('x').map(Number);
+const image = async (url) => {
+  const value = new Image(); value.src = url; await value.decode(); return createImageBitmap(value);
+};
+
+async function main() {
+  const [aImage, bImage] = await Promise.all([image(query.get('i0')), image(query.get('i1'))]);
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const device = await adapter.requestDevice();
+  const gpuErrors = [];
+  device.addEventListener('uncapturederror', event => { gpuErrors.push(event.error.message); });
+  const [bin, manifest] = await Promise.all([
+    fetch(query.get('weights') || '../.bench/models/ifrnet/rt_ifrnet.bin').then(r => r.arrayBuffer()),
+    fetch(query.get('manifest') || '../.bench/models/ifrnet/rt_ifrnet.json').then(r => r.json()),
+  ]);
+  const source = (bitmap) => {
+    const texture = device.createTexture({ size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+    device.queue.copyExternalImageToTexture({ source: bitmap }, { texture }, [bitmap.width, bitmap.height]);
+    return texture;
+  };
+  const runtime = await createIFRNetRT(device, { w, h, weightsBin: bin, weightsManifest: manifest });
+  const output = device.createTexture({ size: [aImage.width, aImage.height], format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC });
+  const a = source(aImage), b = source(bImage);
+  runtime.prepPair(a, b);
+  runtime.runT(0.5, output);
+  await device.queue.onSubmittedWorkDone();
+  const final = await runtime.inspectFinal();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  if (gpuErrors.length) throw new Error(`WebGPU validation error: ${gpuErrors.join(' | ')}`);
+  const bytesPerRow = Math.ceil(aImage.width * 4 / 256) * 256;
+  const readback = device.createBuffer({ size: bytesPerRow * aImage.height,
+    usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({ texture: output }, { buffer: readback, bytesPerRow }, [aImage.width, aImage.height]);
+  device.queue.submit([encoder.finish()]);
+  await readback.mapAsync(GPUMapMode.READ);
+  const pixels = new Uint8Array(readback.getMappedRange());
+  const packed = new Uint8ClampedArray(aImage.width * aImage.height * 4);
+  let total = 0;
+  for (let y = 0; y < aImage.height; y++) {
+    packed.set(pixels.subarray(y * bytesPerRow, y * bytesPerRow + aImage.width * 4), y * aImage.width * 4);
+    for (let x = 0; x < aImage.width * 3; x++) total += pixels[y * bytesPerRow + x];
+  }
+  readback.unmap(); readback.destroy();
+  const average = total / (aImage.width * aImage.height * 3 * 255);
+  const canvas = new OffscreenCanvas(aImage.width, aImage.height);
+  canvas.getContext('2d').putImageData(new ImageData(packed, aImage.width, aImage.height), 0, 0);
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const imageData = await new Promise(resolve => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob); });
+  window.__ifrnetResult = { ok: average >= 0.01, average, final, imageData };
+}
+
+main().catch(error => { window.__ifrnetResult = { error: String(error), stack: error.stack }; });
+</script>

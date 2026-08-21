@@ -17,7 +17,7 @@
   // model: weight set key from MODELS. v7s is the default: faster (2.57ms vs
   // 3.05ms @480p, 3.75 vs 5.51 @720p) at equal-or-better quality. v6 stays
   // selectable; users with a saved choice keep it.
-  const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
+  const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s', ifrnet: 'rt_ifrnet' };
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
     fg: true, sr: false, hdr: false, showFps: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
@@ -251,8 +251,8 @@
       rt = null;
     }
     const url = (p) => chrome.runtime.getURL(p);
-    // tfact2 family: t-factored student + quarter-res refine head; the runtime
-    // autodetects the trunk width from the manifest, so models are weight swaps
+    // IFRNet is a separately compiled high-quality graph; the existing weights
+    // continue to use the tuned RIFE runtime.
     const fetchSet = async (stem) => Promise.all([
       fetch(url('assets/' + stem + '.bin')).then(r => { if (!r.ok) throw 0; return r.arrayBuffer(); }),
       fetch(url('assets/' + stem + '.json')).then(r => { if (!r.ok) throw 0; return r.json(); })]);
@@ -268,15 +268,21 @@
       cfg.model = 'v6';
       [bin, man] = await fetchSet(MODELS.v6);
     }
-    const rtMod = await import(url('rt/rt.js'));
+    const isIFRNet = cfg.model === 'ifrnet';
+    const rtMod = await import(url(isIFRNet ? 'rt/ifrnet.js' : 'rt/rt.js'));
     const [mw, mh] = SIZES[cfg.res];
-    rtC1 = man['block0.conv0.0.0.weight'].shape[0];
-    rtC2 = man['block0.conv0.1.0.weight'].shape[0];
-    const convTune = await loadConvTune();
-    rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
-      staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
+    let convTune = null;
+    if (isIFRNet) {
+      rt = await rtMod.createIFRNetRT(device, { w: mw, h: mh, weightsBin: bin, weightsManifest: man });
+    } else {
+      rtC1 = man['block0.conv0.0.0.weight'].shape[0];
+      rtC2 = man['block0.conv0.1.0.weight'].shape[0];
+      convTune = await loadConvTune();
+      rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
+        staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
+    }
     rtRes = cfg.res; rtModel = cfg.model;
-    if (!convTune) scheduleConvTune(rtMod);
+    if (!isIFRNet && !convTune) scheduleConvTune(rtMod);
     ensureMidTextures(texW || mw, texH || mh);
     log('runtime up @', cfg.res);
   }
@@ -1596,6 +1602,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           <select class="fc-sel" id="fcModel">
             <option value="v6">v6 (stable)</option>
             <option value="v7s">v7 small</option>
+            <option value="ifrnet">IFRNet (quality, experimental)</option>
           </select></label>
         <label class="fc-row"><span>Anime dedup<small>detect frames drawn on twos</small></span>
           <input class="fc-sw" type="checkbox" id="fcAnime"></label>
