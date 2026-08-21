@@ -109,6 +109,24 @@
 
   const log = (...a) => console.log('[framegen]', ...a);
 
+  // Do not replace the browser's video compositor merely because Framegen is
+  // armed.  Its native path can be visibly sharper than a canvas on Windows.
+  // The overlay is only needed when a feature actually changes pixels.
+  function needsCanvasPresentation() {
+    return cfg.fg || cfg.sr || cfg.hdr || cfg.sharpness > 0 || cfg.compare;
+  }
+
+  function useNativePassthrough() {
+    if (needsCanvasPresentation()) return false;
+    queue = []; curJob = null; lastTex = null; cmpRing = [];
+    if (overlay) {
+      overlay.style.opacity = '0';
+      overlay.style.visibility = 'hidden';
+      overlay.style.pointerEvents = 'none';
+    }
+    return true;
+  }
+
   function trackSourceVideo(v) {
     if (diag.sourceVideo === v) return;
     diag.sourceVideo = v;
@@ -1246,7 +1264,12 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       diag.presentedFrames = metadata.presentedFrames;
     }
     videoEl.requestVideoFrameCallback(onFrame);
-    if (videoEl.videoWidth !== overlaySourceWidth || videoEl.videoHeight !== overlaySourceHeight) {
+    if (useNativePassthrough()) {
+      effN = 1;
+      return;
+    }
+    if (overlay.style.visibility !== 'visible'
+        || videoEl.videoWidth !== overlaySourceWidth || videoEl.videoHeight !== overlaySourceHeight) {
       positionOverlay();
     }
     if (!overlayFitSupported) return;
@@ -1499,7 +1522,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     overlay.style.pointerEvents = overlayFitSupported && videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
-    const [vw, vh] = videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
+    const [vw, vh] = needsCanvasPresentation() && videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
     if (vw && vh) {
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
@@ -1528,6 +1551,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     lastVr = null; // the cached rect belongs to the previous video element
     dropped = 0; dups = 0; cuts = 0;
     running = true;
+    useNativePassthrough();
     hud.style.display = 'block';
     if (sys.integrated) {
       advise('⚠ Chrome is running on the integrated GPU (' + sys.gpu + '). For full speed: '
