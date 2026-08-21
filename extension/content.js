@@ -318,19 +318,21 @@
     blitBg.clear();
   }
 
-  // pool dimensions for a source: fit inside FHD, keep the aspect ratio
+  // Keep the source and generated-frame pools exactly at the presentation backing
+  // size. That gives the active overlay one decode/downscale pass instead of
+  // downscaling into an arbitrary FHD pool and filtering again during present.
   function poolDims() {
+    if (overlay?.width && overlay?.height) return [overlay.width, overlay.height];
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
     const s = Math.min(1, 1920 / fw, 1080 / fh);
     return [Math.round(fw * s), Math.round(fh * s)];
   }
-  // copyExternalImageToTexture copies 1:1 and NEVER scales - for >FHD sources a
-  // plain copy grabs the top-left FHD crop of the frame. Capture the full frame
-  // into a scratch texture and downscale-blit it into the pool instead.
+  // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
+  // backing differ, capture the whole source then downscale once into the pool.
   let capTex = null, downPipe = null, capBgs = new WeakMap();
   function captureFrame(dst, vw, vh) {
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
-    if (fw <= 1920 && fh <= 1080) {
+    if (fw === vw && fh === vh) {
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: dst }, [vw, vh]);
       return;
     }
