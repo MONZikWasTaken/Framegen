@@ -16,6 +16,7 @@
 **/*_cache/
 .venv/
 .playwright-mcp/
+.bench/
 
 opencode.json
 /.claude/

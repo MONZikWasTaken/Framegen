@@ -280,14 +280,7 @@
       staticGuard: cfg.guard, weightsBin: bin, weightsManifest: man, convTune });
     rtRes = cfg.res; rtModel = cfg.model;
     if (!convTune) scheduleConvTune(rtMod);
-    midTexs.forEach(t => t.destroy());
-    midTexs = [];
-    for (let i = 0; i < 24; i++) {
-      midTexs.push(device.createTexture({ label: 'fcmid' + i, size: [mw, mh],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
-    }
-    blitBg.clear();
+    ensureMidTextures(texW || mw, texH || mh);
     log('runtime up @', cfg.res);
   }
 
@@ -305,6 +298,24 @@
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
     texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
+    ensureMidTextures(w, h);
+  }
+
+  // Flow is estimated at the selected model rung, but generated frames are
+  // synthesized from the full-resolution source textures. The ring must remain
+  // deep enough for display-Hz mode, where several high-resolution mids can be
+  // queued at once.
+  function ensureMidTextures(w, h) {
+    if (midTexs.length === 24 && midTexs[0]?.width === w && midTexs[0]?.height === h) return;
+    midTexs.forEach(t => t.destroy());
+    midTexs = [];
+    midIdx = 0;
+    for (let i = 0; i < 24; i++) {
+      midTexs.push(device.createTexture({ label: 'fcmid' + poolGen + '_' + i, size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
+    }
+    blitBg.clear();
   }
 
   // pool dimensions for a source: fit inside FHD, keep the aspect ratio
@@ -1553,8 +1564,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
-      const [mw, mh] = SIZES[cfg.res];
-      const vramMB = (texW * texH * 4 * frameTex.length + mw * mh * 4 * midTexs.length) / 1048576;
+      const vramMB = texW * texH * 4 * (frameTex.length + midTexs.length) / 1048576;
       const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
       lines.push(
         `out: ${fpsWin.length}fps · factor x${effN}${cfg.factor === 'auto' ? ' (auto)' : ' (fixed)'}`,
