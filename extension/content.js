@@ -19,12 +19,13 @@
   // selectable; users with a saved choice keep it.
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, sourceScaler: 'linear', showFps: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
     if (![0, 0.4, 0.8, 1.2].includes(cfg.sharpness)) cfg.sharpness = 0;
+    if (!['linear', 'mitchell'].includes(cfg.sourceScaler)) cfg.sourceScaler = 'linear';
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
@@ -45,6 +46,7 @@
       }
       sanitizeCfg(); syncPanel();
       if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
+      if ('sourceScaler' in ch) selectDownPipe();
       if (resChanged && running && videoEl && !toggling) {
         toggling = true;
         switchRes().catch(e => log('res sync', e)).finally(() => { toggling = false; });
@@ -68,6 +70,7 @@
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
     panel.querySelector('#fcSharp').value = String(cfg.sharpness);
+    panel.querySelector('#fcScaler').value = cfg.sourceScaler;
     const hd = panel.querySelector('#fcHDR');
     hd.checked = cfg.hdr;
     if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
@@ -350,7 +353,74 @@
   }
   // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
   // backing differ, capture the whole source then downscale once into the pool.
-  let capTex = null, downPipe = null, capBgs = new WeakMap();
+  let capTex = null, downPipe = null, downPipeBuild = null, capBgs = new WeakMap();
+  const downPipes = new Map();
+  function downsampleModule(mode) {
+    const fs = mode === 'mitchell' ? `
+fn mitchell(x: f32) -> f32 {
+  let a = abs(x);
+  if (a < 1.0) { return (7.0 * a * a * a / 6.0) - (2.0 * a * a) + (8.0 / 9.0); }
+  if (a < 2.0) { return (-7.0 * a * a * a / 18.0) + (2.0 * a * a) - (10.0 * a / 3.0) + (16.0 / 9.0); }
+  return 0.0;
+}
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  let dim = vec2<i32>(textureDimensions(tex));
+  let p = v.uv * vec2<f32>(dim) - 0.5;
+  let base = vec2<i32>(floor(p));
+  let f = fract(p);
+  var color = vec4<f32>(0.0);
+  for (var y = -1; y <= 2; y++) {
+    let wy = mitchell(f32(y) - f.y);
+    for (var x = -1; x <= 2; x++) {
+      let coord = clamp(base + vec2<i32>(x, y), vec2<i32>(0), dim - vec2<i32>(1));
+      color += textureLoad(tex, coord, 0) * (mitchell(f32(x) - f.x) * wy);
+    }
+  }
+  return clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
+}` : `
+@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
+  return textureSampleLevel(tex, samp, v.uv, 0.0);
+}`;
+    return device.createShaderModule({ code: BLIT_VS + fs });
+  }
+  function downsampleDescriptor(mode) {
+    const mod = downsampleModule(mode);
+    return { layout: 'auto', vertex: { module: mod, entryPoint: 'vs' },
+      fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } };
+  }
+  function selectDownPipe() {
+    if (!device) return;
+    let linear = downPipes.get('linear');
+    if (!linear) {
+      const mod = downsampleModule('linear');
+      linear = device.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' },
+        fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });
+      downPipes.set('linear', linear);
+    }
+    const requested = cfg.sourceScaler;
+    const ready = downPipes.get(requested);
+    const next = ready || linear;
+    if (downPipe !== next) { downPipe = next; capBgs = new WeakMap(); }
+    if (requested !== 'mitchell' || ready || downPipeBuild) return;
+    downPipeBuild = (async () => {
+      device.pushErrorScope('validation');
+      let scopeOpen = true;
+      try {
+        const pipe = await device.createRenderPipelineAsync(downsampleDescriptor('mitchell'));
+        const error = await device.popErrorScope();
+        scopeOpen = false;
+        if (error) throw new Error(error.message);
+        downPipes.set('mitchell', pipe);
+        if (cfg.sourceScaler === 'mitchell') { downPipe = pipe; capBgs = new WeakMap(); }
+      } catch (e) {
+        if (scopeOpen) await device.popErrorScope();
+        log('Mitchell scaler unavailable; using linear', e);
+        if (cfg.sourceScaler === 'mitchell') {
+          cfg.sourceScaler = 'linear'; saveCfg(); syncPanel();
+        }
+      } finally { downPipeBuild = null; }
+    })();
+  }
   function captureFrame(dst, vw, vh) {
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
     if (fw === vw && fh === vh) {
@@ -365,15 +435,7 @@
       capBgs = new WeakMap(); // old bind groups reference the destroyed capTex
     }
     device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: capTex }, [fw, fh]);
-    if (!downPipe) {
-      const mod = device.createShaderModule({ code: BLIT_VS + `
-@fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return textureSampleLevel(tex, samp, v.uv, 0.0);
-}` });
-      downPipe = device.createRenderPipeline({ layout: 'auto',
-        vertex: { module: mod, entryPoint: 'vs' },
-        fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });
-    }
+    selectDownPipe();
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{ view: dst.createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
@@ -1608,6 +1670,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
       `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
+      `source downscale: ${cfg.sourceScaler}${downPipes.has('mitchell') ? '' : ' (linear active)'}`,
       'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
@@ -1703,6 +1766,11 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
             <option value="0">off</option><option value="0.4">low</option>
             <option value="0.8">medium</option><option value="1.2">high</option>
           </select></label>
+        <label class="fc-row"><span>Source downscale<small>Windows A/B: Mitchell preserves more detail</small></span>
+          <select class="fc-sel" id="fcScaler">
+            <option value="linear">linear (compatibility)</option>
+            <option value="mitchell">Mitchell (high quality)</option>
+          </select></label>
         <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
           <input class="fc-sw" type="checkbox" id="fcDebug"></label>
         <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
@@ -1714,6 +1782,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
     const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
     const Sh = panel.querySelector('#fcSharp');
+    const Sc = panel.querySelector('#fcScaler');
     syncPanel();
     F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
     const Md = panel.querySelector('#fcModel');
@@ -1746,6 +1815,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     };
     Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
     Sh.onchange = () => { cfg.sharpness = +Sh.value; saveCfg(); configureOverlay(); };
+    Sc.onchange = () => { cfg.sourceScaler = Sc.value; saveCfg(); selectDownPipe(); };
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
     Sr.onchange = () => {
