@@ -867,6 +867,45 @@ fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
   return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r like the buffer path
 }
 
+struct FlowMask {
+  flow: vec4<f32>,
+  mask: f32,
+}
+
+fn edgeUpsample(uv: vec2<f32>, guide: vec3<f32>) -> FlowMask {
+  let dim = vec2<i32>(textureDimensions(t8f));
+  let fdim = vec2<f32>(dim);
+  let p = uv * fdim - 0.5;
+  let q = vec2<i32>(floor(p));
+  let f = fract(p);
+  let p00 = clamp(q, vec2<i32>(0), dim - 1);
+  let p10 = clamp(q + vec2<i32>(1, 0), vec2<i32>(0), dim - 1);
+  let p01 = clamp(q + vec2<i32>(0, 1), vec2<i32>(0), dim - 1);
+  let p11 = clamp(q + vec2<i32>(1, 1), vec2<i32>(0), dim - 1);
+  let s00 = (1.0 - f.x) * (1.0 - f.y);
+  let s10 = f.x * (1.0 - f.y);
+  let s01 = (1.0 - f.x) * f.y;
+  let s11 = f.x * f.y;
+  let c00 = (textureSampleLevel(tex0, samp, (vec2<f32>(p00) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p00) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c10 = (textureSampleLevel(tex0, samp, (vec2<f32>(p10) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p10) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c01 = (textureSampleLevel(tex0, samp, (vec2<f32>(p01) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p01) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c11 = (textureSampleLevel(tex0, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let w00 = s00 * exp(-48.0 * dot(c00 - guide, c00 - guide));
+  let w10 = s10 * exp(-48.0 * dot(c10 - guide, c10 - guide));
+  let w01 = s01 * exp(-48.0 * dot(c01 - guide, c01 - guide));
+  let w11 = s11 * exp(-48.0 * dot(c11 - guide, c11 - guide));
+  let ws = max(1e-6, w00 + w10 + w01 + w11);
+  let flow = (textureLoad(t8f, p00, 0) * w00 + textureLoad(t8f, p10, 0) * w10
+    + textureLoad(t8f, p01, 0) * w01 + textureLoad(t8f, p11, 0) * w11) / ws;
+  let mask = (textureLoad(t8m, p00, 0).x * w00 + textureLoad(t8m, p10, 0).x * w10
+    + textureLoad(t8m, p01, 0).x * w01 + textureLoad(t8m, p11, 0).x * w11) / ws;
+  return FlowMask(flow, mask);
+}
+
 @compute @workgroup_size(${WGX}, ${WGY})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
@@ -877,8 +916,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let srcPos = (vec2<f32>(f32(x), f32(y)) + 0.5) * srcDim / outDim - 0.5;
   let scale = vec4<f32>(srcDim.x / ${W}.0, srcDim.y / ${H}.0,
                          srcDim.x / ${W}.0, srcDim.y / ${H}.0);
-  let fl = textureSampleLevel(t8f, samp, uv8, 0.0) * 8.0 * scale;
-  let m = 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uv8, 0.0).x));
+  var flow = textureSampleLevel(t8f, samp, uv8, 0.0);
+  var mask = textureSampleLevel(t8m, samp, uv8, 0.0).x;
+  if (outDim.x > ${W}.0 || outDim.y > ${H}.0) {
+    let guide = (textureSampleLevel(tex0, samp, uv8, 0.0).rgb
+      + textureSampleLevel(tex1, samp, uv8, 0.0).rgb) * 0.5;
+    let up = edgeUpsample(uv8, guide);
+    flow = up.flow;
+    mask = up.mask;
+  }
+  let fl = flow * 8.0 * scale;
+  let m = 1.0 / (1.0 + exp(-mask));
   let w0 = warpT(tex0, srcPos.x + fl.x, srcPos.y + fl.y);
   let w1 = warpT(tex1, srcPos.x + fl.z, srcPos.y + fl.w);
   var bgr = w0 * m + w1 * (1.0 - m);

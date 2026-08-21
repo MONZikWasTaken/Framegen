@@ -1562,6 +1562,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
+      'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
       const vramMB = texW * texH * 4 * (frameTex.length + midTexs.length) / 1048576;
