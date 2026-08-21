@@ -353,7 +353,7 @@
   }
   // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
   // backing differ, capture the whole source then downscale once into the pool.
-  let capTex = null, downPipe = null, downPipeBuild = null, capBgs = new WeakMap();
+  let capTex = null, downPipe = null, downPipeMode = 'linear', downPipeBuild = null, capBgs = new WeakMap();
   const downPipes = new Map();
   function downsampleModule(mode) {
     const fs = mode === 'mitchell' ? `
@@ -400,7 +400,8 @@ fn mitchell(x: f32) -> f32 {
     const requested = cfg.sourceScaler;
     const ready = downPipes.get(requested);
     const next = ready || linear;
-    if (downPipe !== next) { downPipe = next; capBgs = new WeakMap(); }
+    const nextMode = ready ? requested : 'linear';
+    if (downPipe !== next) { downPipe = next; downPipeMode = nextMode; capBgs = new WeakMap(); }
     if (requested !== 'mitchell' || ready || downPipeBuild) return;
     downPipeBuild = (async () => {
       device.pushErrorScope('validation');
@@ -411,7 +412,7 @@ fn mitchell(x: f32) -> f32 {
         scopeOpen = false;
         if (error) throw new Error(error.message);
         downPipes.set('mitchell', pipe);
-        if (cfg.sourceScaler === 'mitchell') { downPipe = pipe; capBgs = new WeakMap(); }
+        if (cfg.sourceScaler === 'mitchell') { downPipe = pipe; downPipeMode = 'mitchell'; capBgs = new WeakMap(); }
       } catch (e) {
         if (scopeOpen) await device.popErrorScope();
         log('Mitchell scaler unavailable; using linear', e);
@@ -442,9 +443,9 @@ fn mitchell(x: f32) -> f32 {
     pass.setPipeline(downPipe);
     let cbg = capBgs.get(dst); // per-frame createBindGroup was pure garbage-churn at >FHD
     if (!cbg) {
-      cbg = device.createBindGroup({ layout: downPipe.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: capTex.createView() },
-          { binding: 1, resource: blitSampler }] });
+      const entries = [{ binding: 0, resource: capTex.createView() }];
+      if (downPipeMode === 'linear') entries.push({ binding: 1, resource: blitSampler });
+      cbg = device.createBindGroup({ layout: downPipe.getBindGroupLayout(0), entries });
       capBgs.set(dst, cbg);
     }
     pass.setBindGroup(0, cbg);
