@@ -346,26 +346,8 @@
     device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: capTex }, [fw, fh]);
     if (!downPipe) {
       const mod = device.createShaderModule({ code: BLIT_VS + `
-fn catmullRom(x: f32) -> f32 {
-  let a = abs(x);
-  if (a < 1.0) { return 1.5 * a * a * a - 2.5 * a * a + 1.0; }
-  if (a < 2.0) { return -0.5 * a * a * a + 2.5 * a * a - 4.0 * a + 2.0; }
-  return 0.0;
-}
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let dim = vec2<i32>(textureDimensions(tex));
-  let p = v.uv * vec2<f32>(dim) - 0.5;
-  let base = vec2<i32>(floor(p));
-  let frac = fract(p);
-  var color = vec4<f32>(0.0);
-  for (var y = -1; y <= 2; y++) {
-    let wy = catmullRom(f32(y) - frac.y);
-    for (var x = -1; x <= 2; x++) {
-      let coord = clamp(base + vec2<i32>(x, y), vec2<i32>(0), dim - 1);
-      color += textureLoad(tex, coord, 0) * (catmullRom(f32(x) - frac.x) * wy);
-    }
-  }
-  return clamp(color, vec4<f32>(0.0), vec4<f32>(1.0));
+  return textureSampleLevel(tex, samp, v.uv, 0.0);
 }` });
       downPipe = device.createRenderPipeline({ layout: 'auto',
         vertex: { module: mod, entryPoint: 'vs' },
@@ -1582,7 +1564,6 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
-      'source scale: Catmull-Rom',
       'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
