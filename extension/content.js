@@ -19,11 +19,12 @@
   // selectable; users with a saved choice keep it.
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const cfg = { factor: 'auto', anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     if (cfg.factor !== 'auto' && cfg.factor !== 'hz' && ![2, 3, 4, 5, 6].includes(cfg.factor)) cfg.factor = 'auto';
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
+    if (![0, 0.2, 0.4, 0.6].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
@@ -43,7 +44,7 @@
         cfg[k] = ch[k].newValue;
       }
       sanitizeCfg(); syncPanel();
-      if ('hdr' in ch) configureOverlay();
+      if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
       if (resChanged && running && videoEl && !toggling) {
         toggling = true;
         switchRes().catch(e => log('res sync', e)).finally(() => { toggling = false; });
@@ -66,6 +67,7 @@
     panel.querySelector('#fcCompare').checked = cfg.compare;
     panel.querySelector('#fcFG').checked = cfg.fg;
     panel.querySelector('#fcSR').checked = cfg.sr;
+    panel.querySelector('#fcSharp').value = String(cfg.sharpness);
     const hd = panel.querySelector('#fcHDR');
     hd.checked = cfg.hdr;
     if (!sys.hdrOk) { hd.disabled = true; hd.style.opacity = '.35'; }
@@ -488,9 +490,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       hdr = false;
       overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
-    const fs = hdr ? `
+    const sharp = cfg.sharpness.toFixed(1);
+    const sampleColor = cfg.sharpness ? `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  let c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
+  let px = 1.0 / vec2<f32>(textureDimensions(tex));
+  let blur = (textureSampleLevel(tex, samp, uv + vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv + vec2<f32>(0.0, px.y), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(0.0, px.y), 0.0).rgb) * 0.25;
+  return clamp(c + (c - blur) * ${sharp}, vec3<f32>(0.0), vec3<f32>(1.0));
+}` : `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  return textureSampleLevel(tex, samp, uv, 0.0).rgb;
+}`;
+    const fs = sampleColor + (hdr ? `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let c = textureSampleLevel(tex, samp, v.uv, 0.0).rgb;
+  let c = sampleColor(v.uv);
   let lin = pow(max(c, vec3(0.0)), vec3(2.2));
   let y = max(lin.r, max(lin.g, lin.b));
   let t = smoothstep(0.35, 1.0, y);
@@ -498,8 +514,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   return vec4(pow(lin * gain, vec3(1.0 / 2.2)), 1.0);
 }` : `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return textureSampleLevel(tex, samp, v.uv, 0.0);
-}`;
+  return vec4<f32>(sampleColor(v.uv), 1.0);
+}`);
     const mod = device.createShaderModule({ code: BLIT_VS + fs });
     blitPipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: mod, entryPoint: 'vs' },
@@ -1564,6 +1580,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
+      `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
       'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
@@ -1654,6 +1671,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           <input class="fc-sw" type="checkbox" id="fcGuard"></label>
         <label class="fc-row"><span>Compare<small>original / FC split slider</small></span>
           <input class="fc-sw" type="checkbox" id="fcCompare"></label>
+        <label class="fc-row"><span>Sharpness<small>edge enhancement; high values can halo</small></span>
+          <select class="fc-sel" id="fcSharp">
+            <option value="0">off</option><option value="0.2">low</option>
+            <option value="0.4">medium</option><option value="0.6">high</option>
+          </select></label>
         <label class="fc-row"><span>Debug<small>border + telemetry</small></span>
           <input class="fc-sw" type="checkbox" id="fcDebug"></label>
         <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:8px 0">
@@ -1664,6 +1686,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const F = panel.querySelector('#fcFactor'), R = panel.querySelector('#fcRes');
     const A = panel.querySelector('#fcAnime'), D = panel.querySelector('#fcDebug');
     const Hv = panel.querySelector('#fcHover'), Cm = panel.querySelector('#fcCompare');
+    const Sh = panel.querySelector('#fcSharp');
     syncPanel();
     F.onchange = () => { cfg.factor = (F.value === 'auto' || F.value === 'hz') ? F.value : +F.value; overSince = 0; saveCfg(); };
     const Md = panel.querySelector('#fcModel');
@@ -1695,6 +1718,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       } else { rtRes = -1; }
     };
     Cm.onchange = () => { cfg.compare = Cm.checked; saveCfg(); };
+    Sh.onchange = () => { cfg.sharpness = +Sh.value; saveCfg(); configureOverlay(); };
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => { cfg.fg = Fg.checked; overSince = 0; saveCfg(); };
     Sr.onchange = () => {
