@@ -104,6 +104,7 @@
       if (cfg.factor !== previousFactor || cfg.targetFps !== previousTargetFps
           || cfg.fpsLimit !== previousFpsLimit || cfg.fg !== previousFg) {
         delayMs = DELAY_MS;
+        resetAutoController();
         resetOutputCadence(true);
       }
       if (previousCompare && !cfg.compare) cmpRing = [];
@@ -324,6 +325,7 @@
   let bar = null, barSeeking = false, wm = null;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
   let splitEl = null, splitX = 0.5, toggling = false, autoSkipT = 0;
+  let plainAutoProbeNextAt = 0, plainAutoProbeAttempts = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, nextUiUpdateAt = 0, motionAvg = 0, lateAvg = 0;
 
@@ -347,6 +349,20 @@
   let overlayFit = 'fill', overlayFitRequested = 'fill', overlayFitSupported = true;
   let overlaySourceWidth = 0, overlaySourceHeight = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
+  let autoRafPenalty = 0, autoRafPressure = 0, autoRafLastStrainT = 0;
+  function resetAutoController(now = performance.now()) {
+    autoPenalty = 0;
+    penaltyT = now;
+    dropPressure = 0;
+    lastPressureT = now;
+    autoRafPenalty = 0;
+    autoRafPressure = 0;
+    autoRafLastStrainT = now;
+    dropWin = [];
+    autoSkipT = 0;
+    plainAutoProbeAttempts = 0;
+    plainAutoProbeNextAt = now + Cadence.autoProbeDelayMs(0);
+  }
   const diag = {
     sourceVideo: null, sourceVideoId: 0, sourceChangedAtFullscreen: false,
     mediaTime: null, presentedFrames: null, repeatedMediaCallbacks: 0,
@@ -413,29 +429,49 @@
     return frameDelta;
   }
 
-  function autoPolicyFactor(midCostMs) {
+  function playbackAdjustedSourceHz() {
+    const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+    return Cadence.estimateAutoSourceHz({
+      decodedIntervalMs,
+      decodedSamples: decodedIntervalSamples,
+      wallIntervalMs: intervalMs,
+      playbackRate,
+    });
+  }
+
+  function autoPolicyFactor(midCostMs, sourceHz = playbackAdjustedSourceHz()) {
     const costMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
     let factor = 6;
     while (factor > 2 && (factor - 1) * costMs > uniqueIntervalMs * 0.85) factor--;
-    const displayHz = rafMs > 1 ? 1000 / rafMs : 60;
-    while (factor > 2 && (1000 / uniqueIntervalMs) * factor > displayHz) factor--;
-    factor = Math.max(2, factor - autoPenalty);
+    const uniqueHz = uniqueIntervalMs > 1
+      ? Math.min(sourceHz, 1000 / uniqueIntervalMs)
+      : sourceHz;
+    const displaySampleMs = refreshEstimate.ready === true || refreshEstimate.stableSamples >= 10
+      ? rafFloor
+      : (rafMs > 1 ? rafMs : rafFloor);
+    const displayCapacityHz = Cadence.measureDisplayHz(displaySampleMs).capacityHz;
+    const displayHz = Cadence.autoDisplayBudgetHz(sourceHz, displayCapacityHz);
+    // Legacy Auto emits every generated mid inside the current decoded interval.
+    // Cap that burst at decoded cadence; duplicate-heavy averages alone can hide
+    // a one-interval overload when motion returns.
+    factor = Cadence.capAutoFactorForDisplay(factor,
+      { sourceHz, uniqueHz: sourceHz, displayHz });
     const motionCeiling = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
-    if (factor > motionCeiling) factor = motionCeiling;
+    factor = Math.min(factor, motionCeiling);
+    factor = Math.max(1, factor - autoPenalty - autoRafPenalty);
     return {
       factor,
-      runnable: (factor - 1) * costMs <= uniqueIntervalMs * 1.1,
+      sourceHz,
+      uniqueHz,
+      presentationHz: Cadence.mixedPresentationHz(sourceHz, uniqueHz, factor),
+      runnable: factor > 1 && (factor - 1) * costMs <= uniqueIntervalMs * 1.1,
     };
   }
 
   function cappedAutoTargetHz(limit, sourceHz, midCostMs) {
-    const policy = autoPolicyFactor(midCostMs);
+    const policy = autoPolicyFactor(midCostMs, sourceHz);
     if (!policy.runnable) return Math.min(limit, sourceHz);
-    const uniqueHz = uniqueIntervalMs > 1 ? 1000 / uniqueIntervalMs : sourceHz;
-    // Anime/on-twos still presents every decoded anchor. Only generated mids
-    // follow the unique-pair cadence, so n*uniqueHz would undercount the result.
-    const policyHz = sourceHz + (policy.factor - 1) * uniqueHz;
-    return Math.min(limit, policyHz);
+    return Math.min(limit, policy.presentationHz);
   }
 
   function currentOutputRatePlan({ midCostMs = null, startGpuProbe = false } = {}) {
@@ -641,6 +677,7 @@
       ratePlanBufferedFrames: 0,
       abandonedMids: 0,
       sourceGapHistoryBreaks: 0,
+      autoGpuProbes: 0,
       plannedFactorHistogram: {},
       sourceCallbackIntervalsMs: { values: new Float64Array(20000), length: 0 },
       sourceMediaIntervalsMs: { values: new Float64Array(20000), length: 0 },
@@ -800,6 +837,7 @@
         ratePlanBufferedFrames: telemetry.ratePlanBufferedFrames,
         abandonedMids: telemetry.abandonedMids,
         sourceGapHistoryBreaks: telemetry.sourceGapHistoryBreaks,
+        autoGpuProbes: telemetry.autoGpuProbes,
       },
       plannedFactorHistogram: { ...telemetry.plannedFactorHistogram },
       observed: {
@@ -839,6 +877,14 @@
         deviceFeatures: device ? [...device.features].sort() : [],
         convTune: benchAppliedTune ? JSON.parse(JSON.stringify(benchAppliedTune)) : null,
         scheduler: { msAvg, intervalMs, decodedIntervalMs, uniqueIntervalMs, delayMs, lateAvg, rafMs, rafFloor },
+        autoController: {
+          penalty: autoPenalty,
+          dropPressure,
+          rafPenalty: autoRafPenalty,
+          rafPressure: autoRafPressure,
+          probeAttempts: plainAutoProbeAttempts,
+          probeStopped: Cadence.autoProbeDelayMs(plainAutoProbeAttempts) === null,
+        },
         cuts,
         duplicates: dups,
       },
@@ -1993,11 +2039,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function pumpBody(now) {
     recordBenchRaf(now);
+    let currentRafIntervalMs = null;
     if (lastPumpT) {
       const d = now - lastPumpT;
       // pessimist estimator: believe slowdowns fast (40%), speedups slowly (3%) -
       // auto must not re-inflate on every momentary lull
       if (d > 1 && d < 100) {
+        currentRafIntervalMs = d;
         rafMs = rafMs ? (d > rafMs ? rafMs * 0.6 + d * 0.4 : rafMs * 0.97 + d * 0.03) : d;
         Cadence.updateDisplayInterval(refreshEstimate, d);
         rafFloor = refreshEstimate.floorMs;
@@ -2070,7 +2118,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const due = dueSelection.presentIndex;
     // drop pressure: leaky integrator (tau 300ms) - a burst of drops is visible in
     // milliseconds instead of averaging out over seconds
-    dropPressure *= Math.exp((lastPressureT - now) / 300);
+    const pressureDecay = Math.exp((lastPressureT - now) / 300);
+    dropPressure *= pressureDecay;
+    autoRafPressure *= pressureDecay;
     lastPressureT = now;
     if (due >= 0) {
       dropped += due;
@@ -2093,8 +2143,20 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     // additive recovery after a long clean stretch
     if (cfg.factor === 'auto') {
       // compositor saturation (frames late by a vsync, not yet dropped) feeds the
-      // same controller: rAF stretching 1.7x past the true vsync = strain
-      if (rafFloor < 90 && rafMs > rafFloor * 1.7) dropPressure += 0.02;
+      // provisional one-step controller. Durable penalties are reserved for
+      // actual presentation drops, so harmonic 4/8ms service cannot escalate.
+      if (rafFloor < 90 && currentRafIntervalMs !== null) {
+        const rafCharge = Cadence.rafStrainPressure(currentRafIntervalMs, rafFloor);
+        if (rafCharge > 0) {
+          autoRafPressure += rafCharge;
+          autoRafLastStrainT = now;
+        }
+      }
+      if (autoRafPressure > 1.2) autoRafPenalty = 1;
+      if (autoRafPenalty && now - autoRafLastStrainT >= 500) {
+        autoRafPenalty = 0;
+        autoRafPressure = 0;
+      }
       if (dropPressure > 1.2 && autoPenalty < 3 && now - penaltyT > 500) {
         autoPenalty = Math.min(3, autoPenalty + (dropPressure > 3 ? 2 : 1));
         penaltyT = now;
@@ -2109,8 +2171,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (cfg.debug) {
         const ds = diagnosticSnapshot(now);
         const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
-        const mode = cfg.factor === 'auto' && autoPenalty && cfg.fpsLimit === null
-          ? `Auto-${autoPenalty}` : outputRateLabel();
+        const totalAutoPenalty = autoPenalty + autoRafPenalty;
+        const mode = cfg.factor === 'auto' && totalAutoPenalty && cfg.fpsLimit === null
+          ? `Auto-${totalAutoPenalty}` : outputRateLabel();
         hud.textContent = [
           `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
           `${msAvg.toFixed(1)}ms@${cfg.res}p`,
@@ -2437,7 +2500,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     else if (cfg.anime && dup) { dups++; diag.duplicateSkips++; }
     else {
       const du = arrival - lastUniqueTs;
-      if (du > 5 && du < 500) uniqueIntervalMs = uniqueIntervalMs * 0.85 + du * 0.15;
+      const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+      const sourceIntervalMs = decodedIntervalMs / playbackRate;
+      if (du > 5 && du < 500) {
+        uniqueIntervalMs = Cadence.updateUniqueInterval(uniqueIntervalMs, du, {
+          minimumMs: sourceIntervalMs,
+        });
+      } else if (du >= 500) {
+        // The first unique frame after a long frozen/duplicate run has no usable
+        // unique-rate sample. Admit it at the decoded cadence until evidence grows.
+        uniqueIntervalMs = Math.min(uniqueIntervalMs, sourceIntervalMs);
+      }
       lastUniqueTs = arrival;
     }
 
@@ -2462,8 +2535,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         recordBenchPairPlan(n, false, 0);
         return;
       }
-      if (noInterpolation || mids.length === 0) {
+      if (noInterpolation) {
         recordBenchPairPlan(n, false, 0);
+        return;
+      }
+      if (mids.length === 0) {
+        // A jittered source interval may contain no generated target tick. The
+        // pair is fully planned and needs no model work; it is not a fallback.
+        recordBenchPairPlan(n, true, 0);
         return;
       }
 
@@ -2489,14 +2568,29 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
 
     if (noInterpolation) return;
-    let n, run = true;
+    let n, run = true, plainAutoProbe = false;
     if (cfg.factor === 'auto') {
       // smart auto: as much as fits the unique-frame budget, display service,
       // drop feedback and current motion. Capped Auto reuses the same policy.
       const policy = autoPolicyFactor(ms);
       n = policy.factor;
       run = policy.runnable;
-      if (!run) autoSkipT = arrival;
+      if (run) {
+        plainAutoProbeAttempts = 0;
+        plainAutoProbeNextAt = arrival + Cadence.autoProbeDelayMs(0);
+      } else if (n > 1 && Cadence.autoProbeDelayMs(plainAutoProbeAttempts) !== null
+          && arrival >= plainAutoProbeNextAt) {
+        n = 2;
+        run = true;
+        plainAutoProbe = true;
+        plainAutoProbeAttempts++;
+        const nextProbeDelayMs = Cadence.autoProbeDelayMs(plainAutoProbeAttempts);
+        plainAutoProbeNextAt = nextProbeDelayMs === null
+          ? Infinity
+          : arrival + nextProbeDelayMs;
+        if (benchTelemetry) benchTelemetry.autoGpuProbes++;
+      }
+      if (n > 1 && !run) autoSkipT = arrival;
     } else {
       // fixed by the user = a CEILING: under sustained overload we step down
       // to what actually fits the frame budget (the overload plate explains),
@@ -2515,6 +2609,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         const ts = [];
         for (let k = 1; k < n; k++) ts.push(k / n);
         curJob = { ts, next: 0, at: schedT - intervalMs + delayMs, intervalMs,
+          gpuProbe: plainAutoProbe,
           previous: prev, current: tex };
       } catch (e) { log('prep', e); }
     }
@@ -2599,6 +2694,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       return;
     }
     cfg.factor = next;
+    resetAutoController();
     delayMs = DELAY_MS;
     resetOutputCadence(true);
     syncPanel();
@@ -2625,6 +2721,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       return;
     }
     cfg.fpsLimit = next;
+    resetAutoController();
     delayMs = DELAY_MS;
     resetOutputCadence(true);
     syncPanel();
@@ -2635,6 +2732,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const next = !!enabled;
     if (cfg.fg === next) return;
     cfg.fg = next;
+    resetAutoController();
     delayMs = DELAY_MS;
     resetOutputCadence(true);
     overSince = 0;
@@ -2685,6 +2783,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
 
   function onSrcChange() {
+    resetAutoController();
     resetOutputCadence(true);
     delayMs = DELAY_MS;
     resetFramePoolOnNextCapture = true;
@@ -2705,6 +2804,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
   }
   function onPlaybackRateChange() {
+    resetAutoController();
     resetOutputCadence(true);
     delayMs = DELAY_MS;
     resetFramePoolOnNextCapture = true;
@@ -2773,6 +2873,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       }
     }
     if (cfg.sr) ensureSR().catch(e => log('sr', e));
+    resetAutoController();
     resetOutputCadence(true);
     lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
     resetDecodedSourceCadence();
@@ -2812,6 +2913,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (bar) bar.style.display = 'none';
     hideWarnings();
     if (splitEl) splitEl.style.display = 'none';
+    resetAutoController();
     resetOutputCadence(true);
     delayMs = DELAY_MS;
     lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
@@ -2886,6 +2988,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         msAvg = 0; lastMidCostAt = 0; midCostSamples.length = 0; // new size, relearn
         await ensureRuntime();
         queue = queue.filter((it) => !it.mid); // stragglers that slipped in mid-rebuild
+        resetAutoController(); // discard feedback accumulated while the new runtime compiled
       }
     } finally { switching = false; }
   }
@@ -3196,7 +3299,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.4.3';
+  const VERSION = '1.4.5';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -3255,15 +3358,20 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             const targetFps = factor === 'target'
               ? Cadence.sanitizeTargetFps(message.payload?.targetFps)
               : cfg.targetFps;
+            const fpsLimit = factor === 'auto'
+              ? canonicalFpsLimit(message.payload?.fpsLimit)
+              : cfg.fpsLimit;
             const requestedResolution = Number(message.payload?.resolution ?? 720);
-            if (![3, 4, 'target', 'hz'].includes(factor) || (factor === 'target' && targetFps === null)) {
-              throw new Error('factor must be 3, 4, hz or target with a positive targetFps');
+            if (![3, 4, 'auto', 'target', 'hz'].includes(factor)
+                || (factor === 'target' && targetFps === null)) {
+              throw new Error('factor must be 3, 4, auto, hz or target with a positive targetFps');
             }
             if (!SIZES[requestedResolution]) throw new Error('resolution is not supported');
             Object.assign(cfg, {
               factor,
               targetFps,
-              anime: false,
+              fpsLimit,
+              anime: factor === 'auto' && message.payload?.anime === true,
               debug: false,
               res: requestedResolution,
               hoverReveal: false,
@@ -3279,8 +3387,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             sanitizeCfg();
             syncPanel();
             benchAppliedTune = null;
-            return { factor: cfg.factor, targetFps: cfg.targetFps,
-              resolution: cfg.res, model: cfg.model };
+            return { factor: cfg.factor, targetFps: cfg.targetFps, fpsLimit: cfg.fpsLimit,
+              anime: cfg.anime, resolution: cfg.res, model: cfg.model };
           }
           case 'prepare': {
             if (running) throw new Error('prepare requires a stopped product path');

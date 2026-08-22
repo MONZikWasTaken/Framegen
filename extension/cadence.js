@@ -28,6 +28,10 @@
   const SOURCE_INTERVAL_WINDOW = 32;
   const SOURCE_TRANSITION_TOLERANCE = 0.12;
   const SOURCE_TRANSITION_SAMPLES = 4;
+  const AUTO_FAST_SIGNAL_WINDOW = 4;
+  const AUTO_PROBE_INITIAL_DELAY_MS = 2500;
+  const AUTO_PROBE_MAX_DELAY_MS = 20000;
+  const AUTO_PROBE_MAX_ATTEMPTS = 4;
 
   function sanitizeOutputRate(value) {
     if (value === 'auto' || value === 'hz' || value === 'target') return value;
@@ -166,6 +170,134 @@
     const source = normalizeVideoRate(sourceHz);
     const target = normalizeVideoRate(targetHz);
     return target > source && (target - source) / source > VIDEO_RATE_MATCH_TOLERANCE;
+  }
+
+  function estimateAutoSourceHz({ decodedIntervalMs, decodedSamples = [],
+    wallIntervalMs, playbackRate = 1 } = {}) {
+    if (!Array.isArray(decodedSamples)) throw new TypeError('decoded samples must be an array');
+    if (!Number.isFinite(playbackRate) || playbackRate <= 0) {
+      throw new RangeError('playback rate must be positive');
+    }
+    const validDecoded = decodedSamples
+      .filter(value => Number.isFinite(value) && value > 0.5 && value < 2000);
+    const recentDecoded = validDecoded.slice(-AUTO_FAST_SIGNAL_WINDOW).sort((a, b) => a - b);
+    // Before the decoded cadence is established, the first real sample replaces
+    // the 24 FPS startup fallback. Afterwards require two recent fast samples, so
+    // one timestamp outlier cannot suppress Auto for the full 32-sample window.
+    const recentFastIntervalMs = validDecoded.length < 8
+      ? recentDecoded[0]
+      : recentDecoded.length >= 2 ? recentDecoded[1] : null;
+    const wallMediaIntervalMs = validDecoded.length < 2 && Number.isFinite(wallIntervalMs)
+      ? wallIntervalMs * playbackRate
+      : null;
+    const intervals = [decodedIntervalMs, recentFastIntervalMs, wallMediaIntervalMs]
+      .filter(value => Number.isFinite(value) && value > 0.5 && value < 2000);
+    if (!intervals.length) return 24 * playbackRate;
+    return playbackRate * 1000 / Math.min(...intervals);
+  }
+
+  function mixedPresentationHz(sourceHz, uniqueHz, factor) {
+    if (![sourceHz, uniqueHz].every(value => Number.isFinite(value) && value > 0)) {
+      throw new RangeError('source and unique rates must be positive');
+    }
+    if (!Number.isInteger(factor) || factor < 1 || factor > 6) {
+      throw new RangeError('auto factor must be an integer from 1 through 6');
+    }
+    const boundedUniqueHz = Math.min(sourceHz, uniqueHz);
+    return sourceHz + (factor - 1) * boundedUniqueHz;
+  }
+
+  function capAutoFactorForDisplay(maxFactor, { sourceHz, uniqueHz, displayHz,
+    tolerance = VIDEO_RATE_MATCH_TOLERANCE } = {}) {
+    if (![sourceHz, uniqueHz, displayHz].every(value => Number.isFinite(value) && value > 0)) {
+      throw new RangeError('auto cadence rates must be positive');
+    }
+    if (!Number.isInteger(maxFactor) || maxFactor < 1 || maxFactor > 6) {
+      throw new RangeError('maximum auto factor must be an integer from 1 through 6');
+    }
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+      throw new RangeError('auto cadence tolerance must be non-negative');
+    }
+    let factor = maxFactor;
+    while (factor > 1
+        && mixedPresentationHz(sourceHz, uniqueHz, factor) > displayHz * (1 + tolerance)) {
+      factor--;
+    }
+    return factor;
+  }
+
+  function autoDisplayBudgetHz(sourceHz, displayHz, {
+    headroom = DISPLAY_CLAMP_HEADROOM, tolerance = VIDEO_RATE_MATCH_TOLERANCE,
+  } = {}) {
+    if (![sourceHz, displayHz].every(value => Number.isFinite(value) && value > 0)) {
+      throw new RangeError('Auto display budget rates must be positive');
+    }
+    if (!Number.isFinite(headroom) || headroom <= 0 || headroom > 1) {
+      throw new RangeError('Auto display headroom must be in (0, 1]');
+    }
+    if (!Number.isFinite(tolerance) || tolerance < 0) {
+      throw new RangeError('Auto display tolerance must be non-negative');
+    }
+    const reservedHz = displayHz * headroom;
+    const minimumGeneratedHz = sourceHz * 2;
+    const reservedFits2x = minimumGeneratedHz <= reservedHz * (1 + tolerance);
+    const fullDisplayFits2x = minimumGeneratedHz <= displayHz * (1 + tolerance);
+    return !reservedFits2x && fullDisplayFits2x ? displayHz : reservedHz;
+  }
+
+  function autoProbeDelayMs(attempts, {
+    initialMs = AUTO_PROBE_INITIAL_DELAY_MS,
+    maximumMs = AUTO_PROBE_MAX_DELAY_MS,
+    maxAttempts = AUTO_PROBE_MAX_ATTEMPTS,
+  } = {}) {
+    if (!Number.isInteger(attempts) || attempts < 0) {
+      throw new RangeError('Auto probe attempts must be a non-negative integer');
+    }
+    if (!Number.isFinite(initialMs) || initialMs <= 0
+        || !Number.isFinite(maximumMs) || maximumMs < initialMs
+        || !Number.isInteger(maxAttempts) || maxAttempts < 1) {
+      throw new RangeError('Auto probe backoff configuration is invalid');
+    }
+    if (attempts >= maxAttempts) return null;
+    return Math.min(maximumMs, initialMs * (2 ** attempts));
+  }
+
+  function rafStrainPressure(sampleMs, floorMs, {
+    threshold = 1.7, timeConstantMs = 300, sustainedPressure = 2,
+  } = {}) {
+    if (![sampleMs, floorMs].every(value => Number.isFinite(value) && value > 0)) {
+      throw new RangeError('rAF strain intervals must be positive');
+    }
+    if (!Number.isFinite(threshold) || threshold <= 1
+        || !Number.isFinite(timeConstantMs) || timeConstantMs <= 0
+        || !Number.isFinite(sustainedPressure) || sustainedPressure <= 0) {
+      throw new RangeError('rAF strain configuration is invalid');
+    }
+    if (sampleMs <= floorMs * threshold) return 0;
+    // The controller decays pressure with the same time constant. Charging by
+    // elapsed raw service time makes sustained strain converge near the chosen
+    // pressure on every refresh rate, while one long callback is counted once.
+    return sustainedPressure * sampleMs / timeConstantMs;
+  }
+
+  function updateUniqueInterval(intervalMs, sampleMs, {
+    minimumMs = 0, growthAlpha = 0.15,
+  } = {}) {
+    if (!Number.isFinite(sampleMs) || sampleMs <= 0) {
+      throw new RangeError('unique interval sample must be positive');
+    }
+    if (!Number.isFinite(intervalMs) || intervalMs <= 0) return sampleMs;
+    if (!Number.isFinite(minimumMs) || minimumMs < 0) {
+      throw new RangeError('minimum unique interval must be non-negative');
+    }
+    if (!Number.isFinite(growthAlpha) || growthAlpha <= 0 || growthAlpha > 1) {
+      throw new RangeError('unique interval growth alpha must be in (0, 1]');
+    }
+    const boundedSampleMs = Math.max(sampleMs, minimumMs);
+    // More frequent unique frames increase presentation and GPU load, so react
+    // immediately. Longer duplicate-heavy intervals may unlock work gradually.
+    if (boundedSampleMs < intervalMs) return boundedSampleMs;
+    return intervalMs * (1 - growthAlpha) + boundedSampleMs * growthAlpha;
   }
 
   function measureDisplayHz(rafFloorMs) {
@@ -711,6 +843,13 @@
     estimateSourceCadence,
     updateSourceInterval,
     targetNeedsInterpolation,
+    estimateAutoSourceHz,
+    mixedPresentationHz,
+    capAutoFactorForDisplay,
+    autoDisplayBudgetHz,
+    autoProbeDelayMs,
+    rafStrainPressure,
+    updateUniqueInterval,
     measureDisplayHz,
     updateDisplayInterval,
     resolveOutputRate,

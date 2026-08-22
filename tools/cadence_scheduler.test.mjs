@@ -590,6 +590,183 @@ for (const [latchedHz, realHz] of [[45, 60], [30, 60], [60, 120]]) {
   });
 }
 
+test('Auto rate accounting includes every decoded anchor and only unique-pair mids', () => {
+  assert.equal(Cadence.mixedPresentationHz(60, 60, 1), 60);
+  assert.equal(Cadence.mixedPresentationHz(24, 24, 2), 48);
+  assert.equal(Cadence.mixedPresentationHz(24, 12, 5), 72);
+  assert.equal(Cadence.mixedPresentationHz(24, 12, 4), 60);
+  assert.equal(Cadence.mixedPresentationHz(24, 8, 6), 64);
+  assert.equal(Cadence.mixedPresentationHz(24, 48, 3), 72,
+    'a noisy unique estimate must not exceed decoded cadence');
+
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 12, displayHz: 60 }), 4);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 8, displayHz: 60 }), 5);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 24, displayHz: 60 }), 2);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 23.976, uniqueHz: 11.988, displayHz: 60 }), 4);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 36, uniqueHz: 18, displayHz: 120 }), 5);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 12, displayHz: 59.96 }), 4,
+    'nominal display jitter stays inside the existing rate tolerance');
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 12, displayHz: 58 }), 3);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 24, displayHz: 60 * Cadence.DISPLAY_CLAMP_HEADROOM }), 2,
+    'legacy Auto must reserve enough service for a newly unique source interval');
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 60, uniqueHz: 60, displayHz: 60 }), 1,
+    'Auto must fall back to source presentation when even 2x exceeds display service');
+
+  for (const [sourceHz, displayHz] of [
+    [30000 / 1001, 60],
+    [30, 60],
+    [60000 / 1001, 120],
+    [60, 120],
+  ]) {
+    const budgetHz = Cadence.autoDisplayBudgetHz(sourceHz, displayHz);
+    assert.equal(budgetHz, displayHz,
+      `${sourceHz} -> ${displayHz} must retain the exact 2x boundary`);
+    assert.equal(Cadence.capAutoFactorForDisplay(6,
+      { sourceHz, uniqueHz: sourceHz, displayHz: budgetHz }), 2);
+  }
+  const higherFactorBudgetHz = Cadence.autoDisplayBudgetHz(24, 120);
+  assert.equal(higherFactorBudgetHz, 120 * Cadence.DISPLAY_CLAMP_HEADROOM);
+  assert.equal(Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 24, displayHz: higherFactorBudgetHz }), 4,
+  'factors above the 2x boundary must continue reserving display headroom');
+
+  assert.throws(() => Cadence.mixedPresentationHz(0, 12, 4), RangeError);
+  assert.throws(() => Cadence.mixedPresentationHz(24, 12, 7), RangeError);
+  assert.throws(() => Cadence.capAutoFactorForDisplay(6,
+    { sourceHz: 24, uniqueHz: 12, displayHz: 0 }), RangeError);
+  assert.throws(() => Cadence.autoDisplayBudgetHz(24, 0), RangeError);
+});
+
+test('Auto unique cadence reacts immediately to motion and unlocks duplicate budget gradually', () => {
+  const sourceIntervalMs = 1000 / 24;
+  const frozenIntervalMs = 1000 / 6;
+  assert.equal(Cadence.updateUniqueInterval(frozenIntervalMs, sourceIntervalMs), sourceIntervalMs,
+    'motion returning after duplicate-heavy video must tighten the budget in one sample');
+  assert.equal(Cadence.updateUniqueInterval(0, sourceIntervalMs), sourceIntervalMs);
+
+  const onTwosIntervalMs = 1000 / 12;
+  const relaxed = Cadence.updateUniqueInterval(sourceIntervalMs, onTwosIntervalMs);
+  assert.ok(relaxed > sourceIntervalMs && relaxed < onTwosIntervalMs,
+    'duplicate budget must grow without a one-frame factor jump');
+  assert.equal(Cadence.capAutoFactorForDisplay(6, {
+    sourceHz: 24,
+    uniqueHz: 1000 / Cadence.updateUniqueInterval(frozenIntervalMs, sourceIntervalMs),
+    displayHz: 60,
+  }), 2);
+  assert.equal(Cadence.updateUniqueInterval(onTwosIntervalMs, 20, {
+    minimumMs: sourceIntervalMs,
+  }), sourceIntervalMs,
+  'one early wall callback must not invent a unique cadence above decoded FPS');
+  assert.throws(() => Cadence.updateUniqueInterval(42, 0), RangeError);
+  assert.throws(() => Cadence.updateUniqueInterval(42, 84, { growthAlpha: 0 }), RangeError);
+});
+
+test('Auto source admission reacts on the first decoded sample and respects playback rate', () => {
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 42,
+    decodedSamples: [1000 / 60],
+    wallIntervalMs: 39.5,
+    playbackRate: 1,
+  }) - 60) < 1e-9, '60 FPS startup must not inherit the 24 FPS fallback');
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 1000 / 24,
+    decodedSamples: [1000 / 24],
+    wallIntervalMs: 1000 / 48,
+    playbackRate: 2,
+  }) - 48) < 1e-9, 'wall and media intervals must stay in the same domain during 2x playback');
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 1000 / 24,
+    decodedSamples: [],
+    wallIntervalMs: 1000 / 12,
+    playbackRate: 0.5,
+  }) - 12) < 1e-9);
+  assert.throws(() => Cadence.estimateAutoSourceHz({ decodedSamples: null }), TypeError);
+});
+
+test('Auto source admission ignores one stable-cadence outlier and confirms a fast transition', () => {
+  const stable24 = Array(12).fill(1000 / 24);
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 1000 / 24,
+    decodedSamples: [...stable24, 1000 / 60],
+    wallIntervalMs: 1000 / 24,
+  }) - 24) < 1e-9, 'one short timestamp must not suppress Auto for the source window');
+
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 1000 / 24,
+    decodedSamples: [...stable24, 1000 / 60, 1000 / 60],
+    wallIntervalMs: 1000 / 24,
+  }) - 60) < 1e-9, 'two recent fast samples must bound a real rate increase promptly');
+
+  assert.ok(Math.abs(Cadence.estimateAutoSourceHz({
+    decodedIntervalMs: 1000 / 24,
+    decodedSamples: [1000 / 60, ...stable24],
+    wallIntervalMs: 1000 / 24,
+  }) - 24) < 1e-9, 'old fast evidence must expire outside the bounded recent window');
+});
+
+test('plain Auto GPU recovery probes back off and stop until controller reset', () => {
+  assert.deepEqual(Array.from({ length: 6 }, (_, attempts) =>
+    Cadence.autoProbeDelayMs(attempts)), [2500, 5000, 10000, 20000, null, null]);
+  assert.throws(() => Cadence.autoProbeDelayMs(-1), RangeError);
+  assert.throws(() => Cadence.autoProbeDelayMs(0, { initialMs: 2500, maximumMs: 1000 }),
+    RangeError);
+});
+
+test('raw rAF strain is bounded to one provisional step and clears after clean service', () => {
+  const floorMs = 4;
+  const state = { now: 0, pressure: 0, penalty: 0, lastStrainAt: 0, maximumPenalty: 0 };
+  const advance = (sampleMs) => {
+    state.now += sampleMs;
+    state.pressure *= Math.exp(-sampleMs / 300);
+    const charge = Cadence.rafStrainPressure(sampleMs, floorMs);
+    if (charge > 0) {
+      state.pressure += charge;
+      state.lastStrainAt = state.now;
+    }
+    if (state.pressure > 1.2) state.penalty = 1;
+    if (state.penalty && state.now - state.lastStrainAt >= 500) {
+      state.penalty = 0;
+      state.pressure = 0;
+    }
+    state.maximumPenalty = Math.max(state.maximumPenalty, state.penalty);
+  };
+
+  assert.equal(Cadence.rafStrainPressure(floorMs, floorMs), 0);
+  for (const stalledMs of [25, 50]) {
+    const pressure = Cadence.rafStrainPressure(stalledMs, floorMs);
+    assert.ok(Math.abs(pressure - 2 * stalledMs / 300) < 1e-12);
+    assert.ok(pressure < 1.2, `${stalledMs}ms one-off stall must not cause a penalty`);
+  }
+
+  let sparsePressure = 0;
+  for (let sample = 0; sample < 8; sample += 1) {
+    sparsePressure *= Math.exp(-1000 / 300);
+    sparsePressure += Cadence.rafStrainPressure(50, floorMs);
+  }
+  assert.ok(sparsePressure < 1.2,
+    'widely separated compositor stalls must decay instead of accumulating forever');
+
+  for (let sample = 0; sample < 400; sample += 1) advance(sample % 2 ? 8 : 4);
+  assert.equal(state.penalty, 1, 'persistent 4/8ms service must request one safety step');
+  assert.equal(state.maximumPenalty, 1, 'rAF-only feedback must never escalate past one step');
+
+  for (let sample = 0; sample < 130; sample += 1) advance(4);
+  assert.equal(state.penalty, 0, 'stable 4ms service must clear the provisional step after 500ms');
+  assert.equal(state.pressure, 0);
+  assert.throws(() => Cadence.rafStrainPressure(0, floorMs), RangeError);
+  assert.throws(() => Cadence.rafStrainPressure(25, floorMs,
+    { threshold: 1 }), RangeError);
+});
+
 test('sparse fast outliers expire without authorizing a harmonic display rate', () => {
   const confirmedIntervalMs = 1000 / 60;
   for (const spacing of [2, 3, 4, 5, 8]) {
@@ -999,8 +1176,58 @@ test('extension loads the helper first and exposes every output-rate choice', ()
   assert.match(content, /id="fcTargetFps"/);
   assert.match(content, /<span>Output rate/);
   assert.match(content, /function usesExactCadence\(\)/);
-  assert.match(content, /cfg\.factor === 'auto' && cfg\.fpsLimit !== null/);
+  assert.match(content, /cfg\.factor === 'auto' && cfg\.fpsLimit !== null/,
+    'only finite Auto targets should use the exact presentation clock');
   assert.match(content, /strictCeiling:\s*cappedAuto/);
+  const autoPolicy = content.slice(content.indexOf('function autoPolicyFactor'),
+    content.indexOf('function cappedAutoTargetHz'));
+  assert.match(autoPolicy, /Cadence\.capAutoFactorForDisplay\(/);
+  assert.match(autoPolicy, /uniqueHz: sourceHz/,
+    'plain Auto display admission must be safe for the current unique-frame burst');
+  assert.match(autoPolicy, /Cadence\.mixedPresentationHz\(/);
+  assert.match(autoPolicy, /Cadence\.autoDisplayBudgetHz\(sourceHz, displayCapacityHz\)/,
+    'plain Auto must preserve exact 2x while reserving headroom for higher factors');
+  assert.doesNotMatch(autoPolicy, /1000 \/ rafMs/,
+    'a single slow rAF callback must not redefine confirmed display service');
+  const autoTarget = content.slice(content.indexOf('function cappedAutoTargetHz'),
+    content.indexOf('function currentOutputRatePlan'));
+  assert.match(autoTarget, /policy\.presentationHz/,
+    'plain and capped Auto must use the same decoded-plus-unique rate accounting');
+  assert.match(content, /function resetAutoController\(/);
+  const autoReset = content.slice(content.indexOf('function resetAutoController'),
+    content.indexOf('const diag ='));
+  assert.match(autoReset, /plainAutoProbeAttempts = 0/);
+  assert.match(autoReset, /plainAutoProbeNextAt = now \+ Cadence\.autoProbeDelayMs\(0\)/,
+    'every relevant controller reset must restart the bounded probe budget');
+  assert.match(content, /autoController:\s*\{[\s\S]*?penalty: autoPenalty,[\s\S]*?dropPressure,[\s\S]*?probeAttempts:[\s\S]*?probeStopped:/,
+    'product evidence must expose the Auto feedback state');
+  assert.match(content, /Cadence\.autoProbeDelayMs\(plainAutoProbeAttempts\) !== null[\s\S]*?arrival >= plainAutoProbeNextAt/,
+    'plain Auto recovery probes must stop after bounded exponential backoff');
+  assert.match(content, /plainAutoProbeAttempts\+\+[\s\S]*?nextProbeDelayMs === null[\s\S]*?Infinity/,
+    'the last failed probe must not schedule another recurring GPU stall');
+  assert.match(content, /autoGpuProbes\+\+/,
+    'plain Auto recovery probes must remain observable in product evidence');
+  assert.match(content, /Cadence\.rafStrainPressure\(currentRafIntervalMs, rafFloor\)/,
+    'Auto pressure must be charged from the current raw rAF interval');
+  assert.doesNotMatch(content, /rafMs > rafFloor \* 1\.7/,
+    'the slow-recovery rAF EMA must not repeatedly charge one compositor stall');
+  assert.match(autoPolicy,
+    /factor = Math\.min\(factor, motionCeiling\);[\s\S]*?factor = Math\.max\(1, factor - autoPenalty - autoRafPenalty\)/,
+    'Auto feedback must reduce the motion-capped factor instead of being hidden by that cap');
+  assert.match(content, /autoRafPressure \*= pressureDecay/,
+    'provisional rAF pressure must decay even before it reaches the penalty threshold');
+  assert.match(content, /autoRafPressure \+= rafCharge[\s\S]*?autoRafPenalty = 1[\s\S]*?>= 500[\s\S]*?autoRafPenalty = 0/,
+    'rAF-only feedback must be capped at one step and clear after clean service');
+  assert.match(content, /dropPressure \+= due[\s\S]*?dropPressure > 1\.2[\s\S]*?autoPenalty = Math\.min\(3/,
+    'actual presentation drops must retain the durable three-step controller');
+  const autoController = content.slice(content.indexOf('autoController: {'),
+    content.indexOf('cuts,', content.indexOf('autoController: {')));
+  assert.match(autoController, /rafPenalty: autoRafPenalty/);
+  assert.match(autoController, /rafPressure: autoRafPressure/);
+  const runtimeSwitch = content.slice(content.indexOf('async function switchRes'),
+    content.indexOf('function clampPanel'));
+  assert.match(runtimeSwitch, /await ensureRuntime\(\)[\s\S]*?resetAutoController\(\)/,
+    'a new runtime identity must discard controller feedback accumulated during its rebuild');
   assert.match(content, /Cadence\.planSourceCadencePresentations\(/);
   assert.match(content, /Cadence\.fallbackCadencePresentations\(/);
   assert.match(content, /Cadence\.updateSourceInterval\(/);
@@ -1017,8 +1244,21 @@ test('extension loads the helper first and exposes every output-rate choice', ()
     'a missed source callback must break pair history before the next interpolation');
   assert.match(content, /sourceGapHistoryBreaks\+\+/,
     'source-gap recovery must remain observable in product evidence');
-  assert.match(content, /\[3, 4, 'target', 'hz'\]\.includes\(factor\)/,
-    'the product benchmark bridge must be able to exercise Display Hz mode');
+  assert.match(content,
+    /if \(noInterpolation\)[\s\S]*?recordBenchPairPlan\(n, false, 0\)[\s\S]*?if \(mids\.length === 0\)[\s\S]*?recordBenchPairPlan\(n, true, 0\)/,
+    'a valid source interval with no generated target tick must not count as skipped model work');
+  const pairDecision = content.slice(content.indexOf('function decidePair'),
+    content.indexOf('// ---------- lifecycle / UI ----------'));
+  assert.match(pairDecision,
+    /const sourceIntervalMs = decodedIntervalMs \/ playbackRate/,
+    'unique-frame admission must use confirmed decoded cadence in fixed-factor modes');
+  assert.doesNotMatch(pairDecision,
+    /const sourceIntervalMs = 1000 \/ playbackAdjustedSourceHz\(\)/,
+    'Auto fast-transition evidence must not shrink fixed-factor frame budgets');
+  assert.match(content, /\[3, 4, 'auto', 'target', 'hz'\]\.includes\(factor\)/,
+    'the product benchmark bridge must exercise Auto and Display Hz modes');
+  assert.match(content, /anime: factor === 'auto' && message\.payload\?\.anime === true/,
+    'the signed loopback benchmark must reproduce anime duplicate handling');
   assert.match(content, /pumpWorkMs[\s\S]*?sourceWorkMs/,
     'product evidence must separate runtime callback work from browser scheduling stalls');
   assert.match(cadenceSource, /state\.samples\.length > SOURCE_INTERVAL_WINDOW/);

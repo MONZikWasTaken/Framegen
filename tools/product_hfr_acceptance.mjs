@@ -84,7 +84,8 @@ function validateFactor(raw, factor, expected, failures) {
       || raw.conditions?.measureMs !== expected.measureMs) {
     fail(`x${factor} measurement conditions mismatch`);
   }
-  if (raw.bridge?.bridgeVersion !== 1 || raw.configured?.factor !== factor
+  if (raw.bridge?.bridgeVersion !== 2 || raw.configured?.factor !== factor
+      || raw.configured?.anime !== false
       || raw.configured?.resolution !== 720 || raw.configured?.model !== 'v7s') {
     fail(`x${factor} extension bridge/config mismatch`);
   }
