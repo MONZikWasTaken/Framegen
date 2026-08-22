@@ -9,6 +9,29 @@ const RUNG = query.get('res') === '720' ? [1280, 720] : [848, 480];
 
 const median = (values) => [...values].sort((a, b) => a - b)[values.length >> 1];
 
+const adapterIdentity = (adapter) => {
+  const info = adapter.info || {};
+  const text = (value) => typeof value === 'string' && value ? value : null;
+  return {
+    vendor: text(info.vendor),
+    architecture: text(info.architecture),
+    device: text(info.device),
+    description: text(info.description),
+  };
+};
+
+const deviceLimitIdentity = (device) => Object.fromEntries([
+  'maxTextureDimension2D',
+  'maxBufferSize',
+  'maxStorageBufferBindingSize',
+  'maxComputeWorkgroupStorageSize',
+  'maxComputeInvocationsPerWorkgroup',
+  'maxComputeWorkgroupSizeX',
+  'maxComputeWorkgroupSizeY',
+  'maxComputeWorkgroupSizeZ',
+  'maxComputeWorkgroupsPerDimension',
+].map((name) => [name, device.limits[name]]));
+
 async function image(url) {
   const value = new Image();
   value.src = url;
@@ -84,7 +107,10 @@ async function run() {
   });
   window.__shootoutResult = {
     ms: median(samples), source: [i0.width, i0.height], rung: RUNG,
-    adapter: adapter.info?.description || adapter.info?.vendor || 'unknown', imageData,
+    adapterIdentity: adapterIdentity(adapter),
+    deviceFeatures: [...device.features].sort(),
+    deviceLimits: deviceLimitIdentity(device),
+    imageData,
   };
   document.title = 'SHOOTOUT DONE';
 }
