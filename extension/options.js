@@ -138,6 +138,7 @@
       fpsLimit: fpsLimitFromSlider(),
       res: Number($('res').value),
       model: $('model').value,
+      sharpness: Number($('sharpness').value),
     };
     for (const key of BOOLEAN_FIELDS) candidate[key] = $(key).checked;
     draftSettings = settingsCopy(candidate);
@@ -152,6 +153,7 @@
     updateFpsLimitPresentation();
     $('res').value = String(clean.res);
     $('model').value = clean.model;
+    $('sharpness').value = String(clean.sharpness);
     for (const key of BOOLEAN_FIELDS) $(key).checked = clean[key];
     updateRateControlVisibility(clean.factor);
   }

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "framegen-v7s-vfi-shootout-v1",
+  "playwrightContract": "tools/webgpu_bench_manifest.json",
+  "scenes": "benchmarks/vfi-shootout/scenes.json",
+  "harness": "web/shootout.html",
+  "runtime": "extension/rt/rt.js",
+  "modelAssets": {
+    "weights": "extension/assets/rt_v7s.bin",
+    "manifest": "extension/assets/rt_v7s.json"
+  },
+  "referenceMethods": {
+    "practicalRife": {
+      "checkpointBasename": "flownet.pkl",
+      "inputColorOrder": "BGR",
+      "outputColorOrder": "RGB",
+      "paddingDivisor": 64,
+      "paddingMode": "constant-zero"
+    },
+    "ifrnet": {
+      "inputColorOrder": "RGB",
+      "outputColorOrder": "RGB",
+      "paddingDivisor": 20,
+      "paddingMode": "replicate",
+      "scaleFactor": 0.8
+    }
+  },
+  "inferenceRungs": {
+    "480": [848, 480],
+    "720": [1280, 720]
+  },
+  "measurement": {
+    "supportedInferenceResolutions": [480, 720],
+    "defaultRepetitions": 5,
+    "minimumRepetitions": 1,
+    "maximumRepetitions": 20,
+    "pageWarmupPairCalls": 2,
+    "pageMeasuredPairCalls": 5,
+    "timeoutMsPerPage": 120000
+  }
+}

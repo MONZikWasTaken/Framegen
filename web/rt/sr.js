@@ -7,6 +7,88 @@ import { wgslConvRB, wgslConvRBSg, WGSL_TO_F32, WGSL_TO_F16 } from './rt.js?v=8'
 
 const WG = 8;
 
+// A bounded ring keeps timestamp resources off the presentation hot path.
+// If four samples are still being mapped, processing continues without timing.
+function createGpuTimestampRing(device, slotCount = 4) {
+  if (!device.features.has('timestamp-query')) return null;
+  const slots = [];
+  const byteSize = 16; // one compute pass: begin + end timestamp
+  let destroyed = false;
+  try {
+    for (let i = 0; i < slotCount; i++) {
+      let queries = null, resolve = null, read = null;
+      try {
+        queries = device.createQuerySet({ type: 'timestamp', count: 2 });
+        resolve = device.createBuffer({ size: byteSize,
+          usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+        read = device.createBuffer({ size: byteSize,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        slots.push({ busy: false, queries, resolve, read });
+      } catch (error) {
+        try { queries?.destroy(); } catch {}
+        try { resolve?.destroy(); } catch {}
+        try { read?.destroy(); } catch {}
+        throw error;
+      }
+    }
+  } catch {
+    for (const slot of slots) {
+      try { slot.queries.destroy(); } catch {}
+      try { slot.resolve.destroy(); } catch {}
+      try { slot.read.destroy(); } catch {}
+    }
+    return null;
+  }
+  const release = (slot) => {
+    if (slot && !destroyed) slot.busy = false;
+  };
+  return {
+    acquire() {
+      if (destroyed) return null;
+      const slot = slots.find(s => !s.busy);
+      if (!slot) return null;
+      slot.busy = true;
+      return slot;
+    },
+    release,
+    writes(slot) {
+      return { timestampWrites: { querySet: slot.queries,
+        beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } };
+    },
+    encodeReadback(enc, slot) {
+      enc.resolveQuerySet(slot.queries, 0, 2, slot.resolve, 0);
+      enc.copyBufferToBuffer(slot.resolve, 0, slot.read, 0, byteSize);
+    },
+    collect(slot) {
+      let mapped = false;
+      try {
+        return slot.read.mapAsync(GPUMapMode.READ, 0, byteSize).then(() => {
+          mapped = true;
+          const values = new BigUint64Array(slot.read.getMappedRange(0, byteSize));
+          return values[1] >= values[0] ? Number(values[1] - values[0]) / 1e6 : NaN;
+        }).catch(() => NaN).finally(() => {
+          if (mapped) { try { slot.read.unmap(); } catch {} }
+          release(slot);
+        });
+      } catch {
+        release(slot);
+        return Promise.resolve(NaN);
+      }
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const slot of slots) {
+        slot.busy = true;
+        try { if (slot.read.mapState === 'mapped') slot.read.unmap(); } catch {}
+        try { slot.queries.destroy(); } catch {}
+        try { slot.resolve.destroy(); } catch {}
+        try { slot.read.destroy(); } catch {}
+      }
+    },
+  };
+}
+
 function wgslIn(C, tune) {
   const WGX = (tune && tune.wgx) || 8, WGY = (tune && tune.wgy) || 8;
   const TL = !!(tune && tune.tl); // textureLoad: exact texel reads, no sampler/uv math
@@ -97,8 +179,10 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   // upscale factor lives in the out conv: 3*S^2 pixel-shuffle channels
   const C4 = weightsManifest['c4.weight'].shape[0];      // 12 (2x), 48 (4x), 3 (1x restore)
   const SCALE = C4 === 48 ? 4 : C4 === 3 ? 1 : 2;
-  const bufN = (bytes) => device.createBuffer({
-    size: Math.ceil(bytes / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const allBufs = new Set();
+  const trackBuf = (buffer) => { allBufs.add(buffer); return buffer; };
+  const bufN = (bytes) => trackBuf(device.createBuffer({
+    size: Math.ceil(bytes / 4) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }));
 
   const wbuf = {};
   for (const [name, m] of Object.entries(weightsManifest)) {
@@ -128,8 +212,8 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
     const enc = device.createCommandEncoder();
     for (const name of ['c2.weight', 'c3.weight', 'c4.weight']) {
       const n = weightsManifest[name].shape.reduce((a, b) => a * b, 1);
-      const half = device.createBuffer({ size: Math.ceil(n / 2) * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+      const half = trackBuf(device.createBuffer({ size: Math.ceil(n / 2) * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC }));
       const pass = enc.beginComputePass();
       pass.setPipeline(pToH);
       pass.setBindGroup(0, device.createBindGroup({ layout: pToH.getBindGroupLayout(0),
@@ -138,7 +222,7 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
       pass.dispatchWorkgroups(Math.ceil(n / 256));
       pass.end();
       if (needW4) { // widen back to f32: bit-exact f32(f16(w)), CVT leaves the hot loop
-        const wide = device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE });
+        const wide = trackBuf(device.createBuffer({ size: n * 4, usage: GPUBufferUsage.STORAGE }));
         const p2 = enc.beginComputePass();
         p2.setPipeline(pToF);
         p2.setBindGroup(0, device.createBindGroup({ layout: pToF.getBindGroupLayout(0),
@@ -161,45 +245,20 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   // the caller keeps presenting un-upscaled frames until the pipelines are ready
   // (a sync build here froze the page right as SR engaged).
   const states = new Map();
-  // the trunk's convTune was measured at the TRUNK shape (96-240ch, H/16 grid);
-  // the SR convs run 16ch at FULL video res where wider channel blocks win
-  // (fewer z-slices re-staging the same tile: mid coc16 -11%, out z=1 -34%
-  // measured on Ada). Candidates are few - bench them on the real size during
-  // the async state build (kernel speed does not depend on weight values) and
-  // keep the winner. Same kernel family, same accumulation order: bit-exact.
-  async function pickConv(cands, srcB, dstB, wName, w, h) {
-    const pipes = await Promise.all(cands.map(v => pipeAsync(
-      (v.sg && device.features.has('subgroups') ? wgslConvRBSg : wgslConvRB)(
-        v.ci, v.co, w, h, w, h, false, v.tune))));
-    let best = null;
-    for (let i = 0; i < cands.length; i++) {
-      const v = cands[i];
-      const bgB = device.createBindGroup({ layout: pipes[i].getBindGroupLayout(0), entries: [
-        { binding: 0, resource: { buffer: srcB } },
-        { binding: 1, resource: { buffer: wbufH[wName] } },
-        { binding: 2, resource: { buffer: wbuf[wName.replace('.weight', '.bias')] } },
-        { binding: 3, resource: { buffer: v.alpha } },
-        { binding: 4, resource: { buffer: dstB } }] });
-      const tx = ((v.tune.wgx || 8) * 2), ty = ((v.tune.wgy || 8) * 2);
-      const run = (k) => {
-        const enc = device.createCommandEncoder();
-        const pass = enc.beginComputePass();
-        pass.setPipeline(pipes[i]); pass.setBindGroup(0, bgB);
-        for (let j = 0; j < k; j++) {
-          pass.dispatchWorkgroups(Math.ceil(w / tx), Math.ceil(h / ty), v.co / v.tune.coc);
-        }
-        pass.end();
-        device.queue.submit([enc.finish()]);
-      };
-      run(3); await device.queue.onSubmittedWorkDone();
-      const t0 = performance.now();
-      run(20); await device.queue.onSubmittedWorkDone();
-      const ms = (performance.now() - t0) / 20;
-      if (!best || ms < best.ms) best = { pipe: pipes[i], tune: v.tune, ms };
+  let destroyed = false;
+  const destroyStateBuffers = (state) => {
+    for (const buffer of [state.fa, state.fb, state.det, state.dims]) {
+      if (!buffer) continue;
+      try { buffer.destroy(); } catch {}
+      allBufs.delete(buffer);
     }
-    return best;
-  }
+  };
+  // The SR convolutions run at full video resolution. Runtime benchmarking here
+  // used to enqueue 3 warmups + 20 measured passes for every candidate on the
+  // playback queue. Keep pipeline compilation asynchronous, but select the
+  // already-validated wide channel blocks deterministically.
   function stateFor(w, h) {
+    if (destroyed) return null;
     const k = w + 'x' + h;
     const st = states.get(k);
     if (st) return st.ready ? st : null;
@@ -211,29 +270,36 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
       const fa = bufN(C * w * h * 2);
       const fb = bufN(C * w * h * 2);
       const det = bufN(C4 * w * h * 2);
-      const outCoc = C4 % 8 === 0 ? 8 : C4 % 4 === 0 ? 4 : 1; // CO must divide
+      Object.assign(building, { dims, fa, fb, det });
       const baseT = convTune || { coc: Math.min(8, C), slab: C, w4: false, v2: false };
+      const safeCoc = (co, preferred) => {
+        const candidate = Math.max(1, Math.floor(Number(preferred) || 1));
+        if (co % candidate === 0) return candidate;
+        return co % 8 === 0 ? 8 : co % 4 === 0 ? 4 : 1;
+      };
       // slab must fit the 16KB shared budget at this tune's workgroup shape
       const fit = (t, sg) => {
         const ts = (t.wgx || 8) * 2 + 2, th2 = (t.wgy || 8) * 2 + 2;
-        let slab = t.slab;
-        while (slab > 1 && slab * ts * th2 * 2 + (sg ? 0 : t.coc * slab * 9 * (t.w4 ? 4 : 2)) > 16384) slab--;
+        const sharedBytes = (slab) => slab * ts * th2 * 2
+          + (sg ? 0 : t.coc * slab * 9 * (t.w4 ? 4 : 2));
+        let slab = Math.max(1, Math.min(C, Math.floor(Number(t.slab) || C)));
+        while (slab > 1 && sharedBytes(slab) > 16384) slab--;
+        if (sharedBytes(slab) > 16384) throw new Error('TinySR kernel exceeds shared-memory budget');
         return { ...t, slab };
       };
-      const cand = (co, alpha, sg, t) => ({ ci: C, co, sg, alpha, tune: fit(t, sg && device.features.has('subgroups')) });
-      const midCands = [cand(C, wbuf['a2.weight'], !!baseT.sg, { ...baseT, slab: C })];
-      if (C % 16 === 0) {
-        midCands.push(cand(C, wbuf['a2.weight'], !!baseT.sg, { ...baseT, coc: 16, slab: C }));
-        midCands.push(cand(C, wbuf['a2.weight'], false, { ...baseT, coc: 16, slab: 8, wgx: 16, wgy: 8 }));
-      }
-      const outCands = [cand(C4, onesAlpha, !!baseT.sg, { ...baseT, coc: outCoc, slab: C })];
-      if (C4 <= 16 && C4 !== outCoc) { // z=1: every channel in one block
-        outCands.push(cand(C4, onesAlpha, !!baseT.sg, { ...baseT, coc: C4, slab: C }));
-      }
+      const useSg = !!baseT.sg && device.features.has('subgroups');
+      const midCoc = C % 16 === 0 ? 16 : safeCoc(C, baseT.coc);
+      const outCoc = C4 <= 16 ? C4 : safeCoc(C4, baseT.coc);
+      const spec = (co, coc) => ({ ci: C, co, sg: useSg,
+        tune: fit({ ...baseT, coc, slab: C }, useSg) });
+      const compile = async (v) => ({ pipe: await pipeAsync(
+        (v.sg ? wgslConvRBSg : wgslConvRB)(v.ci, v.co, w, h, w, h, false, v.tune)),
+      tune: v.tune });
       const [mid, out, pShuf] = await Promise.all([
-        pickConv(midCands, fa, fb, 'c2.weight', w, h),
-        pickConv(outCands, fa, det, 'c4.weight', w, h),
+        compile(spec(C, midCoc)),
+        compile(spec(C4, outCoc)),
         pipeAsync(wgslShuffle(w, h, SCALE))]);
+      if (destroyed) return;
       const pMid = mid.pipe, pOutConv = out.pipe;
       const midBg = (wname, aname, sBuf, dBuf) => device.createBindGroup({
         layout: pMid.getBindGroupLayout(0), entries: [
@@ -257,9 +323,16 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
         ready: true,
       });
       if (states.size > 6) { // sizes changed wholesale
-        for (const [kk, s] of states) if (kk !== k && s.ready) { s.fa.destroy(); s.fb.destroy(); s.det.destroy(); s.dims.destroy(); states.delete(kk); }
+        for (const [kk, s] of states) if (kk !== k && s.ready) {
+          destroyStateBuffers(s);
+          states.delete(kk);
+        }
       }
-    })().catch(() => states.delete(k)); // failed build: retry on a later frame
+    })().catch(() => {
+      if (destroyed) return;
+      destroyStateBuffers(building);
+      if (states.get(k) === building) states.delete(k); // retry on a later frame
+    });
     return null;
   }
 
@@ -269,13 +342,15 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
   // views of DESTROYED textures and every SR'd frame comes out corrupted until
   // page reload. WeakMaps also let dead textures drop their bind groups with GC.
   const bgCache = new WeakMap();
+  const timestampRing = createGpuTimestampRing(device);
+  const hasGpuTimestamps = !!timestampRing;
 
   // srcTex (w x h) -> dstTex (2w x 2h, rgba8unorm STORAGE_BINDING).
-  // Returns false while the per-size pipelines are still compiling - the caller
-  // should present the original texture that frame.
-  function process(srcTex, dstTex, w, h) {
+  // Returns null while the per-size pipelines are still compiling. Otherwise it
+  // submits exactly one SR pass and optionally returns a GPU-duration promise.
+  function submitProcess(srcTex, dstTex, w, h, measure) {
     const S = stateFor(w, h);
-    if (!S) return false;
+    if (!S) return null;
     let perSrc = bgCache.get(srcTex);
     if (!perSrc) { perSrc = new WeakMap(); bgCache.set(srcTex, perSrc); }
     let bgs = perSrc.get(dstTex);
@@ -301,20 +376,49 @@ export async function createSR(device, { weightsBin, weightsManifest, channels, 
       bgs.S = S;
       perSrc.set(dstTex, bgs);
     }
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 8));
-    pass.setPipeline(S.pMid);
-    pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
-    pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
-    pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
-    pass.dispatchWorkgroups(S.outDims[0], S.outDims[1], S.outDims[2]);
-    pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
-    pass.dispatchWorkgroups(gx(w * SCALE), gx(h * SCALE));
-    pass.end();
-    device.queue.submit([enc.finish()]);
-    return true;
+    const timingSlot = measure && timestampRing ? timestampRing.acquire() : null;
+    try {
+      const enc = device.createCommandEncoder();
+      const pass = timingSlot
+        ? enc.beginComputePass(timestampRing.writes(timingSlot))
+        : enc.beginComputePass();
+      pass.setPipeline(pIn); pass.setBindGroup(0, bgs.in); pass.dispatchWorkgroups(Math.ceil(w / 16), Math.ceil(h / 8));
+      pass.setPipeline(S.pMid);
+      pass.setBindGroup(0, S.bgM2); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
+      pass.setBindGroup(0, S.bgM3); pass.dispatchWorkgroups(S.midDims[0], S.midDims[1], S.midDims[2]);
+      pass.setPipeline(S.pOutConv); pass.setBindGroup(0, S.bgOut);
+      pass.dispatchWorkgroups(S.outDims[0], S.outDims[1], S.outDims[2]);
+      pass.setPipeline(S.pShuf); pass.setBindGroup(0, bgs.shuf);
+      pass.dispatchWorkgroups(gx(w * SCALE), gx(h * SCALE));
+      pass.end();
+      if (timingSlot) timestampRing.encodeReadback(enc, timingSlot);
+      device.queue.submit([enc.finish()]);
+      return { timing: timingSlot ? timestampRing.collect(timingSlot) : null };
+    } catch (error) {
+      if (timingSlot) timestampRing.release(timingSlot);
+      throw error;
+    }
   }
 
-  return { process, scale: SCALE };
+  // Backward-compatible boolean path used by existing pages and workers.
+  function process(srcTex, dstTex, w, h) {
+    return submitProcess(srcTex, dstTex, w, h, false) !== null;
+  }
+
+  function processTimed(srcTex, dstTex, w, h) {
+    return submitProcess(srcTex, dstTex, w, h, true);
+  }
+
+  function destroy() {
+    if (destroyed) return;
+    destroyed = true;
+    if (timestampRing) timestampRing.destroy();
+    for (const state of states.values()) if (state.ready) destroyStateBuffers(state);
+    states.clear();
+    for (const buffer of allBufs) { try { buffer.destroy(); } catch {} }
+    allBufs.clear();
+  }
+
+  if (timestampRing) device.lost.then(destroy).catch(destroy);
+  return { process, processTimed, destroy, hasGpuTimestamps, scale: SCALE };
 }

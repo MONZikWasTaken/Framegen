@@ -26,6 +26,7 @@ const customSettings = Object.freeze({
   fg: false,
   sr: true,
   hdr: true,
+  sharpness: 0,
   showFps: false,
   showWatermark: false,
   showWarnings: false,
@@ -44,7 +45,7 @@ function v1Profile(overrides = {}) {
   };
 }
 
-test('missing store initializes empty schema v3 without materializing current settings', () => {
+test('missing store initializes empty schema v4 without materializing current settings', () => {
   const storage = {
     ...customSettings,
     fcTune: { adapter: 'must stay outside profiles' },
@@ -57,7 +58,7 @@ test('missing store initializes empty schema v3 without materializing current se
   assert.equal(loaded.needsWrite, true);
   assert.equal(loaded.sourceSchemaVersion, null);
   assert.deepEqual(loaded.store, {
-    schemaVersion: 3,
+    schemaVersion: 4,
     lastAppliedProfileId: null,
     profiles: [],
   });
@@ -104,12 +105,51 @@ test('target FPS accepts decimals, clamps its range, and rounds to two places', 
   assert.equal(Profiles.sanitizeFpsLimit(137), 144);
   assert.equal(Profiles.sanitizeFpsLimit(247), 240);
   assert.equal(Profiles.sanitizeFpsLimit(null), null);
+  assert.equal(Profiles.sanitizeSettings({ sharpness: '3' }).sharpness, 3);
+  assert.equal(Profiles.sanitizeSettings({ sharpness: 4 }).sharpness, 0);
 });
 
-test('schema v2 profiles inherit the current FPS limit and warning preference', () => {
+test('schema v3 migrates sharpness explicitly without mutating saved profiles', () => {
+  const current = { ...customSettings, sharpness: 3 };
+  const withoutSharpness = { ...customSettings };
+  delete withoutSharpness.sharpness;
+  const rawStore = {
+    schemaVersion: 3,
+    lastAppliedProfileId: 'explicit-sharpness',
+    profiles: [
+      {
+        id: 'inherited-sharpness',
+        name: 'Inherited sharpness',
+        description: '',
+        settings: withoutSharpness,
+      },
+      {
+        id: 'explicit-sharpness',
+        name: 'Explicit sharpness',
+        description: '',
+        settings: { ...customSettings, sharpness: 2 },
+      },
+    ],
+  };
+  const snapshot = structuredClone(rawStore);
+  const loaded = Profiles.loadStore(rawStore, current);
+
+  assert.equal(loaded.needsWrite, true);
+  assert.equal(loaded.sourceSchemaVersion, 3);
+  assert.equal(loaded.store.schemaVersion, 4);
+  assert.equal(loaded.store.lastAppliedProfileId, 'explicit-sharpness');
+  assert.equal(loaded.store.profiles[0].settings.sharpness, 3);
+  assert.equal(loaded.store.profiles[1].settings.sharpness, 2);
+  assert.deepEqual(rawStore, snapshot);
+  assert.equal(Profiles.loadStore(loaded.store, current).needsWrite, false);
+});
+
+test('schema v2 profiles inherit current compatibility settings', () => {
+  const current = { ...customSettings, sharpness: 3 };
   const legacySettings = { ...customSettings };
   delete legacySettings.fpsLimit;
   delete legacySettings.showWarnings;
+  delete legacySettings.sharpness;
   const rawStore = {
     schemaVersion: 2,
     lastAppliedProfileId: 'custom-one',
@@ -121,16 +161,17 @@ test('schema v2 profiles inherit the current FPS limit and warning preference', 
     }],
   };
   const snapshot = structuredClone(rawStore);
-  const loaded = Profiles.loadStore(rawStore, customSettings);
+  const loaded = Profiles.loadStore(rawStore, current);
 
   assert.equal(loaded.needsWrite, true);
   assert.equal(loaded.sourceSchemaVersion, 2);
-  assert.equal(loaded.store.schemaVersion, 3);
+  assert.equal(loaded.store.schemaVersion, 4);
   assert.equal(loaded.store.lastAppliedProfileId, 'custom-one');
   assert.equal(loaded.store.profiles[0].settings.fpsLimit, 60);
   assert.equal(loaded.store.profiles[0].settings.showWarnings, false);
+  assert.equal(loaded.store.profiles[0].settings.sharpness, 3);
   assert.deepEqual(rawStore, snapshot);
-  assert.equal(Profiles.loadStore(loaded.store, customSettings).needsWrite, false);
+  assert.equal(Profiles.loadStore(loaded.store, current).needsWrite, false);
 });
 
 test('schema v1 built-in selection disappears while custom profiles and flat settings survive', () => {
@@ -154,6 +195,23 @@ test('schema v1 built-in selection disappears while custom profiles and flat set
   });
   assert.deepEqual(current, customSettings);
   assert.equal(JSON.stringify(loaded.store).includes('builtIn'), false);
+});
+
+test('schema v1 profile without sharpness inherits the active flat setting', () => {
+  const current = { ...customSettings, sharpness: 3 };
+  const legacySettings = { ...customSettings };
+  delete legacySettings.sharpness;
+  const loaded = Profiles.loadStore({
+    schemaVersion: 1,
+    activeProfileId: 'custom-one',
+    customProfiles: [v1Profile({ settings: legacySettings })],
+    migratedFromFlat: false,
+  }, current);
+
+  assert.equal(loaded.sourceSchemaVersion, 1);
+  assert.equal(loaded.store.schemaVersion, 4);
+  assert.equal(loaded.store.lastAppliedProfileId, 'custom-one');
+  assert.equal(loaded.store.profiles[0].settings.sharpness, 3);
 });
 
 test('schema v1 custom selection preserves order, identities, metadata, and provenance', () => {
@@ -295,6 +353,30 @@ test('profile roundtrip preserves every canonical setting and excludes transient
   assert.deepEqual(Object.keys(payload).sort(), [...Profiles.SETTINGS_KEYS, Profiles.STORE_KEY].sort());
 });
 
+test('profile roundtrip preserves every nonzero sharpness level', () => {
+  for (const sharpness of [1, 2, 3]) {
+    const settings = { ...customSettings, sharpness };
+    let store = Profiles.emptyStore();
+    store = Profiles.upsertProfile(store, {
+      id: `sharpness-${sharpness}`,
+      name: `Sharpness ${sharpness}`,
+      settings,
+    });
+    store = Profiles.setLastAppliedProfile(store, `sharpness-${sharpness}`);
+
+    const payload = Profiles.toStoragePayload(store, settings);
+    const reloadedSettings = Profiles.pickFlatSettings(payload);
+    const reloaded = Profiles.loadStore(payload[Profiles.STORE_KEY], reloadedSettings);
+
+    assert.equal(reloaded.needsWrite, false);
+    assert.equal(reloadedSettings.sharpness, sharpness);
+    assert.equal(
+      Profiles.getProfile(reloaded.store, `sharpness-${sharpness}`).settings.sharpness,
+      sharpness,
+    );
+  }
+});
+
 test('Current settings and saved profile previews resolve without mutating the store', () => {
   let store = Profiles.emptyStore();
   store = Profiles.upsertProfile(store, {
@@ -388,7 +470,8 @@ test('advanced page keeps compact toolbar and exposes exact target FPS controls'
     assert.equal(matches.length, 1, `expected exactly one #${key} control`);
   }
 
-  const factorOptions = [...optionsHtml.matchAll(/<option value="(auto|hz|target|[2-6])">/g)]
+  const factorSelect = optionsHtml.match(/<select id="factor"[\s\S]*?<\/select>/)?.[0] || '';
+  const factorOptions = [...factorSelect.matchAll(/<option value="(auto|hz|target|[2-6])">/g)]
     .map(match => match[1]);
   assert.deepEqual(factorOptions, ['auto', 'hz', 'target', '2', '3', '4', '5', '6']);
   assert.match(optionsHtml, /class="profile-toolbar"/);

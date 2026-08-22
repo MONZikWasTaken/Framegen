@@ -1,13 +1,14 @@
 (function installFramegenProfiles(root) {
   'use strict';
 
-  const SCHEMA_VERSION = 3;
-  const PREVIOUS_SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 4;
+  const PREVIOUS_SCHEMA_VERSION = 3;
+  const COMPATIBILITY_SCHEMA_VERSION = 2;
   const LEGACY_SCHEMA_VERSION = 1;
   const STORE_KEY = 'fcProfileStore';
   const SETTINGS_KEYS = Object.freeze([
     'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
-    'fg', 'sr', 'hdr', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
+    'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
   ]);
   const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
   const RESOLUTIONS = Object.freeze([288, 360, 480, 720, 1080]);
@@ -31,6 +32,7 @@
     fg: true,
     sr: false,
     hdr: false,
+    sharpness: 0,
     showFps: true,
     showWatermark: true,
     showWarnings: true,
@@ -125,6 +127,7 @@
       fg: booleanValue(source.fg, DEFAULT_SETTINGS.fg),
       sr: booleanValue(source.sr, DEFAULT_SETTINGS.sr),
       hdr: booleanValue(source.hdr, DEFAULT_SETTINGS.hdr),
+      sharpness: [0, 1, 2, 3].includes(Number(source.sharpness)) ? Number(source.sharpness) : DEFAULT_SETTINGS.sharpness,
       showFps: booleanValue(source.showFps, DEFAULT_SETTINGS.showFps),
       showWatermark: booleanValue(source.showWatermark, DEFAULT_SETTINGS.showWatermark),
       showWarnings: booleanValue(source.showWarnings, DEFAULT_SETTINGS.showWarnings),
@@ -178,6 +181,7 @@
       ...source,
       fpsLimit: hasOwn(source, 'fpsLimit') ? source.fpsLimit : fallback.fpsLimit,
       showWarnings: hasOwn(source, 'showWarnings') ? source.showWarnings : fallback.showWarnings,
+      sharpness: hasOwn(source, 'sharpness') ? source.sharpness : fallback.sharpness,
     };
   }
 
@@ -264,6 +268,12 @@
     };
   }
 
+  function migrateV3Store(rawStore, currentSettings) {
+    // Schema v3 predates profile-level sharpness on main. Preserve an explicit
+    // value from preview builds, otherwise inherit the active flat setting.
+    return normalizeStore(rawStore, currentSettings);
+  }
+
   function loadStore(rawStore, currentSettings = DEFAULT_SETTINGS) {
     const cleanCurrent = sanitizeSettings(currentSettings);
     if (rawStore == null) {
@@ -282,9 +292,16 @@
     }
     if (rawStore.schemaVersion === PREVIOUS_SCHEMA_VERSION) {
       return {
-        store: normalizeStore(rawStore, cleanCurrent),
+        store: migrateV3Store(rawStore, cleanCurrent),
         needsWrite: true,
         sourceSchemaVersion: PREVIOUS_SCHEMA_VERSION,
+      };
+    }
+    if (rawStore.schemaVersion === COMPATIBILITY_SCHEMA_VERSION) {
+      return {
+        store: normalizeStore(rawStore, cleanCurrent),
+        needsWrite: true,
+        sourceSchemaVersion: COMPATIBILITY_SCHEMA_VERSION,
       };
     }
     if (rawStore.schemaVersion === LEGACY_SCHEMA_VERSION) {

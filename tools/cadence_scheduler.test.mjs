@@ -458,6 +458,53 @@ test('target resolver separates GPU clamping from an impossible 2x budget', () =
   assert.equal(unavailable.interpolationAllowed, false);
 });
 
+test('target resolver accounts for SR on every presented anchor and generated frame', () => {
+  const limited = resolveTarget(120, 24, 240, {
+    midCostMs: 10,
+    presentationCostMs: 4,
+  });
+  assert.equal(limited.state, 'active');
+  assert.equal(limited.computeCapacityHz, 72);
+  assert.equal(limited.outputHz, 72);
+  assert.equal(limited.clampReason, 'gpu');
+
+  const unavailable = resolveTarget(120, 24, 240, {
+    midCostMs: 30,
+    presentationCostMs: 6,
+  });
+  assert.equal(unavailable.state, 'no-2x-gpu-range');
+  assert.equal(unavailable.outputHz, null);
+
+  const presentationOnly = resolveTarget(60, 60, 120, {
+    strictCeiling: true,
+    midCostMs: 0.1,
+    presentationCostMs: 20,
+  });
+  assert.equal(presentationOnly.state, 'active');
+  assert.equal(presentationOnly.outputHz, 45);
+  assert.equal(presentationOnly.clampReason, 'gpu');
+});
+
+test('target resolver charges shared pair prep separately from each generated mid', () => {
+  const limited = resolveTarget(120, 24, 240, {
+    midCostMs: 10,
+    pairCostMs: 15,
+    presentationCostMs: 4,
+  });
+  assert.equal(limited.state, 'active');
+  assert.equal(limited.computeCapacityHz, 48);
+  assert.equal(limited.outputHz, 48);
+  assert.equal(limited.clampReason, 'gpu');
+
+  const unavailable = resolveTarget(120, 24, 240, {
+    midCostMs: 10,
+    pairCostMs: 25,
+    presentationCostMs: 4,
+  });
+  assert.equal(unavailable.state, 'no-2x-gpu-range');
+  assert.equal(unavailable.outputHz, null);
+});
+
 test('low source rates cannot exceed scheduler queue and texture bounds', () => {
   const plan = resolveTarget(240, 1, 240);
   assert.equal(plan.state, 'active');
@@ -1280,8 +1327,10 @@ test('extension loads the helper first and exposes every output-rate choice', ()
     'material runtime-capacity changes require sustained confirmation');
   assert.match(content, /resetOutputCadence\(false\);[\s\S]*?outputRatePlanIdentity = nextIdentity/,
     'a committed rate change must preserve already scheduled presentations');
-  assert.match(content, /midCostSamples\.length > 16[\s\S]*?0\.25/,
-    'GPU admission must reject queue-drain outliers with a rolling clean-cost estimate');
+  const costEstimator = content.slice(content.indexOf('function updateRollingGpuCost'),
+    content.indexOf('function estimatedPairGpuCost'));
+  assert.match(costEstimator, /samples\.length > 16[\s\S]*?0\.5[\s\S]*?sampleMs > currentCostMs/,
+    'GPU admission must react quickly upward while relaxing through a rolling median');
   assert.match(content, /UI_UPDATE_INTERVAL_MS = 1000 \/ 15/,
     'control UI service must stay fixed at 15 Hz on high-refresh displays');
   assert.match(content, /if \(now >= nextUiUpdateAt\)[\s\S]*?nextUiUpdateAt = now \+ UI_UPDATE_INTERVAL_MS[\s\S]*?updateBar\(\)/,

@@ -38,7 +38,7 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
@@ -46,6 +46,7 @@
     cfg.fpsLimit = canonicalFpsLimit(cfg.fpsLimit);
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
+    if (![0, 1, 2, 3].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
@@ -79,11 +80,13 @@
       if (area !== 'local') return;
       const profileStoreChanged = Object.hasOwn(ch, Profiles.STORE_KEY);
       let runtimeChanged = false;
+      const previousNeedsCanvas = needsCanvasPresentation();
       const previousFactor = cfg.factor;
       const previousTargetFps = cfg.targetFps;
       const previousFpsLimit = cfg.fpsLimit;
       const incomingFpsLimit = ch.fpsLimit?.newValue;
       const previousFg = cfg.fg;
+      const previousSr = cfg.sr;
       const previousCompare = cfg.compare;
       for (const k in ch) {
         if (!(k in cfg)) continue;
@@ -108,8 +111,11 @@
         resetOutputCadence(true);
       }
       if (previousCompare && !cfg.compare) cmpRing = [];
-      if ('hdr' in ch) configureOverlay();
+      if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
       if ('sr' in ch && cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
+      if (['fg', 'sr', 'hdr', 'sharpness', 'compare'].some(key => Object.hasOwn(ch, key))) {
+        reconcilePresentationMode(previousNeedsCanvas, previousSr !== cfg.sr);
+      }
       if (runtimeChanged && running && videoEl && !toggling) {
         toggling = true;
         switchRes().catch(e => log('runtime settings sync', e)).finally(() => { toggling = false; });
@@ -303,12 +309,15 @@
   let device = null, recoveringDevice = false, deviceRecoveryEpoch = 0;
   let deviceRecoveryVideo = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
+  let overlayConfigurationGeneration = 0, presentationTextureGeneration = 0;
+  let presentationTextureVersions = new WeakMap();
   const blitBg = new Map();
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
+  let lastPresentedSourceTex = null, lastPresentedTex = null;
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
   let dedupReads = [], dedupReadIdx = 0; // readback ring: classifies overlap now
-  let queue = [], running = false, processingFrame = false;
+  let queue = [], running = false, processingFrame = false, nativePassthroughActive = false;
   let videoFrameCallbackId = null, videoFrameCallbackVideo = null;
   let pumpRafId = null, playbackLoopEpoch = 0;
   let pairSeq = 0; // generation counter for in-flight classify continuations
@@ -321,6 +330,11 @@
   const decodedCadenceShift = { intervalMs: 0, samples: 0, direction: 0 };
   let msAvg = 0, lastMidCostAt = 0, dropped = 0, dups = 0, cuts = 0, fpsWin = [], effN = 2, lastStat = null;
   const midCostSamples = [];
+  let prepCostMs = 0, prepCostProbePending = false, prepCostCalls = 0;
+  const prepCostSamples = [];
+  let srCostMs = 0, srCostKey = '', srCostProbePending = false;
+  let srCostProbeGeneration = 0, srCostProcessedForKey = 0;
+  const srCostSamples = [];
   let btn = null, gear = null, hud = null, panel = null, statsTimer = 0;
   let bar = null, barSeeking = false, wm = null;
   let rafMs = 0, lastPumpT = 0, warnEl = null, overSince = 0;
@@ -439,10 +453,170 @@
     });
   }
 
+  function activeSrCostMs() {
+    const [sourceWidth, sourceHeight] = videoEl?.videoWidth
+      ? poolDims()
+      : [texW, texH];
+    // Until the first exact sample arrives, reserve a conservative per-output
+    // budget. Devices without timestamp-query keep this stable default: separate
+    // queue-drain timers overlap and cannot be added without double-counting.
+    return cfg.sr && sys.f16 && needsNeuralUpscale(sourceWidth, sourceHeight)
+      ? (srCostMs || 4)
+      : 0;
+  }
+
+  function activePrepCostMs() {
+    // prepPair runs the shared v7s trunk once for every interpolated pair. Keep
+    // a small reserve until its first independent GPU timestamp arrives.
+    return cfg.fg && rt ? (prepCostMs || 4) : 0;
+  }
+
+  function activeMidCostMs() {
+    return cfg.fg && rt ? (msAvg || 10) : 0;
+  }
+
+  function validGpuCostSample(sampleMs) {
+    return Number.isFinite(sampleMs) && sampleMs > 0 && sampleMs <= 1000;
+  }
+
+  function updateRollingGpuCost(samples, currentCostMs, sampleMs) {
+    if (!validGpuCostSample(sampleMs)) return currentCostMs;
+    samples.push(sampleMs);
+    if (samples.length > 16) samples.shift();
+    const orderedCosts = [...samples].sort((a, b) => a - b);
+    const medianCostMs = orderedCosts[Math.floor((orderedCosts.length - 1) * 0.5)];
+    if (!currentCostMs) return medianCostMs;
+    // GPU timestamps exclude queue backlog, so a slower content-dependent sample
+    // is real work and must tighten admission quickly. Relaxation stays gradual.
+    return sampleMs > currentCostMs
+      ? currentCostMs * 0.5 + sampleMs * 0.5
+      : currentCostMs * 0.9 + medianCostMs * 0.1;
+  }
+
+  function estimatedPairGpuCost(interpolatedFrames, presentationFrames, modelCostMs,
+      presentationCostMs = activeSrCostMs(), pairCostMs = activePrepCostMs()) {
+    const mids = Math.max(0, interpolatedFrames);
+    return (mids > 0 ? Math.max(0, pairCostMs) : 0)
+      + mids * Math.max(0, modelCostMs)
+      + Math.max(0, presentationFrames) * Math.max(0, presentationCostMs);
+  }
+
+  function estimatedLegacyFactorGpuCost(factor, modelCostMs,
+      presentationCostMs = activeSrCostMs(), sourceHz = playbackAdjustedSourceHz(),
+      pairCostMs = activePrepCostMs()) {
+    const interpolatedFrames = Math.max(0, factor - 1);
+    const decodedAnchors = Math.max(1, uniqueIntervalMs * Math.max(0, sourceHz) / 1000);
+    return estimatedPairGpuCost(interpolatedFrames,
+      decodedAnchors + interpolatedFrames, modelCostMs, presentationCostMs, pairCostMs);
+  }
+
+  function estimatedActiveIntervalGpuCost(factor, modelCostMs,
+      presentationCostMs = activeSrCostMs(), pairCostMs = activePrepCostMs()) {
+    const interpolatedFrames = Math.max(0, factor - 1);
+    return estimatedPairGpuCost(interpolatedFrames, 1 + interpolatedFrames,
+      modelCostMs, presentationCostMs, pairCostMs);
+  }
+
+  function currentEstimatedGpuCost() {
+    const factor = Math.max(1, Number(effN) || 1);
+    return usesExactCadence()
+      ? estimatedPairGpuCost(factor - 1, factor, activeMidCostMs())
+      : estimatedLegacyFactorGpuCost(factor, activeMidCostMs());
+  }
+
+  function currentEstimatedGpuLoad() {
+    const factor = Math.max(1, Number(effN) || 1);
+    const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+    const sourceIntervalMs = decodedIntervalMs / playbackRate;
+    if (usesExactCadence()) {
+      return sourceIntervalMs > 0 ? currentEstimatedGpuCost() / sourceIntervalMs : 0;
+    }
+    const averageLoad = uniqueIntervalMs > 0
+      ? currentEstimatedGpuCost() / uniqueIntervalMs
+      : 0;
+    const burstLoad = sourceIntervalMs > 0
+      ? estimatedActiveIntervalGpuCost(factor, activeMidCostMs()) / sourceIntervalMs
+      : 0;
+    return Math.max(averageLoad, burstLoad);
+  }
+
+  function resetPrepCostTracking() {
+    prepCostMs = 0;
+    prepCostProbePending = false;
+    prepCostCalls = 0;
+    prepCostSamples.length = 0;
+  }
+
+  function shouldMeasurePrepCost() {
+    prepCostCalls++;
+    return !prepCostProbePending && (prepCostCalls === 1 || prepCostCalls % 8 === 0);
+  }
+
+  function trackPrepCost(timingPromise, submittedDevice) {
+    const generation = rtGeneration;
+    prepCostProbePending = true;
+    Promise.resolve(timingPromise)
+      .then(sampleMs => {
+        if (generation !== rtGeneration || device !== submittedDevice) return;
+        if (!validGpuCostSample(sampleMs)) return;
+        prepCostMs = updateRollingGpuCost(prepCostSamples, prepCostMs, sampleMs);
+        outputRatePlanKey = '';
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (generation === rtGeneration) prepCostProbePending = false;
+      });
+  }
+
+  function resetSrCostTracking() {
+    srCostProbeGeneration++;
+    srCostMs = 0;
+    srCostKey = '';
+    srCostProbePending = false;
+    srCostProcessedForKey = 0;
+    srCostSamples.length = 0;
+  }
+
+  function shouldMeasureSrProcessCost(key) {
+    if (key !== srCostKey) {
+      srCostProbeGeneration++;
+      srCostKey = key;
+      srCostMs = 0;
+      srCostProbePending = false;
+      srCostProcessedForKey = 0;
+      srCostSamples.length = 0;
+    }
+    srCostProcessedForKey++;
+    return !srCostProbePending
+      && (srCostProcessedForKey === 1 || srCostProcessedForKey % 8 === 0);
+  }
+
+  function trackSrProcessCost(key, timingPromise, submittedDevice) {
+    const generation = srCostProbeGeneration;
+    srCostProbePending = true;
+    Promise.resolve(timingPromise)
+      .then(sampleMs => {
+        if (generation !== srCostProbeGeneration || device !== submittedDevice
+            || key !== srCostKey) return;
+        if (!validGpuCostSample(sampleMs)) return;
+        srCostMs = updateRollingGpuCost(srCostSamples, srCostMs, sampleMs);
+        outputRatePlanKey = '';
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (generation === srCostProbeGeneration) srCostProbePending = false;
+      });
+  }
+
   function autoPolicyFactor(midCostMs, sourceHz = playbackAdjustedSourceHz()) {
-    const costMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
+    const modelCostMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
+    const activeIntervalMs = sourceHz > 0 ? 1000 / sourceHz : intervalMs;
     let factor = 6;
-    while (factor > 2 && (factor - 1) * costMs > uniqueIntervalMs * 0.85) factor--;
+    while (factor > 2
+        && (estimatedLegacyFactorGpuCost(factor, modelCostMs,
+          activeSrCostMs(), sourceHz) > uniqueIntervalMs * 0.85
+          || estimatedActiveIntervalGpuCost(factor, modelCostMs)
+            > activeIntervalMs * 0.85)) factor--;
     const uniqueHz = uniqueIntervalMs > 1
       ? Math.min(sourceHz, 1000 / uniqueIntervalMs)
       : sourceHz;
@@ -464,7 +638,11 @@
       sourceHz,
       uniqueHz,
       presentationHz: Cadence.mixedPresentationHz(sourceHz, uniqueHz, factor),
-      runnable: factor > 1 && (factor - 1) * costMs <= uniqueIntervalMs * 1.1,
+      runnable: factor > 1
+        && estimatedLegacyFactorGpuCost(factor, modelCostMs,
+          activeSrCostMs(), sourceHz) <= uniqueIntervalMs * 1.1
+        && estimatedActiveIntervalGpuCost(factor, modelCostMs)
+          <= activeIntervalMs * 1.1,
     };
   }
 
@@ -477,9 +655,11 @@
   function currentOutputRatePlan({ midCostMs = null, startGpuProbe = false } = {}) {
     const sourceReady = decodedIntervalSamples.length >= 8;
     const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
-    const learnedCostMs = Number.isFinite(midCostMs) && midCostMs > 0
+    const learnedModelCostMs = Number.isFinite(midCostMs) && midCostMs > 0
       ? midCostMs
       : (msAvg || 10);
+    const learnedPairCostMs = activePrepCostMs();
+    const learnedPresentationCostMs = activeSrCostMs();
     const context = {
       targetFps: cfg.targetFps,
       sourceHz: sourceReady ? playbackRate * 1000 / decodedIntervalMs : null,
@@ -488,36 +668,48 @@
     };
     const cappedAuto = cfg.factor === 'auto' && cfg.fpsLimit !== null;
     const requestedTargetFps = cappedAuto && context.sourceHz
-      ? cappedAutoTargetHz(cfg.fpsLimit, context.sourceHz, learnedCostMs)
+      ? cappedAutoTargetHz(cfg.fpsLimit, context.sourceHz, learnedModelCostMs)
       : (cappedAuto ? cfg.fpsLimit : cfg.targetFps);
     let plan = Cadence.resolveOutputRate(cappedAuto ? 'target' : cfg.factor, rafFloor, {
       ...context,
       targetFps: requestedTargetFps,
-      midCostMs: learnedCostMs,
+      midCostMs: learnedModelCostMs,
+      pairCostMs: learnedPairCostMs,
+      presentationCostMs: learnedPresentationCostMs,
       strictCeiling: cappedAuto,
     });
     if (cappedAuto) plan = { ...plan, mode: 'auto' };
-    const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${cfg.fpsLimit ?? 'unlimited'}:${Number(plan.minimumHz || 0).toFixed(2)}`;
+    const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${cfg.fpsLimit ?? 'unlimited'}:${cfg.sr}:${Number(plan.minimumHz || 0).toFixed(2)}`;
     const now = performance.now();
     const probeTimeoutMs = sourceReady
       ? Math.max(1500, 2 * (1000 / context.sourceHz) + 250)
       : 1500;
+    const canMeasureGpuProbe = rt?.hasGpuTimestamps === true;
     if (gpuProbeActive
-        && (gpuProbeKey !== planProbeKey || now - gpuProbeStartedAt > probeTimeoutMs)) {
+        && (!canMeasureGpuProbe || gpuProbeKey !== planProbeKey
+          || now - gpuProbeStartedAt > probeTimeoutMs)) {
       gpuProbeActive = false;
     }
-    if (!gpuProbeActive && startGpuProbe && plan.state === 'no-2x-gpu-range'
+    if (!gpuProbeActive && canMeasureGpuProbe && startGpuProbe
+        && plan.state === 'no-2x-gpu-range'
         && (!gpuProbeStartedAt || now - gpuProbeStartedAt >= 2500)) {
       gpuProbeActive = true;
       gpuProbeStartedAt = now;
       gpuProbeKey = planProbeKey;
     }
-    if (!gpuProbeActive) return { ...plan, admissionCostMs: learnedCostMs, gpuProbe: false };
+    if (!gpuProbeActive) return { ...plan,
+      admissionCostMs: learnedPairCostMs + learnedModelCostMs + learnedPresentationCostMs,
+      pairCostMs: learnedPairCostMs,
+      modelCostMs: learnedModelCostMs,
+      presentationCostMs: learnedPresentationCostMs,
+      gpuProbe: false };
 
     const probe = Cadence.resolveOutputRate('target', rafFloor, {
       ...context,
       targetFps: plan.minimumHz,
       midCostMs: 0.1,
+      pairCostMs: 0.1,
+      presentationCostMs: learnedPresentationCostMs,
     });
     return {
       ...probe,
@@ -526,7 +718,10 @@
       state: 'probing-gpu',
       clampReason: 'gpu-probe',
       warning: 'Checking GPU capacity at 2x',
-      admissionCostMs: 0.1,
+      admissionCostMs: 0.2 + learnedPresentationCostMs,
+      pairCostMs: 0.1,
+      modelCostMs: 0.1,
+      presentationCostMs: learnedPresentationCostMs,
       gpuProbe: true,
     };
   }
@@ -876,7 +1071,11 @@
         integrated: !!sys.integrated,
         deviceFeatures: device ? [...device.features].sort() : [],
         convTune: benchAppliedTune ? JSON.parse(JSON.stringify(benchAppliedTune)) : null,
-        scheduler: { msAvg, intervalMs, decodedIntervalMs, uniqueIntervalMs, delayMs, lateAvg, rafMs, rafFloor },
+        scheduler: { prepCostMs, msAvg, srCostMs,
+          estimatedPrepCostMs: activePrepCostMs(), estimatedMidCostMs: activeMidCostMs(),
+          estimatedSrCostMs: activeSrCostMs(), timingMode: rt?.hasGpuTimestamps ? 'gpu' : 'defaults',
+          intervalMs, decodedIntervalMs, uniqueIntervalMs,
+          delayMs, lateAvg, rafMs, rafFloor },
         autoController: {
           penalty: autoPenalty,
           dropPressure,
@@ -889,6 +1088,66 @@
         duplicates: dups,
       },
     };
+  }
+
+  // Do not replace the browser's video compositor merely because Framegen is
+  // armed.  Its native path can be visibly sharper than a canvas on Windows.
+  // The overlay is only needed when a feature actually changes pixels.
+  function needsCanvasPresentation() {
+    return cfg.fg || (cfg.sr && sys.f16) || (cfg.hdr && sys.hdrOk)
+      || cfg.sharpness > 0 || cfg.compare;
+  }
+
+  function markPresentationTextureWrite(tex) {
+    // GPUTexture identity does not change when a pool entry is overwritten. Bump
+    // the content generation so a deferred repaint cannot display newer pixels at
+    // an older cadence slot merely because the same object was reused.
+    presentationTextureVersions.set(tex, (presentationTextureVersions.get(tex) || 0) + 1);
+    if (tex === lastPresentedSourceTex) lastPresentedSourceTex = null;
+    if (tex === lastPresentedTex) lastPresentedTex = null;
+  }
+
+  function useNativePassthrough() {
+    if (needsCanvasPresentation()) {
+      nativePassthroughActive = false;
+      return false;
+    }
+    if (nativePassthroughActive) return true;
+    nativePassthroughActive = true;
+    queue = []; curJob = null; lastTex = null; cmpRing = [];
+    lastPresentedSourceTex = null;
+    lastPresentedTex = null;
+    if (overlay) {
+      overlay.style.opacity = '0';
+      overlay.style.visibility = 'hidden';
+      overlay.style.pointerEvents = 'none';
+    }
+    return true;
+  }
+
+  // Reconcile settings that can move a running video between the browser's native
+  // compositor and our canvas.  SR also changes the source-pool dimensions even
+  // when another effect already keeps the canvas active.
+  function reconcilePresentationMode(previouslyNeeded, resetPool = false) {
+    const needed = needsCanvasPresentation();
+    if (resetPool) resetFramePoolOnNextCapture = true;
+    if (!running || !overlay) return needed;
+    if (!needed) {
+      if (previouslyNeeded) resetOutputCadence(true);
+      useNativePassthrough();
+      return false;
+    }
+    nativePassthroughActive = false;
+    if (!previouslyNeeded || resetPool) {
+      resetOutputCadence(true);
+      lastTex = null;
+      lastPresentedSourceTex = null;
+      lastPresentedTex = null;
+      overlay.style.opacity = '0';
+    }
+    overlay.style.display = 'block';
+    positionOverlay();
+    return true;
   }
 
   function trackSourceVideo(v) {
@@ -1004,6 +1263,12 @@
     msAvg = 0;
     lastMidCostAt = 0;
     midCostSamples.length = 0;
+    resetPrepCostTracking();
+    resetSrCostTracking();
+    presentationTextureGeneration++;
+    presentationTextureVersions = new WeakMap();
+    lastPresentedSourceTex = null;
+    lastPresentedTex = null;
 
     try { if (rt?.destroy) rt.destroy(); } catch {}
     try { if (sr?.destroy) sr.destroy(); } catch {}
@@ -1017,6 +1282,7 @@
     rtModel = '';
     rtGuard = null;
     sr = null;
+    srProcessedFrames = 0;
     blitPipe = null;
     blitSampler = null;
     blitBg.clear();
@@ -1224,15 +1490,15 @@
       staticGuard: buildGuard, weightsBin: bin, weightsManifest: man, convTune });
     rtRes = buildRes; rtModel = runtimeModel; rtGuard = buildGuard;
     rtGeneration++;
+    resetPrepCostTracking();
     if (!convTune) scheduleConvTune(rtMod,
       { res: buildRes, model: runtimeModel, guard: buildGuard, c1: rtC1, c2: rtC2 });
+    if (midTexs.length) presentationTextureGeneration++;
+    if (midTexs.includes(lastPresentedSourceTex)) lastPresentedSourceTex = null;
+    if (midTexs.includes(lastPresentedTex)) lastPresentedTex = null;
     midTexs.forEach(t => t.destroy());
     midTexs = [];
-    for (let i = 0; i < 24; i++) {
-      midTexs.push(device.createTexture({ label: 'fcmid' + i, size: [mw, mh],
-        format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
-    }
+    midIdx = 0;
     blitBg.clear();
     log('runtime up @', buildRes, runtimeModel, buildGuard ? 'guard' : 'no-guard');
   }
@@ -1242,6 +1508,9 @@
   const MIN_FRAME_TEXTURES = 12;
   const MAX_FRAME_TEXTURES = Cadence.MAX_PENDING_PRESENTATIONS + 2;
   const FRAME_TEXTURE_STEPS = [MIN_FRAME_TEXTURES, 16, 20, MAX_FRAME_TEXTURES];
+  const MIN_MID_TEXTURES = 8;
+  const MAX_MID_TEXTURES = Cadence.MAX_PENDING_PRESENTATIONS;
+  const MID_TEXTURE_STEPS = [MIN_MID_TEXTURES, 12, 16, 20, MAX_MID_TEXTURES];
   let resetFramePoolOnNextCapture = false;
   function requiredFrameTextureCount(nextDelayMs, wallPairMs) {
     const required = Math.ceil(nextDelayMs / Math.max(1, wallPairMs)) + 3;
@@ -1250,13 +1519,19 @@
   function ensureFrameTextures(w, h, requiredCount = MIN_FRAME_TEXTURES) {
     const sameDimensions = texW === w && texH === h;
     if (sameDimensions && !resetFramePoolOnNextCapture
-        && frameTex.length >= requiredCount) return;
+        && frameTex.length >= requiredCount) {
+      ensureMidTextures(w, h);
+      return;
+    }
     const textureCount = sameDimensions && !resetFramePoolOnNextCapture
       ? Math.max(frameTex.length, requiredCount)
       : requiredCount;
     resetFramePoolOnNextCapture = false;
+    presentationTextureGeneration++;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
+    lastPresentedSourceTex = null;
+    lastPresentedTex = null;
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
     pairSeq++; // in-flight classify continuations must not prep destroyed textures
     pairDecisionChain = Promise.resolve();
@@ -1266,21 +1541,78 @@
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
     texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
+    ensureMidTextures(w, h);
   }
 
-  // pool dimensions for a source: fit inside FHD, keep the aspect ratio
+  // Flow is estimated at the selected model rung, while generated frames are
+  // synthesized from the presentation/source pool. Start with the amount the
+  // just-in-time scheduler normally needs and grow only when real queued work
+  // proves that a deeper ring is necessary.
+  function ensureMidTextures(w, h, requiredCount = MIN_MID_TEXTURES) {
+    const sameDimensions = midTexs.length === 0
+      || (midTexs[0]?.width === w && midTexs[0]?.height === h);
+    if (!sameDimensions) {
+      presentationTextureGeneration++;
+      if (midTexs.includes(lastPresentedSourceTex)) lastPresentedSourceTex = null;
+      if (midTexs.includes(lastPresentedTex)) lastPresentedTex = null;
+      midTexs.forEach(t => t.destroy());
+      midTexs = [];
+      midIdx = 0;
+      blitBg.clear();
+    }
+    const targetCount = MID_TEXTURE_STEPS.find(count => count >= requiredCount)
+      || MAX_MID_TEXTURES;
+    if (midTexs.length >= targetCount) return;
+    const start = midTexs.length;
+    for (let i = start; i < targetCount; i++) {
+      midTexs.push(device.createTexture({ label: 'fcmid' + poolGen + '_' + i, size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
+    }
+  }
+
+  function acquireMidTexture() {
+    let guard = midTexs.length;
+    while (guard-- > 0 && texQueued(midTexs[midIdx])) {
+      midIdx = (midIdx + 1) % midTexs.length;
+    }
+    if (midTexs.length && !texQueued(midTexs[midIdx])) {
+      const out = midTexs[midIdx];
+      midIdx = (midIdx + 1) % midTexs.length;
+      return out;
+    }
+    if (midTexs.length >= MAX_MID_TEXTURES) return null;
+    const firstNew = midTexs.length;
+    ensureMidTextures(texW, texH, firstNew + 1);
+    const out = midTexs[firstNew];
+    midIdx = (firstNew + 1) % midTexs.length;
+    return out;
+  }
+
+  function needsNeuralUpscale(w, h) {
+    if (!overlay?.width || !overlay?.height || !w || !h) return false;
+    return overlay.width / w > 1.15 || overlay.height / h > 1.15;
+  }
+
+  // Use presentation-sized pools for the sharp full-resolution warp. When neural
+  // SR is active and the decoded source is genuinely smaller, preserve the native
+  // source pixels so TinySR receives real low-resolution input instead of a frame
+  // that was already linearly enlarged to the canvas size.
   function poolDims() {
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
     const s = Math.min(1, 1920 / fw, 1080 / fh);
-    return [Math.round(fw * s), Math.round(fh * s)];
+    const sw = Math.round(fw * s), sh = Math.round(fh * s);
+    if (cfg.sr && sys.f16 && needsNeuralUpscale(sw, sh)) return [sw, sh];
+    if (overlay?.width && overlay?.height) return [overlay.width, overlay.height];
+    return [sw, sh];
   }
-  // copyExternalImageToTexture copies 1:1 and NEVER scales - for >FHD sources a
-  // plain copy grabs the top-left FHD crop of the frame. Capture the full frame
-  // into a scratch texture and downscale-blit it into the pool instead.
+  // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
+  // backing differ, capture the whole source then downscale once into the pool.
   let capTex = null, downPipe = null, capBgs = new WeakMap();
   function captureFrame(dst, vw, vh) {
+    markPresentationTextureWrite(dst);
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
-    if (fw <= 1920 && fh <= 1080) {
+    if (fw === vw && fh === vh) {
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: dst }, [vw, vh]);
       return;
     }
@@ -1432,6 +1764,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // (same idea as RTX Video HDR; the browser only ever hands us tonemapped SDR)
   function configureOverlay() {
     if (!overlayCtx || !device) return;
+    const configurationGeneration = ++overlayConfigurationGeneration;
     let hdr = !!(cfg.hdr && sys.hdrOk);
     const fmt = hdr ? 'rgba16float' : 'rgba8unorm';
     try {
@@ -1442,9 +1775,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       hdr = false;
       overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
-    const fs = hdr ? `
+    const sharp = cfg.sharpness.toFixed(1);
+    const sampleColor = cfg.sharpness ? `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  let c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
+  let px = 1.0 / vec2<f32>(textureDimensions(tex));
+  let blur = (textureSampleLevel(tex, samp, uv + vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv + vec2<f32>(0.0, px.y), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(0.0, px.y), 0.0).rgb) * 0.25;
+  return clamp(c + (c - blur) * ${sharp}, vec3<f32>(0.0), vec3<f32>(1.0));
+}` : `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  return textureSampleLevel(tex, samp, uv, 0.0).rgb;
+}`;
+    const fs = sampleColor + (hdr ? `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let c = textureSampleLevel(tex, samp, v.uv, 0.0).rgb;
+  let c = sampleColor(v.uv);
   let lin = pow(max(c, vec3(0.0)), vec3(2.2));
   let y = max(lin.r, max(lin.g, lin.b));
   let t = smoothstep(0.35, 1.0, y);
@@ -1452,14 +1799,26 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   return vec4(pow(lin * gain, vec3(1.0 / 2.2)), 1.0);
 }` : `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return textureSampleLevel(tex, samp, v.uv, 0.0);
-}`;
+  return vec4<f32>(sampleColor(v.uv), 1.0);
+}`);
     const mod = device.createShaderModule({ code: BLIT_VS + fs });
     blitPipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: mod, entryPoint: 'vs' },
       fragment: { module: mod, entryPoint: 'fs', targets: [{ format: hdr ? 'rgba16float' : 'rgba8unorm' }] } });
     blitBg.clear(); // bind groups belong to the old pipeline layout
     sys.hdrOn = hdr;
+    if (running && lastPresentedSourceTex) {
+      const repaintTex = lastPresentedSourceTex;
+      const textureGeneration = presentationTextureGeneration;
+      const textureVersion = presentationTextureVersions.get(repaintTex) || 0;
+      requestAnimationFrame(() => {
+        if (!running || configurationGeneration !== overlayConfigurationGeneration
+            || textureGeneration !== presentationTextureGeneration
+            || textureVersion !== (presentationTextureVersions.get(repaintTex) || 0)
+            || repaintTex !== lastPresentedSourceTex) return;
+        present(repaintTex, false);
+      });
+    }
   }
   // fullscreen renders in the browser's TOP LAYER: anything not inside the
   // fullscreen element is invisible there. Move the whole UI in (and back out) -
@@ -1498,6 +1857,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   });
 
   function positionOverlay(vrIn) { // caller may pass a fresh video rect to save a forced layout
+    if (!overlay || !videoEl?.isConnected || !videoEl.parentElement) return;
     if (overlay.parentElement !== videoEl.parentElement) {
       videoEl.parentElement.insertBefore(overlay, videoEl.nextSibling);
     }
@@ -1558,16 +1918,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       pairSeq++;
       if (cfg.debug && !supported) log('object-fit fallback to raw video', overlayFitRequested, bw, bh);
     }
-    overlay.style.visibility = supported ? 'visible' : 'hidden';
-    overlay.style.pointerEvents = supported && videoEl.controls ? 'auto' : 'none';
-    if (!supported) return;
+    const canvasActive = needsCanvasPresentation();
+    overlay.style.visibility = supported && canvasActive ? 'visible' : 'hidden';
+    overlay.style.pointerEvents = supported && canvasActive && videoEl.controls ? 'auto' : 'none';
+    if (!supported || !canvasActive) return;
     const cap = Math.min(1, 1920 / bw, 1080 / bh);
     bw = Math.round(bw * cap);
     bh = Math.round(bh * cap);
     if (overlay.width !== bw || overlay.height !== bh) { overlay.width = bw; overlay.height = bh; }
   }
   // ---------- TinySR 2x upscale on the present path ----------
-  let sr = null, srBuilding = null;
+  let sr = null, srBuilding = null, srProcessedFrames = 0;
   const srOut = new Map();
   async function ensureSR() {
     if (sr || !sys.f16 || !device) return; // SR shaders need shader-f16
@@ -1596,6 +1957,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         return;
       }
       sr = built;
+      resetSrCostTracking();
+      srProcessedFrames = 0;
       log('SR up', JSON.stringify(convTune || 'default-w4v2'));
     })();
     try { await srBuilding; } finally { srBuilding = null; }
@@ -1605,14 +1968,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // the ORIGINAL cadence, independent of what the output side presents (hz mode
   // rarely presents raw sources - the left half would freeze otherwise)
   function present(tex, isMid) {
-    if (!overlayFitSupported) return;
+    if (!tex || !needsCanvasPresentation() || !overlayFitSupported) return;
+    const sourceTex = tex;
     // every presented frame goes through SR when it adds pixels toward the
     // canvas. It used to be generated-frames-only as a GPU saving, but that
     // alternates sharp/soft at display rate - visible shimmer, worst on
     // low-res anime (field report 2026-07-13).
-    if (cfg.sr) {
+    if (cfg.sr && sys.f16) {
       if (!sr) { ensureSR().catch(e => log('sr', e)); }
-      else if (tex.width * 1.15 < overlay.width) { // marginal upscale = invisible after the canvas downsample
+      else if (needsNeuralUpscale(tex.width, tex.height)) { // marginal upscale = invisible after the canvas downsample
         const key = tex.width + 'x' + tex.height;
         let out = srOut.get(key);
         if (!out) {
@@ -1622,14 +1986,41 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
             usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
           srOut.set(key, out);
           if (srOut.size > 4) {
-            for (const [k, t] of srOut) if (k !== key) { t.destroy(); srOut.delete(k); }
+            presentationTextureGeneration++;
+            for (const [k, t] of srOut) if (k !== key) {
+              if (t === lastPresentedSourceTex) lastPresentedSourceTex = null;
+              if (t === lastPresentedTex) lastPresentedTex = null;
+              t.destroy();
+              srOut.delete(k);
+            }
             blitBg.clear();
           }
         }
-        // false while the per-size pipelines compile (async) - show the raw frame
-        if (sr.process(tex, out, tex.width, tex.height)) tex = out;
+        // false/null while the per-size pipelines compile (async) - show the raw frame
+        const measureSr = !!sr.hasGpuTimestamps && shouldMeasureSrProcessCost(key);
+        markPresentationTextureWrite(out);
+        const timestampedSr = measureSr && typeof sr.processTimed === 'function';
+        const timedResult = timestampedSr
+          ? sr.processTimed(tex, out, tex.width, tex.height)
+          : null;
+        const processed = timestampedSr
+          ? timedResult !== null
+          : sr.process(tex, out, tex.width, tex.height);
+        if (processed) {
+          if (measureSr) {
+            if (timestampedSr) {
+              if (timedResult.timing) {
+                trackSrProcessCost(key, timedResult.timing, device);
+              }
+            }
+          }
+          tex = out;
+          srProcessedFrames++;
+        }
       }
     }
+    lastPresentedSourceTex = sourceTex;
+    lastPresentedTex = tex;
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{
       view: overlayCtx.getCurrentTexture().createView(),
@@ -1666,6 +2057,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     diag.presentCalls++;
     if (overlay.style.opacity !== '1') {
       overlay.style.transition = ''; // back to the stylesheet fade (onSrcChange kills it)
+      overlay.style.visibility = 'visible';
       overlay.style.opacity = '1'; // reveal only once pixels exist
     }
     const now = performance.now();
@@ -1996,7 +2388,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       return;
     }
     ensureWarn();
-    const load = uniqueIntervalMs > 1 ? msAvg * Math.max(0, effN - 1) / uniqueIntervalMs : 0;
+    const load = currentEstimatedGpuLoad();
     const ratePlan = stableOutputRatePlan(currentOutputRatePlan());
     // fixed factor: over budget OR visibly dropping. auto: even 2x is being skipped
     const dropRate = fpsWin.length ? (dropWin.length / 2) / fpsWin.length : 0; // drops vs shown, per sec
@@ -2108,6 +2500,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     }
     updateBar();
     } // end of throttled UI block
+    if (!needsCanvasPresentation()) {
+      useNativePassthrough();
+      return;
+    }
     if (queue.length > 1) queue.sort((a, b) => a.at - b.at);
     const dueSelection = Cadence.selectDuePresentation(queue, now, {
       targetHz: usesExactCadence()
@@ -2170,13 +2566,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const srcFps = intervalMs > 1 ? (1000 / intervalMs) : 0;
       if (cfg.debug) {
         const ds = diagnosticSnapshot(now);
-        const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
+        const load = Math.min(100, currentEstimatedGpuLoad() * 100);
         const totalAutoPenalty = autoPenalty + autoRafPenalty;
         const mode = cfg.factor === 'auto' && totalAutoPenalty && cfg.fpsLimit === null
           ? `Auto-${totalAutoPenalty}` : outputRateLabel();
         hud.textContent = [
           `${videoEl.videoWidth}x${videoEl.videoHeight}@${srcFps.toFixed(0)} → ${fpsWin.length}fps ×${effN} (${mode})`,
-          `${msAvg.toFixed(1)}ms@${cfg.res}p`,
+          `prep ${activePrepCostMs().toFixed(1)} + mid ${activeMidCostMs().toFixed(1)}ms@${cfg.res}p`,
           `buf ${delayMs.toFixed(0)}`,
           `GPU ${load.toFixed(0)}%`,
           `raf ${rafMs.toFixed(1)}/${rafFloor.toFixed(1)}`,
@@ -2226,14 +2622,41 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function texInCurrentJob(t) {
     return !!curJob && (curJob.previous === t || curJob.current === t);
   }
+
+  function submitPairPrep(previous, current) {
+    const measure = !!rt.hasGpuTimestamps && shouldMeasurePrepCost();
+    diag.prepCalls++;
+    const timing = measure
+      ? rt.prepPair(previous, current, { measure: true })
+      : rt.prepPair(previous, current);
+    if (measure && timing) trackPrepCost(timing, device);
+  }
+
+  function trackMidProcessCost(timingPromise, submittedDevice, timingGeneration, gpuProbe) {
+    Promise.resolve(timingPromise)
+      .then(sampleMs => {
+        if (timingGeneration !== rtGeneration || device !== submittedDevice) return;
+        if (!validGpuCostSample(sampleMs)) return;
+        msAvg = updateRollingGpuCost(midCostSamples, msAvg, sampleMs);
+        lastMidCostAt = performance.now();
+        outputRatePlanKey = '';
+        if (gpuProbe) gpuProbeActive = false;
+      })
+      .catch(() => {
+        if (timingGeneration === rtGeneration && gpuProbe) {
+          gpuProbeActive = false;
+          outputRatePlanKey = '';
+        }
+      });
+  }
+
   function submitMid() {
     const k = curJob.next;
     const timingGeneration = rtGeneration;
     const gpuProbe = curJob.gpuProbe === true;
     const disp = curJob.ats ? curJob.ats[k] : curJob.at + curJob.ts[k] * curJob.intervalMs;
-    let guard = midTexs.length; // don't clobber queued mids
-    while (guard-- > 0 && texQueued(midTexs[midIdx])) midIdx = (midIdx + 1) % midTexs.length;
-    if (texQueued(midTexs[midIdx])) {
+    const out = acquireMidTexture(); // never clobber a generated frame still queued for display
+    if (!out) {
       if (benchTelemetry) benchTelemetry.midPoolExhausted++;
       const anchor = curJob.ts[k] < 0.5 ? curJob.previous : curJob.current;
       schedulePresentation(anchor, disp, false);
@@ -2241,41 +2664,20 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       if (curJob.next >= curJob.ts.length) curJob = null;
       return false;
     }
-    const out = midTexs[midIdx];
-    midIdx = (midIdx + 1) % midTexs.length;
-    const t0 = performance.now();
-    try { rt.runT(curJob.ts[k], out); diag.inferenceCalls++; } catch (e) { log('runT', e); curJob = null; return; }
-    // sample every 4th mid STARTING AT k=1: mid 0's drain wait also swallows the
-    // trunk prep still executing ahead of it, so sampling it inflated msAvg by the
-    // trunk share and the auto controller under-committed. Single-mid jobs (x2)
-    // have no k=1 - sample k=0 there, prep has usually drained by its slot.
-    if ((k & 3) === 1 || curJob.ts.length === 1) { // a drain-probe promise per submit adds up at high factors
-      device.queue.onSubmittedWorkDone()
-        .then(() => {
-          if (timingGeneration !== rtGeneration) return;
-          const elapsedMs = performance.now() - t0;
-          // queue completion is observed on the main thread and includes prior
-          // queue backlog. Use the lower quartile of a rolling window as the
-          // achievable clean per-mid service time; a sustained slowdown still
-          // replaces the full window and lowers admission within ~250ms.
-          midCostSamples.push(elapsedMs);
-          if (midCostSamples.length > 16) midCostSamples.shift();
-          const orderedCosts = [...midCostSamples].sort((a, b) => a - b);
-          const cleanCostMs = orderedCosts[Math.floor((orderedCosts.length - 1) * 0.25)];
-          msAvg = msAvg ? msAvg * 0.8 + cleanCostMs * 0.2 : cleanCostMs;
-          lastMidCostAt = performance.now();
-          if (gpuProbe) {
-            gpuProbeActive = false;
-            outputRatePlanKey = '';
-          }
-        })
-        .catch(() => {
-          if (timingGeneration !== rtGeneration) return;
-          if (gpuProbe) {
-            gpuProbeActive = false;
-            outputRatePlanKey = '';
-          }
-        });
+    const measure = !!rt.hasGpuTimestamps
+      && ((k & 3) === 1 || curJob.ts.length === 1);
+    markPresentationTextureWrite(out);
+    let timing = null;
+    try {
+      timing = measure
+        ? rt.runT(curJob.ts[k], out, { measure: true })
+        : rt.runT(curJob.ts[k], out);
+      diag.inferenceCalls++;
+    } catch (e) { log('runT', e); curJob = null; return; }
+    // Sample sparsely at high factors. Single-mid jobs have no later sample and
+    // therefore measure k=0. Non-timestamp adapters keep conservative defaults.
+    if (measure) { // a timing promise per submit adds up at high factors
+      if (timing) trackMidProcessCost(timing, device, timingGeneration, gpuProbe);
     }
     schedulePresentation(out, disp, true);
     curJob.next++;
@@ -2288,7 +2690,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function driveJob(now) {
     if (!curJob || switching) return;
-    const lead = 2 * (msAvg || 10) + 8; // submit when the display slot is one compute away
+    const lead = activePrepCostMs() + 2 * ((msAvg || 10) + activeSrCostMs()) + 8;
     while (curJob && curJob.next < curJob.ts.length) {
       const disp = curJob.ats ? curJob.ats[curJob.next]
         : curJob.at + curJob.ts[curJob.next] * curJob.intervalMs;
@@ -2312,6 +2714,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (!overlayFitSupported) return;
     const sourceCallbackAt = performance.now();
     recordBenchSource(sourceCallbackAt, metadata);
+    if (!needsCanvasPresentation()) {
+      useNativePassthrough();
+      return;
+    }
     if (processingFrame) {
       if (benchTelemetry) benchTelemetry.sourceBusySkipped++;
       return;
@@ -2357,7 +2763,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       const dTarget = Cadence.computePresentationDelayMs({
         cadenceMode: cadenceConfigured,
         sourceIntervalMs: wallPairMs,
-        midCostMs: msAvg || 10,
+        midCostMs: (msAvg || 10) + activeSrCostMs(),
+        pairCostMs: activePrepCostMs(),
         burstPadMs: burstPad,
         floorMs,
         maxDelayMs: cadenceConfigured ? 2500 : 180,
@@ -2496,12 +2903,12 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
   function decidePair({ dup, cut }, prev, tex, arrival, srcAt, cadenceMode, cadenceConfigured, pairTiming) {
     const noInterpolation = cut || (cfg.anime && dup);
+    const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
+    const sourceIntervalMs = decodedIntervalMs / playbackRate;
     if (cut) { cuts++; diag.cutSkips++; lastUniqueTs = arrival; }
     else if (cfg.anime && dup) { dups++; diag.duplicateSkips++; }
     else {
       const du = arrival - lastUniqueTs;
-      const playbackRate = Math.max(0.01, Math.abs(Number(videoEl?.playbackRate) || 1));
-      const sourceIntervalMs = decodedIntervalMs / playbackRate;
       if (du > 5 && du < 500) {
         uniqueIntervalMs = Cadence.updateUniqueInterval(uniqueIntervalMs, du, {
           minimumMs: sourceIntervalMs,
@@ -2514,7 +2921,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       lastUniqueTs = arrival;
     }
 
-    const ms = pairTiming.ratePlan?.admissionCostMs || msAvg || 10;
+    const modelMs = pairTiming.ratePlan?.modelCostMs || msAvg || 10;
+    const pairMs = pairTiming.ratePlan?.pairCostMs ?? activePrepCostMs();
+    const presentationMs = pairTiming.ratePlan?.presentationCostMs ?? activeSrCostMs();
     if (cadenceConfigured && !cadenceMode) {
       effN = 1;
       recordBenchPairPlan(1, false, 0);
@@ -2524,7 +2933,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // Every source interval advances one target clock, including cuts, anime
       // duplicates and intervals that need decimation. Exactly one presentation
       // is scheduled per target tick; there is no extra source-frame fallback.
-      const cadence = planPairCadence(!noInterpolation, ms, pairTiming);
+      const cadence = planPairCadence(!noInterpolation, modelMs, pairTiming);
       const mids = cadence.presentations.filter(item => item.kind === 'interpolate');
       scheduleCadenceAnchors(cadence.presentations, prev, tex);
       const n = Math.max(1, cadence.presentations.length);
@@ -2546,7 +2955,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         return;
       }
 
-      const canRun = !switching && mids.length * ms <= cadence.sourceIntervalMs * 0.9;
+      const canRun = !switching
+        && estimatedPairGpuCost(mids.length, cadence.presentations.length,
+          modelMs, presentationMs, pairMs) <= cadence.sourceIntervalMs * 0.9;
       recordBenchPairPlan(n, canRun, canRun ? mids.length : 0);
       if (!canRun) {
         scheduleCadenceAnchors(Cadence.fallbackCadencePresentations(mids), prev, tex);
@@ -2555,8 +2966,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
       flushJob(); // leftovers of the previous pair go out before the new prep
       try {
-        diag.prepCalls++;
-        rt.prepPair(prev, tex);
+        submitPairPrep(prev, tex);
         curJob = { ts: mids.map(item => item.t), next: 0, at: cadence.startAt,
           intervalMs: cadence.intervalMs, ats: mids.map(item => item.at),
           gpuProbe: pairTiming.ratePlan?.gpuProbe === true, previous: prev, current: tex };
@@ -2572,7 +2982,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     if (cfg.factor === 'auto') {
       // smart auto: as much as fits the unique-frame budget, display service,
       // drop feedback and current motion. Capped Auto reuses the same policy.
-      const policy = autoPolicyFactor(ms);
+      const policy = autoPolicyFactor(modelMs);
       n = policy.factor;
       run = policy.runnable;
       if (run) {
@@ -2596,16 +3006,24 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       // to what actually fits the frame budget (the overload plate explains),
       // because piling up the queue looks far worse than a lower factor
       n = cfg.factor;
-      while (n > 2 && (n - 1) * ms > uniqueIntervalMs * 0.9) n--;
-      if ((n - 1) * ms > uniqueIntervalMs * 1.15) run = false; // even 2x won't fit
+      while (n > 2
+          && (estimatedLegacyFactorGpuCost(n, modelMs, presentationMs,
+            playbackAdjustedSourceHz(), pairMs) > uniqueIntervalMs * 0.9
+            || estimatedActiveIntervalGpuCost(n, modelMs, presentationMs, pairMs)
+              > sourceIntervalMs * 0.9)) n--;
+      if (estimatedLegacyFactorGpuCost(n, modelMs, presentationMs,
+        playbackAdjustedSourceHz(), pairMs) > uniqueIntervalMs * 1.15
+        || estimatedActiveIntervalGpuCost(n, modelMs, presentationMs, pairMs)
+          > sourceIntervalMs * 1.15) {
+        run = false; // even 2x will not fit
+      }
     }
     effN = n;
     recordBenchPairPlan(n, run && !switching, run ? Math.max(0, n - 1) : 0);
     if (run && !switching) {
       flushJob(); // leftovers of the previous pair go out before the new prep
       try {
-        diag.prepCalls++;
-        rt.prepPair(prev, tex);
+        submitPairPrep(prev, tex);
         const ts = [];
         for (let k = 1; k < n; k++) ts.push(k / n);
         curJob = { ts, next: 0, at: schedT - intervalMs + delayMs, intervalMs,
@@ -2731,12 +3149,14 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   function setFrameGeneration(enabled, persist = true) {
     const next = !!enabled;
     if (cfg.fg === next) return;
+    const previousNeedsCanvas = needsCanvasPresentation();
     cfg.fg = next;
     resetAutoController();
     delayMs = DELAY_MS;
     resetOutputCadence(true);
     overSince = 0;
     syncPanel();
+    reconcilePresentationMode(previousNeedsCanvas);
     if (persist) saveCfg();
   }
 
@@ -2788,6 +3208,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     delayMs = DELAY_MS;
     resetFramePoolOnNextCapture = true;
     lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
+    presentationTextureGeneration++;
+    lastPresentedSourceTex = null;
+    lastPresentedTex = null;
     resetDecodedSourceCadence();
     lastPumpT = 0;
     refreshEstimate.stableSamples = 0;
@@ -2844,10 +3267,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.display = 'block';
     // native players: we own clicks (play/pause + our fullscreen). Sites with DOM
     // controls (YouTube etc.) keep the overlay transparent to the pointer.
-    overlay.style.pointerEvents = overlayFitSupported && videoEl.controls ? 'auto' : 'none';
+    overlay.style.pointerEvents = needsCanvasPresentation()
+      && overlayFitSupported && videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
-    const [vw, vh] = videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
+    const [vw, vh] = needsCanvasPresentation() && videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
     if (vw && vh) {
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
@@ -2872,7 +3296,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         } else throw e;
       }
     }
-    if (cfg.sr) ensureSR().catch(e => log('sr', e));
+    if (cfg.sr && sys.f16) ensureSR().catch(e => log('sr', e));
     resetAutoController();
     resetOutputCadence(true);
     lastTex = null; schedT = 0; lastArrival = 0; lastUniqueTs = 0;
@@ -2883,6 +3307,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     dropped = 0; dups = 0; cuts = 0;
     if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
     running = true;
+    nativePassthroughActive = false;
+    useNativePassthrough();
     hud.style.display = 'block';
     if (sys.integrated) {
       advise('⚠ Chrome is running on the integrated GPU (' + sys.gpu + '). For full speed: '
@@ -2897,6 +3323,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   }
   function stop() {
     running = false;
+    nativePassthroughActive = false;
     diag.loopStops++;
     invalidatePlaybackLoops();
     const stopEpoch = playbackLoopEpoch;
@@ -2957,15 +3384,16 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `output rate: ${rateState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
+      `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
+      'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
-      const [mw, mh] = SIZES[cfg.res];
-      const vramMB = (texW * texH * 4 * frameTex.length + mw * mh * 4 * midTexs.length) / 1048576;
-      const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
+      const vramMB = texW * texH * 4 * (frameTex.length + midTexs.length) / 1048576;
+      const load = Math.min(100, currentEstimatedGpuLoad() * 100);
       lines.push(
         `out: ${fpsWin.length}fps · effective pair x${effN}`,
         `display: ~${rafMs > 1 ? (1000 / rafMs).toFixed(0) : '-'}Hz`,
-        `mid: ${msAvg.toFixed(1)}ms @ ${cfg.res}p`,
+        `prep: ${activePrepCostMs().toFixed(1)}ms/pair · mid: ${activeMidCostMs().toFixed(1)}ms @ ${cfg.res}p · SR: ${activeSrCostMs().toFixed(1)}ms/frame`,
         `GPU load (ours, est.): ~${load.toFixed(0)}%`,
         `VRAM textures: ~${vramMB.toFixed(0)}MB · queue ${queue.length}`);
     }
@@ -3111,11 +3539,17 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     const Fg = panel.querySelector('#fcFG'), Sr = panel.querySelector('#fcSR');
     Fg.onchange = () => setFrameGeneration(Fg.checked);
     Sr.onchange = () => {
+      const previousNeedsCanvas = needsCanvasPresentation();
       cfg.sr = Sr.checked; saveCfg();
       if (cfg.sr && device) ensureSR().catch(e => log('sr', e));
+      reconcilePresentationMode(previousNeedsCanvas, true);
     };
     const Hd = panel.querySelector('#fcHDR');
-    Hd.onchange = () => { cfg.hdr = Hd.checked; saveCfg(); configureOverlay(); };
+    Hd.onchange = () => {
+      const previousNeedsCanvas = needsCanvasPresentation();
+      cfg.hdr = Hd.checked; saveCfg(); configureOverlay();
+      reconcilePresentationMode(previousNeedsCanvas);
+    };
     panel.querySelector('#fcShowFps').onchange = event => {
       cfg.showFps = event.currentTarget.checked;
       saveCfg();
@@ -3316,6 +3750,19 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
           targetState: ratePlan.state, targetReason: ratePlan.clampReason,
           targetWarning: ratePlan.warning,
           drops: dropped, model: rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model,
+          presentationMode: needsCanvasPresentation() ? 'canvas' : 'native',
+          presentationPool: {
+            width: texW, height: texH, sourceTextures: frameTex.length,
+            generatedTextures: midTexs.length,
+          },
+          canvasBacking: overlay ? { width: overlay.width, height: overlay.height } : null,
+          frameGeneration: { requested: cfg.fg, prepCalls: diag.prepCalls,
+            inferenceCalls: diag.inferenceCalls,
+            timingMode: rt?.hasGpuTimestamps ? 'gpu' : 'defaults',
+            prepCostMs: +activePrepCostMs().toFixed(2),
+            midCostMs: +activeMidCostMs().toFixed(2) },
+          superResolution: { requested: cfg.sr, ready: !!sr, scale: sr?.scale || null,
+            processedFrames: srProcessedFrames, costMs: +activeSrCostMs().toFixed(2) },
         }); } catch {} };
         if (running) respond();
         else setTimeout(respond, v ? 120 : 250);

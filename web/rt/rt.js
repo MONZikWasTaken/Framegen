@@ -24,6 +24,91 @@ const WG = 8;
 let texBgSeq = 0;
 const texBgId = (t) => t.__rtBgId || (t.__rtBgId = ++texBgSeq);
 
+// Fixed GPU resources for occasional production-path timings. Keeping a small
+// ring avoids allocating query/readback buffers in the frame loop; when every
+// slot is still mapping, the caller simply gets no sample for that frame.
+function createGpuTimestampRing(device, slotCount = 4, maxQueryCount = 4) {
+  if (!device.features.has('timestamp-query')) return null;
+  const slots = [];
+  let destroyed = false;
+  const byteSize = maxQueryCount * 8;
+  try {
+    for (let i = 0; i < slotCount; i++) {
+      let queries = null, resolve = null, read = null;
+      try {
+        queries = device.createQuerySet({ type: 'timestamp', count: maxQueryCount });
+        resolve = device.createBuffer({ size: byteSize,
+          usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+        read = device.createBuffer({ size: byteSize,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+        slots.push({ busy: false, queries, resolve, read });
+      } catch (error) {
+        try { queries?.destroy(); } catch {}
+        try { resolve?.destroy(); } catch {}
+        try { read?.destroy(); } catch {}
+        throw error;
+      }
+    }
+  } catch {
+    for (const slot of slots) {
+      try { slot.queries.destroy(); } catch {}
+      try { slot.resolve.destroy(); } catch {}
+      try { slot.read.destroy(); } catch {}
+    }
+    return null;
+  }
+  const release = (slot) => {
+    if (!slot) return;
+    if (!destroyed) slot.busy = false;
+  };
+  return {
+    acquire() {
+      if (destroyed) return null;
+      const slot = slots.find(s => !s.busy);
+      if (!slot) return null;
+      slot.busy = true;
+      return slot;
+    },
+    release,
+    writes(slot, beginningOfPassWriteIndex, endOfPassWriteIndex) {
+      return { timestampWrites: { querySet: slot.queries,
+        beginningOfPassWriteIndex, endOfPassWriteIndex } };
+    },
+    encodeReadback(enc, slot, queryCount) {
+      enc.resolveQuerySet(slot.queries, 0, queryCount, slot.resolve, 0);
+      enc.copyBufferToBuffer(slot.resolve, 0, slot.read, 0, queryCount * 8);
+    },
+    collect(slot, queryCount, firstIndex, lastIndex) {
+      let mapped = false;
+      try {
+        return slot.read.mapAsync(GPUMapMode.READ, 0, queryCount * 8).then(() => {
+          mapped = true;
+          const values = new BigUint64Array(slot.read.getMappedRange(0, queryCount * 8));
+          const first = values[firstIndex], last = values[lastIndex];
+          return last >= first ? Number(last - first) / 1e6 : NaN;
+        }).catch(() => NaN).finally(() => {
+          if (mapped) { try { slot.read.unmap(); } catch {} }
+          release(slot);
+        });
+      } catch {
+        release(slot);
+        return Promise.resolve(NaN);
+      }
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      for (const slot of slots) {
+        slot.busy = true;
+        try { if (slot.read.mapState === 'mapped') slot.read.unmap(); } catch {}
+        try { slot.queries.destroy(); } catch {}
+        try { slot.resolve.destroy(); } catch {}
+        try { slot.read.destroy(); } catch {}
+      }
+    },
+  };
+}
+
 // NOTE: with layout:'auto' WebGPU strips unused bindings from the layout, so each
 // entry point gets its own shader with exactly the bindings it touches.
 function wgslPrepFull(W, H) {
@@ -838,23 +923,26 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   bgr = bgr + textureSampleLevel(resT, samp, uv8, 0.0).xyz;` : '';
   const GUARD = staticGuard ? /* wgsl */`
   var d = 0.0;
+  let guardDim = vec2<f32>(textureDimensions(outTex));
+  let mx = i32((f32(x) + 0.5) * ${W}.0 / guardDim.x);
+  let my = i32((f32(y) + 0.5) * ${H}.0 / guardDim.y);
   for (var dy = -1; dy <= 1; dy++) {
     for (var dx = -1; dx <= 1; dx++) {
-      d += dtap(x + dx, y + dy);
+      d += dtap(mx + dx, my + dy);
     }
   }
   d *= (1.0 / 9.0);
   let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
-    let stat = mix(warpT(tex0, f32(x), f32(y)), warpT(tex1, f32(x), f32(y)), t);
+    let stat = mix(warpT(tex0, srcPos.x, srcPos.y), warpT(tex1, srcPos.x, srcPos.y), t);
     bgr = mix(bgr, stat, wStatic);
   }` : '';
   const wgslFloat = (value) => Number.isInteger(value) ? `${value}.0` : `${value}`;
   const COMPOSITE = experimentalMaskSharpen ? /* wgsl */`
   let logit = textureSampleLevel(t8m, samp, uv8, 0.0).x;
-  let w0 = warpT(tex0, f32(x) + fl.x, f32(y) + fl.y);
-  let w1 = warpT(tex1, f32(x) + fl.z, f32(y) + fl.w);
+  let w0 = warpT(tex0, srcPos.x + fl.x, srcPos.y + fl.y);
+  let w1 = warpT(tex1, srcPos.x + fl.z, srcPos.y + fl.w);
   let warpDelta = abs(w0 - w1);
   let disagreement = max(warpDelta.x, max(warpDelta.y, warpDelta.z));
   let gate = smoothstep(${wgslFloat(experimentalMaskSharpen.disagreementLow)}, ${wgslFloat(experimentalMaskSharpen.disagreementHigh)}, disagreement);
@@ -862,8 +950,8 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   let m = 1.0 / (1.0 + exp(-(logit * gain)));
   var bgr = w0 * m + w1 * (1.0 - m);` : /* wgsl */`
   let m = 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uv8, 0.0).x));
-  let w0 = warpT(tex0, f32(x) + fl.x, f32(y) + fl.y);
-  let w1 = warpT(tex1, f32(x) + fl.z, f32(y) + fl.w);
+  let w0 = warpT(tex0, srcPos.x + fl.x, srcPos.y + fl.y);
+  let w1 = warpT(tex1, srcPos.x + fl.z, srcPos.y + fl.w);
   var bgr = w0 * m + w1 * (1.0 - m);`;
   return /* wgsl */`
 @group(0) @binding(0) var t8f: texture_2d<f32>;  // flow/8: fx0,fy0,fx1,fy1
@@ -880,16 +968,59 @@ fn dtap(x: i32, y: i32) -> f32 {
 @group(1) @binding(2) var samp: sampler;
 // grid_sample bilinear/border via the sampler: clamp-to-edge + hw filtering
 fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
-  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(textureDimensions(t));
   return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r like the buffer path
+}
+
+fn edgeUpsample(uv: vec2<f32>, guide: vec3<f32>) -> vec4<f32> {
+  let dim = vec2<i32>(textureDimensions(t8f));
+  let fdim = vec2<f32>(dim);
+  let p = uv * fdim - 0.5;
+  let q = vec2<i32>(floor(p));
+  let f = fract(p);
+  let p00 = clamp(q, vec2<i32>(0), dim - 1);
+  let p10 = clamp(q + vec2<i32>(1, 0), vec2<i32>(0), dim - 1);
+  let p01 = clamp(q + vec2<i32>(0, 1), vec2<i32>(0), dim - 1);
+  let p11 = clamp(q + vec2<i32>(1, 1), vec2<i32>(0), dim - 1);
+  let s00 = (1.0 - f.x) * (1.0 - f.y);
+  let s10 = f.x * (1.0 - f.y);
+  let s01 = (1.0 - f.x) * f.y;
+  let s11 = f.x * f.y;
+  let c00 = (textureSampleLevel(tex0, samp, (vec2<f32>(p00) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p00) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c10 = (textureSampleLevel(tex0, samp, (vec2<f32>(p10) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p10) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c01 = (textureSampleLevel(tex0, samp, (vec2<f32>(p01) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p01) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let c11 = (textureSampleLevel(tex0, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb
+    + textureSampleLevel(tex1, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb) * 0.5;
+  let w00 = s00 * exp(-48.0 * dot(c00 - guide, c00 - guide));
+  let w10 = s10 * exp(-48.0 * dot(c10 - guide, c10 - guide));
+  let w01 = s01 * exp(-48.0 * dot(c01 - guide, c01 - guide));
+  let w11 = s11 * exp(-48.0 * dot(c11 - guide, c11 - guide));
+  let ws = max(1e-6, w00 + w10 + w01 + w11);
+  let flow = (textureLoad(t8f, p00, 0) * w00 + textureLoad(t8f, p10, 0) * w10
+    + textureLoad(t8f, p01, 0) * w01 + textureLoad(t8f, p11, 0) * w11) / ws;
+  return flow;
 }
 
 @compute @workgroup_size(${WGX}, ${WGY})
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let x = i32(gid.x); let y = i32(gid.y);
-  if (x >= ${W} || y >= ${H}) { return; }
-  let uv8 = (vec2<f32>(f32(x), f32(y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
-  let fl = textureSampleLevel(t8f, samp, uv8, 0.0) * 8.0;
+  let outDim = vec2<f32>(textureDimensions(outTex));
+  if (f32(x) >= outDim.x || f32(y) >= outDim.y) { return; }
+  let uv8 = (vec2<f32>(f32(x), f32(y)) + 0.5) / outDim;
+  let srcDim = vec2<f32>(textureDimensions(tex0));
+  let srcPos = (vec2<f32>(f32(x), f32(y)) + 0.5) * srcDim / outDim - 0.5;
+  let scale = vec4<f32>(srcDim.x / ${W}.0, srcDim.y / ${H}.0,
+                         srcDim.x / ${W}.0, srcDim.y / ${H}.0);
+  var flow = textureSampleLevel(t8f, samp, uv8, 0.0);
+  if (outDim.x > ${W}.0 || outDim.y > ${H}.0) {
+    let guide = (textureSampleLevel(tex0, samp, uv8, 0.0).rgb
+      + textureSampleLevel(tex1, samp, uv8, 0.0).rgb) * 0.5;
+    flow = edgeUpsample(uv8, guide);
+  }
+  let fl = flow * 8.0 * scale;
 ${COMPOSITE}
 ${RES_ADD}
   bgr = clamp(bgr, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -981,7 +1112,7 @@ ${sparse ? `@group(0) @binding(3) var<storage, read_write> tstat: array<atomic<u
 
 // direct warp: sample the source texture (see wgslFlowOutTexDirect)
 fn warpT(t: texture_2d<f32>, sx: f32, sy: f32) -> vec3<f32> {
-  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
+  let uv = (vec2<f32>(sx, sy) + 0.5) / vec2<f32>(textureDimensions(t));
   return textureSampleLevel(t, samp, uv, 0.0).bgr; // b,g,r
 }
 
@@ -995,11 +1126,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     for (var sxp = 1; sxp <= 2; sxp++) {
       let X = hx * 4 + sxp; let Y = hy * 4 + sy; // center 2x2 of the 4x4 block
       let uvS = (vec2<f32>(f32(X), f32(Y)) + 0.5) / vec2<f32>(${W}.0, ${H}.0);
-      let f4 = textureSampleLevel(t8f, samp, uvS, 0.0) * 8.0;
+      let flowModel = textureSampleLevel(t8f, samp, uvS, 0.0) * 8.0;
+      let srcDim = vec2<f32>(textureDimensions(tex0));
+      let srcPos = (vec2<f32>(f32(X), f32(Y)) + 0.5) * srcDim / vec2<f32>(${W}.0, ${H}.0) - 0.5;
+      let f4 = flowModel * vec4<f32>(srcDim.x / ${W}.0, srcDim.y / ${H}.0,
+                                      srcDim.x / ${W}.0, srcDim.y / ${H}.0);
       mk += 1.0 / (1.0 + exp(-textureSampleLevel(t8m, samp, uvS, 0.0).x));
-      w0 += warpT(tex0, f32(X) + f4.x, f32(Y) + f4.y);
-      w1 += warpT(tex1, f32(X) + f4.z, f32(Y) + f4.w);
-      fl += f4;
+      w0 += warpT(tex0, srcPos.x + f4.x, srcPos.y + f4.y);
+      w1 += warpT(tex1, srcPos.x + f4.z, srcPos.y + f4.w);
+      fl += flowModel;
     }
   }
 ${sparse ? /* wgsl */`
@@ -1710,6 +1845,9 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // hides memory latency better than the 64-thread square on Ada
   const fgx = direct ? Math.ceil(w / 16) : gx(w);
   const fgy = direct ? Math.ceil(h / 8) : gx(h);
+  const flowDispatch = (tex) => direct
+    ? [Math.ceil(tex.width / 16), Math.ceil(tex.height / 8)]
+    : [fgx, fgy];
   // register-blocked convblock kernel covers a (2*wgx)x(2*wgy) output tile per wg
   const cbTX = ((convTune && convTune.wgx) || 8) * 2;
   const cbTY = ((convTune && convTune.wgy) || 8) * 2;
@@ -1800,7 +1938,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       }
     }
     if (outTex) {
-      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex, guardTbuf)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(fgx, fgy); });
+      st('flow', (p) => { p.setPipeline(pFlow); p.setBindGroup(0, flowBgFor(outTex, guardTbuf)); p.setBindGroup(1, tp.flowTex); p.dispatchWorkgroups(...flowDispatch(outTex)); });
     }
     const qs = device.createQuerySet({ type: 'timestamp', count: stages.length * 2 });
     const qbuf = device.createBuffer({ size: stages.length * 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
@@ -1900,7 +2038,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       pass2.setPipeline(pFlow);
       pass2.setBindGroup(0, textureOutput ? flowBgFor(outTexs[i], tbufs[i]) : bgFlow);
       if (direct) pass2.setBindGroup(1, tbg.flowTex);
-      pass2.dispatchWorkgroups(fgx, fgy);
+      pass2.dispatchWorkgroups(...flowDispatch(outTexs[i]));
       pass2.end();
       if (!textureOutput) enc.copyBufferToBuffer(outp, 0, stagings[i], 0, w * h * 4);
     }
@@ -1924,104 +2062,140 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // presentation delay shrinks from ~2x batch time to ~one mid time.
   let curPrep = null;
   let lastFilmT = NaN; // filmBuf holds this t's params; x2 runs hit 0.5 every mid
-  function prepPair(a, b) {
+  const timestampRing = createGpuTimestampRing(device);
+  const hasGpuTimestamps = !!timestampRing;
+  if (timestampRing) {
+    device.lost.then(() => timestampRing.destroy()).catch(() => timestampRing.destroy());
+  }
+  function prepPair(a, b, { measure = false } = {}) {
     if (!textureInput) throw new Error('prepPair: texture-input mode only');
     curPrep = texPrepBgs(a, b);
-    const enc = device.createCommandEncoder();
-    if (tfact) {
-      // the WHOLE t-free trunk runs here, once per pair
-      const pass = enc.beginComputePass();
-      if (sdiff) { // per-pair guard plane (replaces the old full-res prepFull)
-        pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h));
+    const timingSlot = measure && timestampRing ? timestampRing.acquire() : null;
+    try {
+      const enc = device.createCommandEncoder();
+      if (tfact) {
+        // the WHOLE t-free trunk runs here, once per pair
+        const pass = timingSlot
+          ? enc.beginComputePass(timestampRing.writes(timingSlot, 0, 1))
+          : enc.beginComputePass();
+        if (sdiff) { // per-pair guard plane (replaces the old full-res prepFull)
+          pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h));
+        }
+        pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
+        pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
+        pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(c0bX, c0bY, c0bZ);
+        // no residual/trunk copies: conv0b wrote f16r directly, cb5 writes hbuf directly
+        for (let i = 0; i < 6; i++) {
+          pass.setPipeline(bgB[i].p); pass.setBindGroup(0, bgB[i].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
+        }
+        pass.end();
+      } else {
+        const pass = timingSlot
+          ? enc.beginComputePass(timestampRing.writes(timingSlot, 0, 1))
+          : enc.beginComputePass();
+        if (direct) {
+          if (sdiff) { pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h)); }
+        } else {
+          pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+        }
+        pass.end();
       }
+      if (timingSlot) timestampRing.encodeReadback(enc, timingSlot, 2);
+      device.queue.submit([enc.finish()]);
+      return timingSlot ? timestampRing.collect(timingSlot, 2, 0, 1) : null;
+    } catch (error) {
+      if (timingSlot) timestampRing.release(timingSlot);
+      throw error;
+    }
+  }
+  function runT(t, outTex, { measure = false } = {}) {
+    if (!curPrep) throw new Error('runT before prepPair');
+    if (!textureOutput) throw new Error('runT: texture-output mode only');
+    const timingSlot = measure && timestampRing ? timestampRing.acquire() : null;
+    try {
+      const enc = device.createCommandEncoder();
+      if (tfact) {
+        // per-mid: FiLM(t) + convblocks 6,7 (+feat0 residual) + deconv + flow
+        if (t !== lastFilmT) { device.queue.writeBuffer(filmBuf, 0, filmParams(t)); lastFilmT = t; }
+        if (guardTbuf) {
+          tScratch[0] = t;
+          device.queue.writeBuffer(guardTbuf, 0, tScratch);
+        }
+        if (rSparse) { // stats/args reset per mid; the residual texture clears via
+          // the render-pass fast path (the old clearBuffer moved 691KB per mid)
+          enc.clearBuffer(rStat); enc.clearBuffer(rInd);
+          const rp = enc.beginRenderPass({ colorAttachments: [{ view: rResV,
+            loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }],
+          ...(timingSlot ? timestampRing.writes(timingSlot, 0, 1) : {}) });
+          rp.end();
+        }
+        const pass = timingSlot
+          ? enc.beginComputePass(timestampRing.writes(timingSlot, rSparse ? 2 : 0, rSparse ? 3 : 1))
+          : enc.beginComputePass();
+        if (pFilm) { // non-f16 fallback; with f16 the FiLM affine rides cb6's tile load
+          pass.setPipeline(pFilm); pass.setBindGroup(0, bgFilm);
+          pass.dispatchWorkgroups(Math.ceil((C2 * H16 * W16) / 256));
+        }
+        pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
+        pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
+        pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8));
+        if (refi) { // quarter-res refine chain; the flowout below folds the residual in
+          pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep);
+          pass.setBindGroup(1, curPrep.rprepTex); // source textures for the direct warp
+          pass.dispatchWorkgroups(gx(RW4), gx(RH4));
+          if (rSparse) { // GPU-scheduled: convs run on active tiles only
+            pass.setPipeline(pRTiles); pass.setBindGroup(0, bgRTiles);
+            pass.dispatchWorkgroups(Math.ceil(RTT / 256));
+            pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroupsIndirect(rInd, 0);
+            pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroupsIndirect(rInd, 16);
+            pass.setPipeline(pRC2); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroupsIndirect(rInd, 32);
+            pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroupsIndirect(rInd, 48);
+          } else {
+            pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
+            pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
+            pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
+            pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
+          }
+        }
+        pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex, guardTbuf));
+        pass.setBindGroup(1, curPrep.flowTex); // 'auto' layouts are pipeline-unique - rebind
+        pass.dispatchWorkgroups(...flowDispatch(outTex));
+        pass.end();
+        const timingQueryCount = rSparse ? 4 : 2;
+        if (timingSlot) timestampRing.encodeReadback(enc, timingSlot, timingQueryCount);
+        device.queue.submit([enc.finish()]);
+        return timingSlot
+          ? timestampRing.collect(timingSlot, timingQueryCount, 0, timingQueryCount - 1)
+          : null;
+      }
+      // single tbuf is safe: writeBuffer and submits are queue-ordered
+      tScratch[0] = t;
+      device.queue.writeBuffer(tbufs[0], 0, tScratch);
+      const pass = timingSlot
+        ? enc.beginComputePass(timestampRing.writes(timingSlot, 0, 1))
+        : enc.beginComputePass();
       pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
       pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
       pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(c0bX, c0bY, c0bZ);
-      // no residual/trunk copies: conv0b wrote f16r directly, cb5 writes hbuf directly
-      for (let i = 0; i < 6; i++) {
-        pass.setPipeline(bgB[i].p); pass.setBindGroup(0, bgB[i].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
-      }
       pass.end();
-    } else {
-      const pass = enc.beginComputePass();
-      if (direct) {
-        if (sdiff) { pass.setPipeline(pDiff); pass.setBindGroup(0, curPrep.diff); pass.dispatchWorkgroups(gx(w), gx(h)); }
-      } else {
-        pass.setPipeline(pPrepFull); pass.setBindGroup(0, curPrep.full); pass.dispatchWorkgroups(gx(w), gx(h));
+      const pass2 = timingSlot
+        ? enc.beginComputePass(timestampRing.writes(timingSlot, 2, 3))
+        : enc.beginComputePass();
+      for (const { p, g } of bgB) {
+        pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
       }
-      pass.end();
-    }
-    device.queue.submit([enc.finish()]);
-  }
-  function runT(t, outTex) {
-    if (!curPrep) throw new Error('runT before prepPair');
-    if (!textureOutput) throw new Error('runT: texture-output mode only');
-    const enc = device.createCommandEncoder();
-    if (tfact) {
-      // per-mid: FiLM(t) + convblocks 6,7 (+feat0 residual) + deconv + flow
-      if (t !== lastFilmT) { device.queue.writeBuffer(filmBuf, 0, filmParams(t)); lastFilmT = t; }
-      if (guardTbuf) {
-        tScratch[0] = t;
-        device.queue.writeBuffer(guardTbuf, 0, tScratch);
-      }
-      if (rSparse) { // stats/args reset per mid; the residual texture clears via
-        // the render-pass fast path (the old clearBuffer moved 691KB per mid)
-        enc.clearBuffer(rStat); enc.clearBuffer(rInd);
-        const rp = enc.beginRenderPass({ colorAttachments: [{ view: rResV,
-          loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 0 } }] });
-        rp.end();
-      }
-      const pass = enc.beginComputePass();
-      if (pFilm) { // non-f16 fallback; with f16 the FiLM affine rides cb6's tile load
-        pass.setPipeline(pFilm); pass.setBindGroup(0, bgFilm);
-        pass.dispatchWorkgroups(Math.ceil((C2 * H16 * W16) / 256));
-      }
-      pass.setPipeline(bgB[6].p); pass.setBindGroup(0, bgB[6].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
-      pass.setPipeline(bgB[7].p); pass.setBindGroup(0, bgB[7].g); pass.dispatchWorkgroups(cbX, cbY, cbZ);
-      pass.setPipeline(pDeconv); pass.setBindGroup(0, bgDeconv); pass.dispatchWorkgroups(gx(W8), gx(H8));
-      if (refi) { // quarter-res refine chain; the flowout below folds the residual in
-        pass.setPipeline(pRPrep); pass.setBindGroup(0, bgRPrep);
-        pass.setBindGroup(1, curPrep.rprepTex); // source textures for the direct warp
-        pass.dispatchWorkgroups(gx(RW4), gx(RH4));
-        if (rSparse) { // GPU-scheduled: convs run on active tiles only
-          pass.setPipeline(pRTiles); pass.setBindGroup(0, bgRTiles);
-          pass.dispatchWorkgroups(Math.ceil(RTT / 256));
-          pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroupsIndirect(rInd, 0);
-          pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroupsIndirect(rInd, 16);
-          pass.setPipeline(pRC2); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroupsIndirect(rInd, 32);
-          pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroupsIndirect(rInd, 48);
-        } else {
-          pass.setPipeline(pRC0); pass.setBindGroup(0, bgRC0); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
-          pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC1); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
-          pass.setPipeline(pRC1); pass.setBindGroup(0, bgRC2); pass.dispatchWorkgroups(gx(RW4), gx(RH4), RC / RCOC);
-          pass.setPipeline(pROut); pass.setBindGroup(0, bgROut); pass.dispatchWorkgroups(gx(RW4), gx(RH4));
-        }
-      }
-      pass.setPipeline(pFlow); pass.setBindGroup(0, flowBgFor(outTex, guardTbuf));
-      pass.setBindGroup(1, curPrep.flowTex); // 'auto' layouts are pipeline-unique - rebind
-      pass.dispatchWorkgroups(fgx, fgy);
-      pass.end();
+      pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8));
+      pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex, tbufs[0]));
+      pass2.setBindGroup(1, curPrep.flowTex); // direct warp sources (runT implies texture in+out)
+      pass2.dispatchWorkgroups(...flowDispatch(outTex));
+      pass2.end();
+      if (timingSlot) timestampRing.encodeReadback(enc, timingSlot, 4);
       device.queue.submit([enc.finish()]);
-      return;
+      return timingSlot ? timestampRing.collect(timingSlot, 4, 0, 3) : null;
+    } catch (error) {
+      if (timingSlot) timestampRing.release(timingSlot);
+      throw error;
     }
-    // single tbuf is safe: writeBuffer and submits are queue-ordered
-    tScratch[0] = t;
-    device.queue.writeBuffer(tbufs[0], 0, tScratch);
-    const pass = enc.beginComputePass();
-    pass.setPipeline(pPrepQ); pass.setBindGroup(0, curPrep.q[0]); pass.dispatchWorkgroups(gx(QW), gx(QH));
-    pass.setPipeline(pConv0a); pass.setBindGroup(0, bgConv0a); pass.dispatchWorkgroups(gx(W8), gx(H8), Z0A);
-    pass.setPipeline(pConv0b); pass.setBindGroup(0, bgConv0b); pass.dispatchWorkgroups(c0bX, c0bY, c0bZ);
-    pass.end();
-    const pass2 = enc.beginComputePass();
-    for (const { p, g } of bgB) {
-      pass2.setPipeline(p); pass2.setBindGroup(0, g); pass2.dispatchWorkgroups(cbX, cbY, cbZ);
-    }
-    pass2.setPipeline(pDeconv); pass2.setBindGroup(0, bgDeconv); pass2.dispatchWorkgroups(gx(W8), gx(H8));
-    pass2.setPipeline(pFlow); pass2.setBindGroup(0, flowBgFor(outTex, tbufs[0]));
-    pass2.setBindGroup(1, curPrep.flowTex); // direct warp sources (runT implies texture in+out)
-    pass2.dispatchWorkgroups(fgx, fgy);
-    pass2.end();
-    device.queue.submit([enc.finish()]);
   }
 
   const runTDebug = debugOutputs ? function(t, outTex, outputs) {
@@ -2044,6 +2218,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
   // work is still in flight - the spec defers the actual free)
   function destroy() {
     convFlush();
+    if (timestampRing) timestampRing.destroy();
     allBufs.forEach(b => b.destroy());
     allBufs.length = 0;
     [t8f, t8m, rResT].forEach(t => { if (t) t.destroy(); });
@@ -2051,7 +2226,8 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
     if (debugBgCache) debugBgCache.clear();
     texBgCache.clear();
   }
-  const runtime = { run, runMulti, prepPair, runT, profile, profileT, destroy, w, h };
+  const runtime = { run, runMulti, prepPair, runT, profile, profileT, destroy,
+    hasGpuTimestamps, w, h };
   if (runTDebug) runtime.runTDebug = runTDebug;
   return runtime;
 }
