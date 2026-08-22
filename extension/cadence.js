@@ -480,6 +480,8 @@
     sourceReady = Number.isFinite(sourceHz) && sourceHz > 0,
     displayReady = true,
     midCostMs = null,
+    pairCostMs = 0,
+    presentationCostMs = 0,
     strictCeiling = false,
   } = {}) {
     const safeMode = sanitizeOutputRate(mode);
@@ -521,11 +523,27 @@
 
     const runtimeCapacityHz = normalizedSourceHz * (MAX_MIDS_PER_PAIR + 1);
     let computeCapacityHz = Infinity;
-    if (Number.isFinite(midCostMs) && midCostMs > 0) {
+    const safeMidCostMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 0;
+    const safePairCostMs = Number.isFinite(pairCostMs) && pairCostMs > 0 ? pairCostMs : 0;
+    const safePresentationCostMs = Number.isFinite(presentationCostMs)
+      && presentationCostMs > 0 ? presentationCostMs : 0;
+    if (safeMidCostMs > 0 || safePairCostMs > 0 || safePresentationCostMs > 0) {
       const sourceIntervalMs = 1000 / normalizedSourceHz;
-      const maxMidsPerPair = Math.max(0, Math.min(MAX_TICKS_PER_INTERVAL - 1,
-        Math.floor(sourceIntervalMs * 0.9 / midCostMs)));
+      const computeBudgetMs = sourceIntervalMs * 0.9;
+      let maxMidsPerPair = 0;
+      for (let mids = 1; mids < MAX_TICKS_PER_INTERVAL; mids++) {
+        const pairCostMs = safePairCostMs + mids * safeMidCostMs
+          + (mids + 1) * safePresentationCostMs;
+        if (pairCostMs > computeBudgetMs) break;
+        maxMidsPerPair = mids;
+      }
       computeCapacityHz = normalizedSourceHz * (maxMidsPerPair + 1);
+      if (safePresentationCostMs > 0) {
+        // Strict ceilings can decimate below the source rate without any mids.
+        // Their capacity is bounded by the output-frame cost itself, not by the
+        // decoded source cadence used by the pair model above.
+        computeCapacityHz = Math.min(computeCapacityHz, 900 / safePresentationCostMs);
+      }
     }
     const toleranceHz = Math.max(0.01, minimumHz * VIDEO_RATE_MATCH_TOLERANCE);
     if (!strictCeiling && display.capacityHz + toleranceHz < minimumHz) {
@@ -604,12 +622,13 @@
     cadenceMode = false,
     sourceIntervalMs = 0,
     midCostMs = 10,
+    pairCostMs = 0,
     burstPadMs = 0,
     floorMs = 60,
     maxDelayMs = 180,
   } = {}) {
     for (const [label, value] of Object.entries({
-      sourceIntervalMs, midCostMs, burstPadMs, floorMs, maxDelayMs,
+      sourceIntervalMs, midCostMs, pairCostMs, burstPadMs, floorMs, maxDelayMs,
     })) {
       if (!Number.isFinite(value) || value < 0) {
         throw new RangeError(`${label} must be finite and non-negative`);
@@ -622,7 +641,7 @@
       throw new RangeError('maximum presentation delay must cover its floor');
     }
     const pairLookaheadMs = cadenceMode ? sourceIntervalMs : 0;
-    const requiredMs = pairLookaheadMs + 2 * midCostMs + 25 + burstPadMs;
+    const requiredMs = pairLookaheadMs + pairCostMs + 2 * midCostMs + 25 + burstPadMs;
     return Math.min(maxDelayMs, Math.max(floorMs, requiredMs));
   }
 

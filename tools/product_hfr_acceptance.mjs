@@ -65,6 +65,29 @@ function validateTune(value, name) {
   if (!Number.isInteger(tune.slab) || tune.slab <= 0) fail(`${name}.slab must be a positive integer`);
 }
 
+const REQUIRED_SCHEDULER_NUMERIC_FIELDS = [
+  'prepCostMs', 'msAvg', 'srCostMs',
+  'estimatedPrepCostMs', 'estimatedMidCostMs', 'estimatedSrCostMs',
+  'intervalMs', 'decodedIntervalMs', 'uniqueIntervalMs',
+  'delayMs', 'lateAvg', 'rafMs', 'rafFloor',
+];
+
+function validateScheduler(value, name) {
+  const scheduler = object(value, name);
+  if (!['gpu', 'defaults'].includes(scheduler.timingMode)) {
+    fail(`${name}.timingMode is invalid`);
+  }
+  for (const field of REQUIRED_SCHEDULER_NUMERIC_FIELDS) {
+    finiteNumber(scheduler[field], `${name}.${field}`);
+  }
+  if (Object.entries(scheduler).some(([field, fieldValue]) => (
+    field !== 'timingMode' && !Number.isFinite(fieldValue)
+  ))) {
+    fail(`${name} contains a non-finite value`);
+  }
+  return scheduler;
+}
+
 function validateFactor(raw, factor, expected, failures) {
   object(raw, `measurements.x${factor}`);
   if (raw.schemaVersion !== 1) fail(`measurements.x${factor}.schemaVersion must be 1`);
@@ -185,9 +208,7 @@ function validateFactor(raw, factor, expected, failures) {
   for (const feature of expected.requiredDeviceFeatures) {
     if (!product.deviceFeatures.includes(feature)) failures.push(`x${factor} missing WebGPU feature: ${feature}`);
   }
-  if (!product.scheduler || Object.values(product.scheduler).some(value => !Number.isFinite(value))) {
-    fail(`x${factor} scheduler state is incomplete`);
-  }
+  validateScheduler(product.scheduler, `x${factor} product.scheduler`);
   if (product.cuts !== 0) failures.push(`x${factor} deterministic fixture was classified as ${product.cuts} cuts`);
   if (!Array.isArray(telemetry.errors)) fail(`x${factor} telemetry.errors must be an array`);
   if (telemetry.errors.length) failures.push(`x${factor} extension errors are present`);

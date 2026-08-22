@@ -142,7 +142,10 @@ function factorResult(factor) {
         integrated: false,
         deviceFeatures: ['shader-f16', 'timestamp-query'],
         convTune: { coc: 8, slab: 12 },
-        scheduler: { msAvg: 2, intervalMs: 1000 / 60, uniqueIntervalMs: 1000 / 60,
+        scheduler: { prepCostMs: 1, msAvg: 2, srCostMs: 0,
+          estimatedPrepCostMs: 1, estimatedMidCostMs: 2, estimatedSrCostMs: 0,
+          timingMode: 'gpu', intervalMs: 1000 / 60, decodedIntervalMs: 1000 / 60,
+          uniqueIntervalMs: 1000 / 60,
           delayMs: 60, lateAvg: 1, rafMs: 1000 / (factor * 60), rafFloor: 1000 / (factor * 60) },
         cuts: 0,
         duplicates: 0,
@@ -207,6 +210,32 @@ test('valid product HFR report passes', () => {
   assert.equal(result.passed, true);
   assert.deepEqual(result.failures, []);
   assert.equal(result.factors.length, 2);
+});
+
+test('scheduler timing provenance accepts defaults and rejects unknown modes', () => {
+  const value = report();
+  value.measurements.x3.telemetry.product.scheduler.timingMode = 'defaults';
+  const result = validateProductHfrReport(value, expected());
+  assert.equal(result.passed, true, result.failures.join(', '));
+  value.measurements.x3.telemetry.product.scheduler.timingMode = 'wall-clock';
+  assert.throws(
+    () => validateProductHfrReport(value, expected()),
+    ProductHfrAcceptanceError,
+  );
+
+  const missingMode = report();
+  delete missingMode.measurements.x3.telemetry.product.scheduler.timingMode;
+  assert.throws(
+    () => validateProductHfrReport(missingMode, expected()),
+    ProductHfrAcceptanceError,
+  );
+
+  const missingCost = report();
+  delete missingCost.measurements.x3.telemetry.product.scheduler.estimatedPrepCostMs;
+  assert.throws(
+    () => validateProductHfrReport(missingCost, expected()),
+    ProductHfrAcceptanceError,
+  );
 });
 
 test('source cadence mismatch fails closed', () => {

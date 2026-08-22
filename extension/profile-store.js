@@ -1,8 +1,9 @@
 (function installFramegenProfiles(root) {
   'use strict';
 
-  const SCHEMA_VERSION = 3;
-  const PREVIOUS_SCHEMA_VERSION = 2;
+  const SCHEMA_VERSION = 4;
+  const PREVIOUS_SCHEMA_VERSION = 3;
+  const COMPATIBILITY_SCHEMA_VERSION = 2;
   const LEGACY_SCHEMA_VERSION = 1;
   const STORE_KEY = 'fcProfileStore';
   const SETTINGS_KEYS = Object.freeze([
@@ -180,6 +181,7 @@
       ...source,
       fpsLimit: hasOwn(source, 'fpsLimit') ? source.fpsLimit : fallback.fpsLimit,
       showWarnings: hasOwn(source, 'showWarnings') ? source.showWarnings : fallback.showWarnings,
+      sharpness: hasOwn(source, 'sharpness') ? source.sharpness : fallback.sharpness,
     };
   }
 
@@ -266,6 +268,12 @@
     };
   }
 
+  function migrateV3Store(rawStore, currentSettings) {
+    // Schema v3 predates profile-level sharpness on main. Preserve an explicit
+    // value from preview builds, otherwise inherit the active flat setting.
+    return normalizeStore(rawStore, currentSettings);
+  }
+
   function loadStore(rawStore, currentSettings = DEFAULT_SETTINGS) {
     const cleanCurrent = sanitizeSettings(currentSettings);
     if (rawStore == null) {
@@ -284,9 +292,16 @@
     }
     if (rawStore.schemaVersion === PREVIOUS_SCHEMA_VERSION) {
       return {
-        store: normalizeStore(rawStore, cleanCurrent),
+        store: migrateV3Store(rawStore, cleanCurrent),
         needsWrite: true,
         sourceSchemaVersion: PREVIOUS_SCHEMA_VERSION,
+      };
+    }
+    if (rawStore.schemaVersion === COMPATIBILITY_SCHEMA_VERSION) {
+      return {
+        store: normalizeStore(rawStore, cleanCurrent),
+        needsWrite: true,
+        sourceSchemaVersion: COMPATIBILITY_SCHEMA_VERSION,
       };
     }
     if (rawStore.schemaVersion === LEGACY_SCHEMA_VERSION) {

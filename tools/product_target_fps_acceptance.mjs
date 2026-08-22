@@ -71,6 +71,29 @@ function validateTune(value, name) {
   if (!Number.isInteger(tune.slab) || tune.slab <= 0) fail(`${name}.slab must be a positive integer`);
 }
 
+const REQUIRED_SCHEDULER_NUMERIC_FIELDS = [
+  'prepCostMs', 'msAvg', 'srCostMs',
+  'estimatedPrepCostMs', 'estimatedMidCostMs', 'estimatedSrCostMs',
+  'intervalMs', 'decodedIntervalMs', 'uniqueIntervalMs',
+  'delayMs', 'lateAvg', 'rafMs', 'rafFloor',
+];
+
+function validateScheduler(value, name) {
+  const scheduler = object(value, name);
+  if (!['gpu', 'defaults'].includes(scheduler.timingMode)) {
+    fail(`${name}.timingMode is invalid`);
+  }
+  for (const field of REQUIRED_SCHEDULER_NUMERIC_FIELDS) {
+    finiteNumber(scheduler[field], `${name}.${field}`);
+  }
+  if (Object.entries(scheduler).some(([field, fieldValue]) => (
+    field !== 'timingMode' && !Number.isFinite(fieldValue)
+  ))) {
+    fail(`${name} contains a non-finite value`);
+  }
+  return scheduler;
+}
+
 function validateTargetCase(raw, targetCase, expected, failures) {
   const label = targetCase.id;
   const requestedHz = targetCase.targetFps;
@@ -197,15 +220,13 @@ function validateTargetCase(raw, targetCase, expected, failures) {
   for (const feature of expected.requiredDeviceFeatures) {
     if (!product.deviceFeatures.includes(feature)) failures.push(`${label} missing WebGPU feature: ${feature}`);
   }
-  if (!product.scheduler || Object.values(product.scheduler).some(value => !Number.isFinite(value))) {
-    fail(`${label} scheduler state is incomplete`);
-  }
+  const scheduler = validateScheduler(product.scheduler, `${label} product.scheduler`);
   integer(product.effectiveFactor, `${label} product.effectiveFactor`);
   const productRequestedHz = finiteNumber(product.requestedTargetHz, `${label} product.requestedTargetHz`);
   const productMinimumHz = finiteNumber(product.minimumTargetHz, `${label} product.minimumTargetHz`);
   const displayCapacityHz = finiteNumber(product.displayCapacityHz, `${label} product.displayCapacityHz`);
   const effectiveTargetHz = finiteNumber(product.effectiveTargetHz, `${label} product.effectiveTargetHz`);
-  const decodedIntervalMs = finiteNumber(product.scheduler.decodedIntervalMs,
+  const decodedIntervalMs = finiteNumber(scheduler.decodedIntervalMs,
     `${label} scheduler.decodedIntervalMs`);
   const measuredMinimumHz = 2000 / decodedIntervalMs;
   sameNumber(productRequestedHz, requestedHz, `${label} requested target`, 0.01);

@@ -199,7 +199,13 @@ function caseResult(targetCase) {
         deviceFeatures: ['shader-f16', 'timestamp-query'],
         convTune: { coc: 8, slab: 12 },
         scheduler: {
+          prepCostMs: 1,
           msAvg: 2,
+          srCostMs: 0,
+          estimatedPrepCostMs: 1,
+          estimatedMidCostMs: 2,
+          estimatedSrCostMs: 0,
+          timingMode: 'gpu',
           intervalMs: 1000 / targetCase.sourceFps,
           decodedIntervalMs: 1000 / targetCase.sourceFps,
           uniqueIntervalMs: 1000 / targetCase.sourceFps,
@@ -299,6 +305,32 @@ test('valid arbitrary-target case matrix passes', () => {
   assert.equal(result.passed, true, result.failures.join(', '));
   assert.deepEqual(result.failures, []);
   assert.equal(result.cases.length, CASES.length);
+});
+
+test('scheduler timing provenance accepts defaults and rejects unknown modes', () => {
+  const value = report();
+  value.measurements['source10-target50'].telemetry.product.scheduler.timingMode = 'defaults';
+  const result = validateProductTargetFpsReport(value, expected());
+  assert.equal(result.passed, true, result.failures.join(', '));
+  value.measurements['source10-target50'].telemetry.product.scheduler.timingMode = 'wall-clock';
+  assert.throws(
+    () => validateProductTargetFpsReport(value, expected()),
+    ProductTargetFpsAcceptanceError,
+  );
+
+  const missingMode = report();
+  delete missingMode.measurements['source10-target50'].telemetry.product.scheduler.timingMode;
+  assert.throws(
+    () => validateProductTargetFpsReport(missingMode, expected()),
+    ProductTargetFpsAcceptanceError,
+  );
+
+  const missingCost = report();
+  delete missingCost.measurements['source10-target50'].telemetry.product.scheduler.estimatedPrepCostMs;
+  assert.throws(
+    () => validateProductTargetFpsReport(missingCost, expected()),
+    ProductTargetFpsAcceptanceError,
+  );
 });
 
 test('10 to 50 and 15 to 50 prove non-preset, no-clamp interpolation', () => {
