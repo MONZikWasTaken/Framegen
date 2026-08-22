@@ -1,0 +1,96 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Framegen shootout</title>
+<script type="module">
+import { createRT } from '../extension/rt/rt.js';
+
+const query = new URLSearchParams(location.search);
+const RUNG = query.get('res') === '720' ? [1280, 720] : [848, 480];
+
+const median = (values) => [...values].sort((a, b) => a - b)[values.length >> 1];
+
+async function image(url) {
+  const value = new Image();
+  value.src = url;
+  await value.decode();
+  return createImageBitmap(value);
+}
+
+async function texture(device, bitmap) {
+  const value = device.createTexture({
+    size: [bitmap.width, bitmap.height], format: 'rgba8unorm',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture({ source: bitmap }, { texture: value }, [bitmap.width, bitmap.height]);
+  return value;
+}
+
+async function readback(device, source, width, height) {
+  const bytesPerRow = Math.ceil(width * 4 / 256) * 256;
+  const buffer = device.createBuffer({ size: bytesPerRow * height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  encoder.copyTextureToBuffer({ texture: source }, { buffer, bytesPerRow }, [width, height]);
+  device.queue.submit([encoder.finish()]);
+  await buffer.mapAsync(GPUMapMode.READ);
+  const packed = new Uint8Array(buffer.getMappedRange());
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) pixels.set(packed.subarray(y * bytesPerRow, y * bytesPerRow + width * 4), y * width * 4);
+  buffer.unmap();
+  buffer.destroy();
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext('2d').putImageData(new ImageData(pixels, width, height), 0, 0);
+  return canvas.convertToBlob({ type: 'image/png' });
+}
+
+async function run() {
+  const [i0, i1] = await Promise.all([image(query.get('i0')), image(query.get('i1'))]);
+  if (i0.width !== i1.width || i0.height !== i1.height) throw new Error('input dimensions differ');
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  if (!adapter) throw new Error('no WebGPU adapter');
+  const features = ['shader-f16', 'subgroups', 'timestamp-query'].filter((name) => adapter.features.has(name));
+  const device = await adapter.requestDevice({ requiredFeatures: features });
+  const [bin, manifest] = await Promise.all([
+    fetch('../extension/assets/rt_v7s.bin').then((response) => response.arrayBuffer()),
+    fetch('../extension/assets/rt_v7s.json').then((response) => response.json()),
+  ]);
+  const runtime = await createRT(device, {
+    w: RUNG[0], h: RUNG[1], weightsBin: bin, weightsManifest: manifest,
+    textureInput: true, textureOutput: true, staticGuard: true,
+  });
+  const a = await texture(device, i0);
+  const b = await texture(device, i1);
+  const output = device.createTexture({
+    size: [i0.width, i0.height], format: 'rgba8unorm',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+  });
+  for (let index = 0; index < 2; index++) {
+    runtime.prepPair(a, b);
+    runtime.runT(0.5, output);
+  }
+  await device.queue.onSubmittedWorkDone();
+  const samples = [];
+  for (let index = 0; index < 5; index++) {
+    const started = performance.now();
+    runtime.prepPair(a, b);
+    runtime.runT(0.5, output);
+    await device.queue.onSubmittedWorkDone();
+    samples.push(performance.now() - started);
+  }
+  const blob = await readback(device, output, i0.width, i0.height);
+  const imageData = await new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+  window.__shootoutResult = {
+    ms: median(samples), source: [i0.width, i0.height], rung: RUNG,
+    adapter: adapter.info?.description || adapter.info?.vendor || 'unknown', imageData,
+  };
+  document.title = 'SHOOTOUT DONE';
+}
+
+run().catch((error) => {
+  window.__shootoutResult = { error: String(error), stack: error.stack };
+  document.title = 'SHOOTOUT ERROR';
+});
+</script>

@@ -38,7 +38,7 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
@@ -46,6 +46,7 @@
     cfg.fpsLimit = canonicalFpsLimit(cfg.fpsLimit);
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
     if (!SIZES[cfg.res]) cfg.res = 480;
+    if (![0, 1, 2, 3].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
@@ -108,7 +109,7 @@
         resetOutputCadence(true);
       }
       if (previousCompare && !cfg.compare) cmpRing = [];
-      if ('hdr' in ch) configureOverlay();
+      if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
       if ('sr' in ch && cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
       if (runtimeChanged && running && videoEl && !toggling) {
         toggling = true;
@@ -304,7 +305,7 @@
   let deviceRecoveryVideo = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
   const blitBg = new Map();
-  let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
+  let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null, lastPresentedTex = null;
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
   let dedupReads = [], dedupReadIdx = 0; // readback ring: classifies overlap now
@@ -891,6 +892,24 @@
     };
   }
 
+  // Do not replace the browser's video compositor merely because Framegen is
+  // armed.  Its native path can be visibly sharper than a canvas on Windows.
+  // The overlay is only needed when a feature actually changes pixels.
+  function needsCanvasPresentation() {
+    return cfg.fg || cfg.sr || cfg.hdr || cfg.sharpness > 0 || cfg.compare;
+  }
+
+  function useNativePassthrough() {
+    if (needsCanvasPresentation()) return false;
+    queue = []; curJob = null; lastTex = null; cmpRing = [];
+    if (overlay) {
+      overlay.style.opacity = '0';
+      overlay.style.visibility = 'hidden';
+      overlay.style.pointerEvents = 'none';
+    }
+    return true;
+  }
+
   function trackSourceVideo(v) {
     if (diag.sourceVideo === v) return;
     diag.sourceVideo = v;
@@ -1257,6 +1276,7 @@
     resetFramePoolOnNextCapture = false;
     frameTex.forEach(t => t.destroy());
     frameTex = [];
+    lastPresentedTex = null;
     queue = []; curJob = null; cmpRing = []; // queued entries reference the destroyed pool
     pairSeq++; // in-flight classify continuations must not prep destroyed textures
     pairDecisionChain = Promise.resolve();
@@ -1266,21 +1286,41 @@
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
     texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
+    ensureMidTextures(w, h);
   }
 
-  // pool dimensions for a source: fit inside FHD, keep the aspect ratio
+  // Flow is estimated at the selected model rung, but generated frames are
+  // synthesized from the full-resolution source textures. The ring must remain
+  // deep enough for display-Hz mode, where several high-resolution mids can be
+  // queued at once.
+  function ensureMidTextures(w, h) {
+    if (midTexs.length === 24 && midTexs[0]?.width === w && midTexs[0]?.height === h) return;
+    midTexs.forEach(t => t.destroy());
+    midTexs = [];
+    midIdx = 0;
+    for (let i = 0; i < 24; i++) {
+      midTexs.push(device.createTexture({ label: 'fcmid' + poolGen + '_' + i, size: [w, h],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING }));
+    }
+    blitBg.clear();
+  }
+
+  // Keep the source and generated-frame pools exactly at the presentation backing
+  // size. That gives the active overlay one decode/downscale pass instead of
+  // downscaling into an arbitrary FHD pool and filtering again during present.
   function poolDims() {
+    if (overlay?.width && overlay?.height) return [overlay.width, overlay.height];
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
     const s = Math.min(1, 1920 / fw, 1080 / fh);
     return [Math.round(fw * s), Math.round(fh * s)];
   }
-  // copyExternalImageToTexture copies 1:1 and NEVER scales - for >FHD sources a
-  // plain copy grabs the top-left FHD crop of the frame. Capture the full frame
-  // into a scratch texture and downscale-blit it into the pool instead.
+  // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
+  // backing differ, capture the whole source then downscale once into the pool.
   let capTex = null, downPipe = null, capBgs = new WeakMap();
   function captureFrame(dst, vw, vh) {
     const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
-    if (fw <= 1920 && fh <= 1080) {
+    if (fw === vw && fh === vh) {
       device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: dst }, [vw, vh]);
       return;
     }
@@ -1442,9 +1482,23 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       hdr = false;
       overlayCtx.configure({ device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
-    const fs = hdr ? `
+    const sharp = cfg.sharpness.toFixed(1);
+    const sampleColor = cfg.sharpness ? `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  let c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
+  let px = 1.0 / vec2<f32>(textureDimensions(tex));
+  let blur = (textureSampleLevel(tex, samp, uv + vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(px.x, 0.0), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv + vec2<f32>(0.0, px.y), 0.0).rgb
+    + textureSampleLevel(tex, samp, uv - vec2<f32>(0.0, px.y), 0.0).rgb) * 0.25;
+  return clamp(c + (c - blur) * ${sharp}, vec3<f32>(0.0), vec3<f32>(1.0));
+}` : `
+fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
+  return textureSampleLevel(tex, samp, uv, 0.0).rgb;
+}`;
+    const fs = sampleColor + (hdr ? `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let c = textureSampleLevel(tex, samp, v.uv, 0.0).rgb;
+  let c = sampleColor(v.uv);
   let lin = pow(max(c, vec3(0.0)), vec3(2.2));
   let y = max(lin.r, max(lin.g, lin.b));
   let t = smoothstep(0.35, 1.0, y);
@@ -1452,14 +1506,15 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   return vec4(pow(lin * gain, vec3(1.0 / 2.2)), 1.0);
 }` : `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return textureSampleLevel(tex, samp, v.uv, 0.0);
-}`;
+  return vec4<f32>(sampleColor(v.uv), 1.0);
+}`);
     const mod = device.createShaderModule({ code: BLIT_VS + fs });
     blitPipe = device.createRenderPipeline({ layout: 'auto',
       vertex: { module: mod, entryPoint: 'vs' },
       fragment: { module: mod, entryPoint: 'fs', targets: [{ format: hdr ? 'rgba16float' : 'rgba8unorm' }] } });
     blitBg.clear(); // bind groups belong to the old pipeline layout
     sys.hdrOn = hdr;
+    if (running && lastPresentedTex) requestAnimationFrame(() => present(lastPresentedTex, false));
   }
   // fullscreen renders in the browser's TOP LAYER: anything not inside the
   // fullscreen element is invisible there. Move the whole UI in (and back out) -
@@ -1630,6 +1685,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
         if (sr.process(tex, out, tex.width, tex.height)) tex = out;
       }
     }
+    lastPresentedTex = tex;
     const enc = device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{
       view: overlayCtx.getCurrentTexture().createView(),
@@ -2847,7 +2903,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     overlay.style.pointerEvents = overlayFitSupported && videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
-    const [vw, vh] = videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
+    const [vw, vh] = needsCanvasPresentation() && videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
     if (vw && vh) {
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
@@ -2883,6 +2939,7 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
     dropped = 0; dups = 0; cuts = 0;
     if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
     running = true;
+    useNativePassthrough();
     hud.style.display = 'block';
     if (sys.integrated) {
       advise('⚠ Chrome is running on the integrated GPU (' + sys.gpu + '). For full speed: '
@@ -2957,10 +3014,11 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
       `output rate: ${rateState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
+      `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
+      'flow upsample: edge-guided source warp',
       `status: ${running ? 'running' : 'stopped'}`];
     if (running) {
-      const [mw, mh] = SIZES[cfg.res];
-      const vramMB = (texW * texH * 4 * frameTex.length + mw * mh * 4 * midTexs.length) / 1048576;
+      const vramMB = texW * texH * 4 * (frameTex.length + midTexs.length) / 1048576;
       const load = uniqueIntervalMs > 1 ? Math.min(100, msAvg * Math.max(0, effN - 1) / uniqueIntervalMs * 100) : 0;
       lines.push(
         `out: ${fpsWin.length}fps · effective pair x${effN}`,
