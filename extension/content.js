@@ -1971,12 +1971,25 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (overlay?.parentElement) overlay.parentElement.insertBefore(subtitleLayer, overlay.nextSibling);
   }
 
-  function positionSubtitleLayer() {
+  function positionSubtitleLayer(forceOutsideFullscreen = false) {
     if (!subtitleLayer || !overlay) return;
+    const fullscreenHost = !forceOutsideFullscreen && document.fullscreenElement?.tagName !== 'VIDEO'
+      ? document.fullscreenElement : null;
+    if (fullscreenHost) {
+      if (subtitleLayer.parentElement !== fullscreenHost) fullscreenHost.appendChild(subtitleLayer);
+      const rect = overlay.getBoundingClientRect();
+      subtitleLayer.style.setProperty('position', 'fixed', 'important');
+      subtitleLayer.style.setProperty('left', `${rect.left}px`, 'important');
+      subtitleLayer.style.setProperty('top', `${rect.top}px`, 'important');
+      subtitleLayer.style.setProperty('width', `${rect.width}px`, 'important');
+      subtitleLayer.style.setProperty('height', `${rect.height}px`, 'important');
+      return;
+    }
     if (overlay.parentElement
         && (subtitleLayer.parentElement !== overlay.parentElement || overlay.nextSibling !== subtitleLayer)) {
       overlay.parentElement.insertBefore(subtitleLayer, overlay.nextSibling);
     }
+    subtitleLayer.style.setProperty('position', 'absolute', 'important');
     for (const property of ['left', 'top', 'width', 'height']) {
       subtitleLayer.style.setProperty(property, overlay.style[property], 'important');
     }
@@ -2135,6 +2148,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (!active) {
       if (subtitleTrackVideo || subtitleTrackList) clearSubtitleTrackBindings();
       if (subtitleCueRoot?.childNodes.length) subtitleCueRoot.replaceChildren();
+      positionSubtitleLayer(true);
       if (subtitleLayer && subtitleLayer.style.display !== 'none') subtitleLayer.style.display = 'none';
       restoreSubtitleDomOverrides();
       return;
@@ -2289,6 +2303,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     setControlsVisible(false);
     uiScan = 0; // the biggest-video answer may change across fullscreen too
     requestAnimationFrame(() => requestAnimationFrame(() => {
+      syncSubtitleOverlay();
       if (cfg.debug) log('diagnostics fullscreen settled', diagnosticSnapshot());
       const v = running ? videoEl : uiVideo;
       if (v && btn && performance.now() < revealUntil) {
