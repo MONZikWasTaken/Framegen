@@ -30,6 +30,7 @@ const customSettings = Object.freeze({
   showFps: false,
   showWatermark: false,
   showWarnings: false,
+  subtitleOverlay: true,
   guard: false,
   model: 'v6',
 });
@@ -502,7 +503,7 @@ test('options controller exposes virtual Current first and keeps preview, save, 
   assert.match(optionsJs, /Profiles\.toStoragePayload\(nextStore, draftSettings\)/);
   assert.match(optionsJs, /Profiles\.setLastAppliedProfile\(store, selected\?\.id \|\| null\)/);
   assert.match(optionsJs, /updateRateControlVisibility\(draftSettings\.factor\)/);
-  assert.match(optionsJs, /'showFps', 'showWatermark', 'showWarnings'/);
+  assert.match(optionsJs, /'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay'/);
   assert.match(optionsJs, /fpsLimit:\s*fpsLimitFromSlider\(\)/);
   assert.match(optionsJs, /let profileStoreReadOnly = false/);
   assert.match(optionsJs, /enterProfileStoreReadOnly\(error\)/);
@@ -535,6 +536,7 @@ test('runtime shares the profile contract while continuing to consume flat setti
   assert.match(contentJs, /chrome\.storage\.local\.set\(cfg\)/);
   assert.match(contentJs, /showWatermark:\s*true/);
   assert.match(contentJs, /showWarnings:\s*true/);
+  assert.match(contentJs, /subtitleOverlay:\s*true/);
   assert.match(contentJs, /fpsLimit:\s*null/);
   assert.match(contentJs, /wm\.style\.display = cfg\.showWatermark \? 'block' : 'none'/);
   assert.match(contentJs, /k === 'res' \|\| k === 'model' \|\| k === 'guard'/);
