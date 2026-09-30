@@ -8,7 +8,7 @@
   const STORE_KEY = 'fcProfileStore';
   const SETTINGS_KEYS = Object.freeze([
     'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
-    'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'guard', 'model',
+    'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'guard', 'model',
   ]);
   const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
   const RESOLUTIONS = Object.freeze([288, 360, 480, 720, 1080]);
@@ -36,6 +36,7 @@
     showFps: true,
     showWatermark: true,
     showWarnings: true,
+    subtitleOverlay: true,
     guard: true,
     model: 'v7s',
   });
@@ -131,6 +132,7 @@
       showFps: booleanValue(source.showFps, DEFAULT_SETTINGS.showFps),
       showWatermark: booleanValue(source.showWatermark, DEFAULT_SETTINGS.showWatermark),
       showWarnings: booleanValue(source.showWarnings, DEFAULT_SETTINGS.showWarnings),
+      subtitleOverlay: booleanValue(source.subtitleOverlay, DEFAULT_SETTINGS.subtitleOverlay),
       guard: booleanValue(source.guard, DEFAULT_SETTINGS.guard),
       model: MODELS.includes(source.model) ? source.model : DEFAULT_SETTINGS.model,
     };

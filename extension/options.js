@@ -7,7 +7,7 @@
   const $ = (id) => document.getElementById(id);
   const BOOLEAN_FIELDS = Object.freeze([
     'fg', 'sr', 'hdr', 'anime', 'guard', 'hoverReveal',
-    'showFps', 'showWatermark', 'showWarnings', 'compare', 'debug',
+    'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'compare', 'debug',
   ]);
   const FPS_LIMIT_PRESETS = Profiles.FPS_LIMIT_PRESETS;
   const STORE_MUTATION_CONTROLS = Object.freeze([
