@@ -6,7 +6,7 @@
 
   const $ = (id) => document.getElementById(id);
   const BOOLEAN_FIELDS = Object.freeze([
-    'fg', 'sr', 'hdr', 'anime', 'guard', 'hoverReveal',
+    'fg', 'sr', 'hdr', 'anime', 'guard', 'fillDisplay', 'hoverReveal',
     'showFps', 'showWatermark', 'showWarnings', 'compare', 'debug',
   ]);
   const FPS_LIMIT_PRESETS = Profiles.FPS_LIMIT_PRESETS;
@@ -120,6 +120,7 @@
     $('targetFps').required = custom;
     $('fpsLimitRow').hidden = !auto;
     $('fpsLimit').disabled = !auto;
+    $('fillDisplayRow').hidden = factor !== 'hz' && factor !== 'target';
   }
 
   function validateVisibleRateControl() {

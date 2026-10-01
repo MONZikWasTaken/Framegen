@@ -38,7 +38,7 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, fillDisplay: false, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
@@ -52,6 +52,7 @@
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
     cfg.showFps = !!cfg.showFps; cfg.showWatermark = cfg.showWatermark !== false;
     cfg.showWarnings = cfg.showWarnings !== false; cfg.guard = !!cfg.guard;
+    cfg.fillDisplay = !!cfg.fillDisplay;
   }
   let settleSettingsReady = () => {};
   let settingsSettled = !!PRODUCT_BENCH;
@@ -84,6 +85,7 @@
       const previousFactor = cfg.factor;
       const previousTargetFps = cfg.targetFps;
       const previousFpsLimit = cfg.fpsLimit;
+      const previousFillDisplay = cfg.fillDisplay;
       const incomingFpsLimit = ch.fpsLimit?.newValue;
       const previousFg = cfg.fg;
       const previousSr = cfg.sr;
@@ -105,7 +107,8 @@
         loadPanelProfiles(ch[Profiles.STORE_KEY].newValue).catch(e => log('profile sync', e));
       }
       if (cfg.factor !== previousFactor || cfg.targetFps !== previousTargetFps
-          || cfg.fpsLimit !== previousFpsLimit || cfg.fg !== previousFg) {
+          || cfg.fpsLimit !== previousFpsLimit || cfg.fg !== previousFg
+          || cfg.fillDisplay !== previousFillDisplay) {
         delayMs = DELAY_MS;
         resetAutoController();
         resetOutputCadence(true);
@@ -694,7 +697,22 @@
   }
 
   function activeMidCostMs() {
+    // Flat fallback on purpose: this feeds factor sizing and auto policy, where
+    // an inflated guess permanently steps fixed factors down at boot. The
+    // resolution-scaled seed belongs only to the scheduler headroom paths.
     return cfg.fg && rt ? (msAvg || 10) : 0;
+  }
+
+  // Conservative per-mid cost for scheduler headroom (presentation delay, JIT
+  // lead) until the first GPU timestamp lands. Mids are synthesized at pool
+  // resolution, so the historical flat 10 ms is a 2-4x underestimate for a
+  // fullscreen player and under-delays the scheduler on weak GPUs exactly at
+  // startup, where drop bursts are most visible.
+  function midCostSeedMs() {
+    const w = midTexs[0]?.width || 0;
+    const h = midTexs[0]?.height || 0;
+    if (!w || !h) return 10;
+    return Math.min(40, Math.max(10, 10 * (w * h) / (848 * 480)));
   }
 
   function validGpuCostSample(sampleMs) {
@@ -899,6 +917,7 @@
       pairCostMs: learnedPairCostMs,
       presentationCostMs: learnedPresentationCostMs,
       strictCeiling: cappedAuto,
+      fillDisplay: cfg.fillDisplay === true,
     });
     if (cappedAuto) plan = { ...plan, mode: 'auto' };
     const planProbeKey = `${cfg.factor}:${cfg.targetFps}:${cfg.fpsLimit ?? 'unlimited'}:${cfg.sr}:${Number(plan.minimumHz || 0).toFixed(2)}`;
@@ -951,6 +970,17 @@
   function usesExactCadence() {
     return Cadence.isCadenceMode(cfg.factor)
       || (cfg.factor === 'auto' && cfg.fpsLimit !== null);
+  }
+
+  function presentationTargetHz() {
+    if (usesExactCadence()) {
+      return stableOutputRatePlan(currentOutputRatePlan()).outputHz || 0;
+    }
+    // Fixed factors and uncapped Auto place mids at k/n across the source
+    // interval. targetHz 0 disables recovery and drops a one-vsync backlog
+    // even when the display is keeping up with that rate.
+    const factor = Math.max(1, Number(effN) || 1);
+    return intervalMs > 0 ? factor * 1000 / intervalMs : 0;
   }
 
   function outputRateLabel() {
@@ -1940,7 +1970,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   // ---------- overlay presentation ----------
+  function keepTwitchControlsAboveOverlay() {
+    if (!/(^|\.)twitch\.tv$/.test(location.hostname)) return;
+    if (document.getElementById('fc-twitch-controls')) return;
+    const css = document.createElement('style');
+    css.id = 'fc-twitch-controls';
+    // Theater and fullscreen rebuild the player and these layers fall under the
+    // canvas. z-index alone puts them back. position:relative shows them too,
+    // but pins the bar to the top of the player.
+    css.textContent = `[data-a-target="player-controls"],
+.player-controls,
+.top-bar,
+.video-player__overlay { z-index: 100 !important; }`;
+    (document.head || document.documentElement).appendChild(css);
+  }
   function ensureOverlay() {
+    keepTwitchControlsAboveOverlay();
     if (overlay) {
       if (device && !blitSampler) {
         blitSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
@@ -2893,9 +2938,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     }
     if (queue.length > 1) queue.sort((a, b) => a.at - b.at);
     const dueSelection = Cadence.selectDuePresentation(queue, now, {
-      targetHz: usesExactCadence()
-        ? stableOutputRatePlan(currentOutputRatePlan()).outputHz || 0
-        : 0,
+      targetHz: presentationTargetHz(),
       displayCapacityHz: Cadence.measureDisplayHz(rafFloor).capacityHz,
     });
     const due = dueSelection.presentIndex;
@@ -2908,6 +2951,10 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     if (due >= 0) {
       dropped += due;
       dropPressure += due;
+      // Feeding these staleness values into the delay target was measured and
+      // reverted: on saturated configurations the grown delay triggers a pool
+      // realloc (hard cadence reset) mid-flight and turns one stall into a
+      // burst of drops.
       for (let i = 0; i < due; i++) dropWin.push(now);
       // presentation lateness (frames arriving PAST their slot without dropping -
       // external GPU bursts look exactly like this): learn fast, forget slowly,
@@ -3077,7 +3124,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   }
   function driveJob(now) {
     if (!curJob || switching) return;
-    const lead = activePrepCostMs() + 2 * ((msAvg || 10) + activeSrCostMs()) + 8;
+    const lead = activePrepCostMs() + 2 * ((msAvg || midCostSeedMs()) + activeSrCostMs()) + 8;
     while (curJob && curJob.next < curJob.ts.length) {
       const disp = curJob.ats ? curJob.ats[curJob.next]
         : curJob.at + curJob.ts[curJob.next] * curJob.intervalMs;
@@ -3150,7 +3197,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       const dTarget = Cadence.computePresentationDelayMs({
         cadenceMode: cadenceConfigured,
         sourceIntervalMs: wallPairMs,
-        midCostMs: (msAvg || 10) + activeSrCostMs(),
+        midCostMs: (msAvg || midCostSeedMs()) + activeSrCostMs(),
         pairCostMs: activePrepCostMs(),
         burstPadMs: burstPad,
         floorMs,
@@ -4248,7 +4295,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.4.7';
+  const VERSION = '1.5.0';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -4344,6 +4391,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
               showFps: false,
               showWatermark: false,
               guard: true,
+              fillDisplay: false,
               model: 'v7s',
             });
             sanitizeCfg();

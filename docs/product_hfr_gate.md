@@ -16,6 +16,50 @@ the strict product scheduler/compositor contract is not reproducibly green.
 The reports bind the exact source hashes used at capture time; run the gate
 again after scheduler changes before treating them as current-release evidence.
 
+## 2026-09-04 session: drop mechanism measured, recovery reworked
+
+Five fresh headed runs on the reference 240Hz display (RTX 4060 Ti, Chromium
+151) produced the first root-cause evidence for the residual drops. The pump
+is not the bottleneck: p50 pump work is 0.0-0.1 ms per tick and 99.4% of rAF
+intervals are a clean 4.17-4.3 ms. The drops come from the source delivery
+pipeline: 47-63% of rVFC callback intervals miss the 16.7 ms beat
+(12.6/20.8 ms alternation, tails to 113 ms), and when several presentation
+slots fall due inside one tick, the old recovery policy mass-dropped the
+whole backlog whenever it was deeper than three entries.
+
+Changes shipped from that evidence (see `output/product-hfr` for the paired
+reports):
+
+- `selectDuePresentation` now drains a due backlog oldest-first whenever the
+  front entry is still inside the product lateness envelope
+  (`MAX_LATE_OUTPUT_INTERVALS` = 3 output intervals, the same bound the
+  acceptance contract enforces on lateMax). The stale prefix of a burst is
+  dropped and the fresh tail still drains, instead of the previous
+  all-or-nothing split at three entries.
+- The startup mid-cost fallback used by the presentation-delay and JIT-lead
+  paths scales with the mid pool resolution (mids are synthesized at pool
+  resolution since 1b350eb; the flat 10 ms was a 2-4x underestimate for a
+  fullscreen player). Factor sizing and auto policy deliberately keep the
+  flat fallback - a resolution-scaled seed there was measured stepping fixed
+  factors down permanently at boot (`product-hfr-2026-09-04T23-01-34`).
+
+Result on the same hardware, same fixture, same 30 s windows
+(`...22-39-25` before vs `...23-16-25` after):
+
+| factor | drops | presented | lateMax | source Hz |
+|---|---|---|---|---|
+| x3 | 55 -> 24 | 179 / 180 | 9.8 -> 4.3 ms | 59.71 -> 60.00 |
+| x4 | 354 -> 55 | 208 -> 238 / 240 | 69.0 -> 4.2 ms | 57.87 -> 60.00 |
+
+The remaining drops (0.3-0.7% of slots) are single-tick delivery stalls of
+the fixture's canvas-video pipeline on the shared main thread (rAF intervals
+up to 79 ms were recorded). Buffering them was measured and rejected: growing
+the presentation delay from observed drop staleness triggers a texture-pool
+reallocation mid-flight on saturated configurations and turns one stall into
+a burst of drops (`product-target-fps-2026-09-04T23-05-02`). The zero-drop
+contract therefore remains red on this Chrome/video-pipeline combination;
+the residual is bounded by the browser, not by scheduler policy.
+
 Run from the repository root:
 
 ```pwsh

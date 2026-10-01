@@ -19,7 +19,7 @@ bundler setup copy them from `node_modules/framegen/weights/`; in the browser
 the easiest path is the npm CDN (proper CORS, versioned, cached):
 
 ```js
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.4.7/weights';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.5.0/weights';
 const [bin, manifest] = await Promise.all([
   fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
   fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),

@@ -376,6 +376,64 @@ test('a strict FPS ceiling may decimate anchors below the interpolation floor', 
   assert.equal(ordinaryTarget.clampReason, 'minimum');
 });
 
+test('fill display uses the measured refresh and does not schedule past it', () => {
+  const reserved = Cadence.resolveOutputRate('hz', 1000 / 240, {
+    sourceHz: 24,
+    sourceReady: true,
+    displayReady: true,
+  });
+  assert.ok(Math.abs(reserved.outputHz - 240 * Cadence.DISPLAY_CLAMP_HEADROOM) < 1e-9);
+  assert.equal(reserved.clampReason, null);
+
+  const filled = Cadence.resolveOutputRate('hz', 1000 / 240, {
+    sourceHz: 24,
+    sourceReady: true,
+    displayReady: true,
+    fillDisplay: true,
+  });
+  assert.equal(filled.outputHz, 240);
+  assert.equal(filled.clampReason, null);
+
+  const customFilled = resolveTarget(333.66, 60, 240, { fillDisplay: true });
+  assert.equal(customFilled.outputHz, 240);
+  assert.equal(customFilled.clampReason, 'display');
+
+  const customReserved = resolveTarget(333.66, 60, 240);
+  assert.equal(customReserved.outputHz, 240 * Cadence.DISPLAY_CLAMP_HEADROOM);
+
+  const strictAuto = Cadence.resolveOutputRate('target', 1000 / 240, {
+    targetFps: 240,
+    sourceHz: 60,
+    sourceReady: true,
+    displayReady: true,
+    strictCeiling: true,
+    fillDisplay: true,
+  });
+  assert.ok(Math.abs(strictAuto.outputHz - 240 * Cadence.DISPLAY_CLAMP_HEADROOM) < 1e-9);
+});
+
+test('a ProMotion reading just under 120Hz can still interpolate 60fps video', () => {
+  const rafMs = 1000 / 118.34;
+  const display = Cadence.measureDisplayHz(rafMs);
+  assert.equal(display.displayHz, 120);
+  assert.ok(display.capacityHz < 120);
+  const plan = Cadence.resolveOutputRate('hz', rafMs, {
+    sourceHz: 60,
+    sourceReady: true,
+    displayReady: true,
+  });
+  assert.equal(plan.state, 'active');
+  assert.equal(plan.interpolationAllowed, true);
+  assert.ok(Math.abs(plan.outputHz - display.capacityHz) < 1e-9);
+
+  const slowerPanel = Cadence.resolveOutputRate('hz', 1000 / 100, {
+    sourceHz: 60,
+    sourceReady: true,
+    displayReady: true,
+  });
+  assert.equal(slowerPanel.state, 'no-2x-display-range');
+});
+
 test('an explicit target at the measured display ceiling keeps recovery headroom', () => {
   const plan = Cadence.resolveOutputRate('target', 1000 / 239.52, {
     targetFps: 240,
@@ -401,7 +459,9 @@ test('display Hz mode reserves catch-up headroom without reporting a clamp', () 
   assert.equal(plan.clampReason, null);
 
   const queue = [{ at: 1000 }, { at: 1000 + 1000 / plan.outputHz }];
-  const selection = Cadence.selectDuePresentation(queue, 1100, {
+  // A transient burst: both entries are due but still inside the recovery
+  // lateness envelope (3 output intervals of 60Hz service = 50ms).
+  const selection = Cadence.selectDuePresentation(queue, 1020, {
     targetHz: plan.outputHz,
     displayCapacityHz: plan.capacityHz,
   });
@@ -1135,16 +1195,48 @@ test('arbitrary targets recover a transient due backlog oldest-first when displa
   assert.deepEqual(presented, ['anchor', 'mid', 'next-anchor']);
 });
 
-test('newest-due policy remains without recovery headroom or an exact target', () => {
+test('newest-due policy remains without an exact target or when the display cannot service it', () => {
   const queue = [{ at: 100, id: 'old' }, { at: 108, id: 'new' }, { at: 120, id: 'future' }];
   for (const options of [
-    { targetHz: 240, displayCapacityHz: 240 },
     { targetHz: 0, displayCapacityHz: 240 },
+    { targetHz: 240, displayCapacityHz: 144 },
   ]) {
     assert.deepEqual(Cadence.selectDuePresentation(queue, 110, options), {
       presentIndex: 1, dueCount: 2, dropCount: 1, recovering: false, recoveryCapacity: 1,
     });
   }
+});
+
+test('matched display rate drains a one-vsync backlog inside the lateness contract', () => {
+  const hz = 240;
+  const interval = 1000 / hz;
+  const queue = [{ at: 1000, id: 0 }, { at: 1000 + interval, id: 1 }, { at: 1000 + 3 * interval, id: 2 }];
+  const now = 1000 + 2 * interval;
+  const selection = Cadence.selectDuePresentation(queue, now, {
+    targetHz: hz,
+    displayCapacityHz: hz,
+  });
+  assert.deepEqual(selection, {
+    presentIndex: 0, dueCount: 2, dropCount: 0, recovering: true, recoveryCapacity: 3,
+  });
+  assert.ok(now - queue[0].at <= Cadence.MAX_LATE_OUTPUT_INTERVALS * interval);
+
+  const budgetMs = Cadence.MAX_LATE_OUTPUT_INTERVALS * 1000 / hz;
+  const stalledNow = 1000;
+  const stalled = [
+    { at: stalledNow - (budgetMs + 1) },
+    { at: stalledNow - (budgetMs - 1) },
+    { at: stalledNow - 1 },
+  ];
+  const stalledSelection = Cadence.selectDuePresentation(stalled, stalledNow, {
+    targetHz: hz,
+    displayCapacityHz: hz,
+  });
+  assert.equal(stalledSelection.presentIndex, 1);
+  assert.equal(stalledSelection.dropCount, 1);
+  assert.equal(stalledSelection.recovering, true);
+  assert.ok(stalledNow - stalled[1].at <= budgetMs);
+  assert.ok(stalledNow - stalled[0].at > budgetMs);
 });
 
 test('catch-up is bounded and requires deadline-ordered queues', () => {
@@ -1164,7 +1256,7 @@ test('catch-up is bounded and requires deadline-ordered queues', () => {
   assert.deepEqual(Cadence.selectDuePresentation(fourDue, 110, {
     targetHz: 120, displayCapacityHz: 240,
   }), {
-    presentIndex: 3, dueCount: 4, dropCount: 3, recovering: false, recoveryCapacity: 3,
+    presentIndex: 1, dueCount: 4, dropCount: 1, recovering: true, recoveryCapacity: 3,
   });
 
   const twoDue = [{ at: 100, id: 0 }, { at: 108, id: 1 }];
@@ -1178,6 +1270,32 @@ test('catch-up is bounded and requires deadline-ordered queues', () => {
   assert.throws(() => Cadence.selectDuePresentation([
     { at: 108 }, { at: 100 },
   ], 110, { targetHz: 120, displayCapacityHz: 240 }), /ordered by deadline/);
+});
+
+test('recovery drains only inside the lateness envelope the contract allows', () => {
+  // A fully stale backlog is a real delivery stall: nothing is recoverable and
+  // the newest-due policy must stay, even with display headroom.
+  const staleRun = [
+    { at: 10, id: 0 }, { at: 18, id: 1 }, { at: 26, id: 2 }, { at: 130, id: 3 },
+  ];
+  assert.deepEqual(Cadence.selectDuePresentation(staleRun, 120, {
+    targetHz: 120, displayCapacityHz: 240,
+  }), {
+    presentIndex: 2, dueCount: 3, dropCount: 2, recovering: false, recoveryCapacity: 3,
+  });
+
+  // The fresh tail of a mixed burst still drains: the stale prefix is dropped
+  // (past 3 output intervals at the target rate) while the fresh entries survive.
+  assert.equal(Cadence.MAX_LATE_OUTPUT_INTERVALS, 3);
+  const mixed = [
+    { at: 80, id: 'stale' }, { at: 88, id: 'fresh' },
+    { at: 102, id: 'fresh-too' }, { at: 108, id: 'fresh-three' }, { at: 130, id: 'future' },
+  ];
+  assert.deepEqual(Cadence.selectDuePresentation(mixed, 110, {
+    targetHz: 120, displayCapacityHz: 240,
+  }), {
+    presentIndex: 1, dueCount: 4, dropCount: 1, recovering: true, recoveryCapacity: 3,
+  });
 });
 
 test('seek/reset discards the old cadence epoch and resyncs at the new timeline', () => {
@@ -1279,7 +1397,9 @@ test('extension loads the helper first and exposes every output-rate choice', ()
   assert.match(content, /Cadence\.fallbackCadencePresentations\(/);
   assert.match(content, /Cadence\.updateSourceInterval\(/);
   assert.match(content, /Cadence\.targetNeedsInterpolation\(/);
-  assert.match(content, /Cadence\.selectDuePresentation\(/);
+  assert.match(content, /function presentationTargetHz\(\)/);
+  assert.match(content, /targetHz: presentationTargetHz\(\)/);
+  assert.doesNotMatch(content, /selectDuePresentation\(queue, now, \{\s*targetHz: 0/);
   assert.match(content, /const wallPairMs = decodedIntervalMs \/ playbackRate/);
   assert.match(content, /Cadence\.computePresentationDelayMs\(/);
   assert.match(content, /startAt: schedT - schedulingIntervalMs \+ delayMs/);

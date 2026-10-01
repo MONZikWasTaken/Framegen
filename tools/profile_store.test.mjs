@@ -31,6 +31,7 @@ const customSettings = Object.freeze({
   showWatermark: false,
   showWarnings: false,
   guard: false,
+  fillDisplay: false,
   model: 'v6',
 });
 
@@ -512,9 +513,9 @@ test('options controller exposes virtual Current first and keeps preview, save, 
 });
 
 test('extension exposes the full-page configurator without replacing popup status and help', () => {
-  assert.equal(manifest.version, '1.4.7');
-  assert.match(contentJs, /const VERSION = '1\.4\.7'/);
-  assert.match(optionsHtml, /<span class="version">v1\.4\.7<\/span>/);
+  assert.equal(manifest.version, '1.5.0');
+  assert.match(contentJs, /const VERSION = '1\.5\.0'/);
+  assert.match(optionsHtml, /<span class="version">v1\.5\.0<\/span>/);
   assert.deepEqual(manifest.options_ui, { page: 'options.html', open_in_tab: true });
   assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'profile-store.js', 'content.js']);
   assert.deepEqual(manifest.background, { service_worker: 'background.js' });

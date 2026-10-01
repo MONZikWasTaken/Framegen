@@ -14,6 +14,10 @@
   const MAX_PENDING_PRESENTATIONS = 24;
   const MAX_MIDS_PER_PAIR = MAX_PENDING_PRESENTATIONS - 1;
   const MAX_RECOVERY_PRESENTATIONS = 3;
+  // Recovery may only drain entries inside the lateness envelope the product
+  // contract allows (maximumLateMaxOutputIntervals in the HFR acceptance):
+  // anything older is a real delivery stall, not catchable.
+  const MAX_LATE_OUTPUT_INTERVALS = 3;
   const DISPLAY_CLAMP_HEADROOM = 0.97;
   const REFRESH_TRANSITION_SAMPLES = 10;
   const NOMINAL_RATE_TOLERANCE = 0.03;
@@ -483,6 +487,7 @@
     pairCostMs = 0,
     presentationCostMs = 0,
     strictCeiling = false,
+    fillDisplay = false,
   } = {}) {
     const safeMode = sanitizeOutputRate(mode);
     const display = measureDisplayHz(rafFloorMs);
@@ -546,11 +551,18 @@
       }
     }
     const toleranceHz = Math.max(0.01, minimumHz * VIDEO_RATE_MATCH_TOLERANCE);
-    if (!strictCeiling && display.capacityHz + toleranceHz < minimumHz) {
+    // A 120Hz ProMotion panel often reports ~118Hz. The nominal snap already
+    // accepts that as 120; the 2x gate must use the same snap. Scheduling stays
+    // on capacityHz, so a 110Hz reading still cannot be promoted to 120.
+    const snappedNominal = Number.isFinite(display.rawHz)
+      && display.displayHz !== display.capacityHz
+      && Math.abs(display.rawHz - display.displayHz) / display.displayHz <= NOMINAL_RATE_TOLERANCE;
+    const floorDisplayHz = snappedNominal ? display.displayHz : display.capacityHz;
+    if (!strictCeiling && floorDisplayHz + toleranceHz < minimumHz) {
       return {
         ...base, state: 'no-2x-display-range', computeCapacityHz,
         runtimeCapacityHz,
-        warning: `Needs at least ${formatRate(minimumHz)} Hz; display is ~${formatRate(display.capacityHz)} Hz`,
+        warning: `Needs at least ${formatRate(minimumHz)} Hz; display is ~${formatRate(floorDisplayHz)} Hz`,
       };
     }
     if (!strictCeiling && computeCapacityHz + toleranceHz < minimumHz) {
@@ -570,7 +582,9 @@
     // hitch. Never let that reserve violate the strict 2x source floor.
     const headroomDisplayHz = display.capacityHz * DISPLAY_CLAMP_HEADROOM;
     const targetsDisplayCeiling = requestedHz >= display.capacityHz;
+    const fillPanel = fillDisplay === true && !strictCeiling;
     const useDisplayHeadroom = targetsDisplayCeiling
+      && !fillPanel
       && (strictCeiling || headroomDisplayHz + toleranceHz >= minimumHz);
     const displayLimitHz = useDisplayHeadroom ? headroomDisplayHz : display.capacityHz;
     // Display Hz asks for the panel ceiling itself. Use the headroom-adjusted
@@ -795,10 +809,12 @@
     return queue.splice(oldestIndex, 1)[0];
   }
 
-  // Select one due entry without mutating the queue. Exact targets may recover
-  // up to three missed slots oldest-first when confirmed display service has
-  // fractional headroom. Larger/no-headroom backlogs keep the low-latency
-  // newest-due policy and explicitly drop superseded slots.
+  // Select one due entry without mutating the queue. One rAF presents one
+  // frame. When the display can service the target, present the oldest entry
+  // still inside the product lateness contract. A display that only matches
+  // the target can absorb a one-vsync backlog this way; spare Hz above the
+  // target is not required. Entries older than the contract, and any target
+  // the display cannot service, keep newest-due.
   function selectDuePresentation(queue, now, {
     targetHz = 0,
     displayCapacityHz = 0,
@@ -824,18 +840,29 @@
     if (!Number.isFinite(targetHz) || targetHz < 0) {
       throw new RangeError('target rate must be non-negative');
     }
-    const hasRecoveryHeadroom = targetHz > 0
-      && displayCapacityHz > targetHz * (1 + VIDEO_RATE_MATCH_TOLERANCE);
-    const serviceSlots = hasRecoveryHeadroom ? MAX_RECOVERY_PRESENTATIONS : 1;
     const dueCount = newestDueIndex + 1;
-    const recovering = serviceSlots >= 2 && dueCount > 1 && dueCount <= serviceSlots;
-    const presentIndex = recovering ? 0 : newestDueIndex;
+    // The acceptance contract measures lateness in output intervals
+    // (maximumLateMaxOutputIntervals), not display vsyncs. Matching the
+    // display rate still counts as service: the next vsync can show the
+    // in-contract tail. A strictly faster display is not required.
+    const displayCanServiceTarget = targetHz > 0
+      && displayCapacityHz >= targetHz * (1 - VIDEO_RATE_MATCH_TOLERANCE);
+    let firstRecoverable = 0;
+    if (displayCanServiceTarget) {
+      const latenessBudgetMs = MAX_LATE_OUTPUT_INTERVALS * 1000 / targetHz;
+      while (firstRecoverable <= newestDueIndex
+          && now - queue[firstRecoverable].at > latenessBudgetMs) {
+        firstRecoverable += 1;
+      }
+    }
+    const canDrain = displayCanServiceTarget && firstRecoverable <= newestDueIndex;
+    const presentIndex = canDrain ? firstRecoverable : newestDueIndex;
     return {
       presentIndex,
       dueCount,
       dropCount: presentIndex,
-      recovering,
-      recoveryCapacity: serviceSlots,
+      recovering: canDrain && dueCount > 1 && presentIndex < newestDueIndex,
+      recoveryCapacity: displayCanServiceTarget ? MAX_RECOVERY_PRESENTATIONS : 1,
     };
   }
 
@@ -850,6 +877,7 @@
     MAX_PENDING_PRESENTATIONS,
     MAX_MIDS_PER_PAIR,
     MAX_RECOVERY_PRESENTATIONS,
+    MAX_LATE_OUTPUT_INTERVALS,
     DISPLAY_CLAMP_HEADROOM,
     REFRESH_TRANSITION_SAMPLES,
     VIDEO_RATE_NORMALIZE_TOLERANCE,

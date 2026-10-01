@@ -70,6 +70,18 @@ test('custom selects keep native values, keyboard support, and dynamic profile s
   assert.doesNotMatch(content, /appearance:base-select|::picker\(|backdrop-filter:/);
 });
 
+test('twitch player controls stay above the canvas without shifting the bar', () => {
+  const rule = functionBody('keepTwitchControlsAboveOverlay', 'ensureOverlay');
+  assert.match(rule, /\(\^\|\\\.\)twitch\\\.tv\$/);
+  assert.match(rule, /data-a-target="player-controls"/);
+  assert.match(rule, /\.player-controls/);
+  assert.match(rule, /\.top-bar/);
+  assert.match(rule, /\.video-player__overlay/);
+  assert.match(rule, /z-index:\s*100\s*!important/);
+  assert.doesNotMatch(rule, /textContent = `[\s\S]*position\s*:/);
+  assert.match(content, /keepTwitchControlsAboveOverlay\(\)/);
+});
+
 test('quick settings expose no native title tooltips or obsolete brand dot', () => {
   for (const source of [content, optionsHtml, popupHtml]) {
     assert.doesNotMatch(source, /\btitle\s*=\s*["']/);

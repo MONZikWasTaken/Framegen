@@ -14,7 +14,7 @@
       <span class="brand-dot" aria-hidden="true"></span>
       <strong>Framegen</strong>
       <h1>Advanced settings</h1>
-      <span class="version">v1.4.7</span>
+      <span class="version">v1.5.0</span>
     </div>
     <div class="header-actions">
       <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
@@ -93,6 +93,14 @@
                 aria-describedby="fpsLimitHint fpsLimitValue">
               <span id="fpsLimitScale" class="range-scale" aria-hidden="true"></span>
             </div>
+          </div>
+
+          <div id="fillDisplayRow" class="setting-row" hidden>
+            <div class="setting-copy">
+              <label for="fillDisplay">Full refresh rate</label>
+              <p id="fillDisplayHint">Use the measured monitor refresh instead of 97% of it. Frames are not scheduled faster than the screen.</p>
+            </div>
+            <input id="fillDisplay" name="fillDisplay" class="switch" type="checkbox" aria-describedby="fillDisplayHint">
           </div>
 
           <div class="setting-row">

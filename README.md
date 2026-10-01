@@ -177,7 +177,7 @@ lines, weights included:
 ```js
 import { createRT } from 'framegen';
 
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.4.7/weights';
+const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.5.0/weights';
 const rt = await createRT(device, {
   w: 1280, h: 720, textureInput: true, textureOutput: true,
   weightsBin: await fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
