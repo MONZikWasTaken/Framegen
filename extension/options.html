@@ -14,7 +14,7 @@
       <span class="brand-dot" aria-hidden="true"></span>
       <strong>Framegen</strong>
       <h1>Advanced settings</h1>
-      <span class="version">v1.5.0</span>
+      <span class="version">v1.5.1</span>
     </div>
     <div class="header-actions">
       <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
@@ -201,6 +201,14 @@
               <p id="showFpsHint">Show output frame rate in the player overlay.</p>
             </div>
             <input id="showFps" name="showFps" class="switch" type="checkbox" aria-describedby="showFpsHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="subtitleOverlay">Subtitle overlay</label>
+              <p id="subtitleOverlayHint">Keep subtitles above generated frames when the player exposes a text track or detectable caption layer.</p>
+            </div>
+            <input id="subtitleOverlay" name="subtitleOverlay" class="switch" type="checkbox" aria-describedby="subtitleOverlayHint">
           </div>
 
           <div class="setting-row">

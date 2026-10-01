@@ -30,6 +30,7 @@ const customSettings = Object.freeze({
   showFps: false,
   showWatermark: false,
   showWarnings: false,
+  subtitleOverlay: true,
   guard: false,
   fillDisplay: false,
   model: 'v6',
@@ -503,7 +504,7 @@ test('options controller exposes virtual Current first and keeps preview, save, 
   assert.match(optionsJs, /Profiles\.toStoragePayload\(nextStore, draftSettings\)/);
   assert.match(optionsJs, /Profiles\.setLastAppliedProfile\(store, selected\?\.id \|\| null\)/);
   assert.match(optionsJs, /updateRateControlVisibility\(draftSettings\.factor\)/);
-  assert.match(optionsJs, /'showFps', 'showWatermark', 'showWarnings'/);
+  assert.match(optionsJs, /'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay'/);
   assert.match(optionsJs, /fpsLimit:\s*fpsLimitFromSlider\(\)/);
   assert.match(optionsJs, /let profileStoreReadOnly = false/);
   assert.match(optionsJs, /enterProfileStoreReadOnly\(error\)/);
@@ -513,9 +514,9 @@ test('options controller exposes virtual Current first and keeps preview, save, 
 });
 
 test('extension exposes the full-page configurator without replacing popup status and help', () => {
-  assert.equal(manifest.version, '1.5.0');
-  assert.match(contentJs, /const VERSION = '1\.5\.0'/);
-  assert.match(optionsHtml, /<span class="version">v1\.5\.0<\/span>/);
+  assert.equal(manifest.version, '1.5.1');
+  assert.match(contentJs, /const VERSION = '1\.5\.1'/);
+  assert.match(optionsHtml, /<span class="version">v1\.5\.1<\/span>/);
   assert.deepEqual(manifest.options_ui, { page: 'options.html', open_in_tab: true });
   assert.deepEqual(manifest.content_scripts[0].js, ['cadence.js', 'profile-store.js', 'content.js']);
   assert.deepEqual(manifest.background, { service_worker: 'background.js' });
@@ -536,6 +537,7 @@ test('runtime shares the profile contract while continuing to consume flat setti
   assert.match(contentJs, /chrome\.storage\.local\.set\(cfg\)/);
   assert.match(contentJs, /showWatermark:\s*true/);
   assert.match(contentJs, /showWarnings:\s*true/);
+  assert.match(contentJs, /subtitleOverlay:\s*true/);
   assert.match(contentJs, /fpsLimit:\s*null/);
   assert.match(contentJs, /wm\.style\.display = cfg\.showWatermark \? 'block' : 'none'/);
   assert.match(contentJs, /k === 'res' \|\| k === 'model' \|\| k === 'guard'/);

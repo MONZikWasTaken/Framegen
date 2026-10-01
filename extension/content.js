@@ -38,7 +38,7 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, guard: true, fillDisplay: false, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, subtitleOverlay: true, guard: true, fillDisplay: false, model: 'v7s' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
@@ -51,7 +51,8 @@
     cfg.hoverReveal = !!cfg.hoverReveal; cfg.compare = !!cfg.compare;
     cfg.fg = !!cfg.fg; cfg.sr = !!cfg.sr; cfg.hdr = !!cfg.hdr;
     cfg.showFps = !!cfg.showFps; cfg.showWatermark = cfg.showWatermark !== false;
-    cfg.showWarnings = cfg.showWarnings !== false; cfg.guard = !!cfg.guard;
+    cfg.showWarnings = cfg.showWarnings !== false; cfg.subtitleOverlay = cfg.subtitleOverlay !== false;
+    cfg.guard = !!cfg.guard;
     cfg.fillDisplay = !!cfg.fillDisplay;
   }
   let settleSettingsReady = () => {};
@@ -103,6 +104,7 @@
       }
       if (Object.hasOwn(ch, 'showFps')) syncHudVisibility();
       if (Object.hasOwn(ch, 'showWarnings') && !cfg.showWarnings) hideWarnings();
+      if (Object.hasOwn(ch, 'subtitleOverlay')) syncSubtitleOverlay();
       if (profileStoreChanged) {
         loadPanelProfiles(ch[Profiles.STORE_KEY].newValue).catch(e => log('profile sync', e));
       }
@@ -587,6 +589,10 @@
   let barH = 0; // control-bar height, measured once (content is static)
   let overlayFit = 'fill', overlayFitRequested = 'fill', overlayFitSupported = true;
   let overlaySourceWidth = 0, overlaySourceHeight = 0;
+  let subtitleLayer = null, subtitleCueRoot = null, subtitleTrackVideo = null, subtitleTrackList = null;
+  const subtitleTrackListeners = new Map();
+  const subtitleDomOverrides = new Map();
+  let subtitleDomScanAt = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
   let autoRafPenalty = 0, autoRafPressure = 0, autoRafLastStrainT = 0;
   function resetAutoController(now = performance.now()) {
@@ -1387,6 +1393,7 @@
     if (!needed) {
       if (previouslyNeeded) resetOutputCadence(true);
       useNativePassthrough();
+      syncSubtitleOverlay();
       return false;
     }
     nativePassthroughActive = false;
@@ -1399,6 +1406,7 @@
     }
     overlay.style.display = 'block';
     positionOverlay();
+    syncSubtitleOverlay();
     return true;
   }
 
@@ -1984,6 +1992,229 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 .video-player__overlay { z-index: 100 !important; }`;
     (document.head || document.documentElement).appendChild(css);
   }
+  function ensureSubtitleLayer() {
+    if (subtitleLayer) return;
+    subtitleLayer = document.createElement('div');
+    subtitleLayer.style.cssText = 'position:absolute!important; z-index:2147483647!important; pointer-events:none!important; overflow:hidden!important; display:none; contain:layout style paint;';
+    const shadow = subtitleLayer.attachShadow({ mode: 'closed' });
+    const style = document.createElement('style');
+    style.textContent = `
+      :host { all: initial; }
+      #cues { position:absolute; inset:0; overflow:hidden; container-type:size; color:white;
+        font:700 clamp(14px, 4cqw, 48px)/1.2 Arial,sans-serif; text-align:center; }
+      .cue { position:absolute; box-sizing:border-box; padding:.08em .22em; border-radius:.12em;
+        color:#fff; background:rgba(0,0,0,.72); text-shadow:0 1px 2px #000;
+        white-space:pre-line; overflow-wrap:anywhere; }
+      .cue b { font-weight:900; }
+      .cue i { font-style:italic; }
+      .cue u { text-decoration:underline; }
+    `;
+    subtitleCueRoot = document.createElement('div');
+    subtitleCueRoot.id = 'cues';
+    shadow.append(style, subtitleCueRoot);
+    if (overlay?.parentElement) overlay.parentElement.insertBefore(subtitleLayer, overlay.nextSibling);
+  }
+
+  function positionSubtitleLayer(forceOutsideFullscreen = false) {
+    if (!subtitleLayer || !overlay) return;
+    const fullscreenHost = !forceOutsideFullscreen && document.fullscreenElement?.tagName !== 'VIDEO'
+      ? document.fullscreenElement : null;
+    if (fullscreenHost) {
+      if (subtitleLayer.parentElement !== fullscreenHost) fullscreenHost.appendChild(subtitleLayer);
+      const rect = overlay.getBoundingClientRect();
+      subtitleLayer.style.setProperty('position', 'fixed', 'important');
+      subtitleLayer.style.setProperty('left', `${rect.left}px`, 'important');
+      subtitleLayer.style.setProperty('top', `${rect.top}px`, 'important');
+      subtitleLayer.style.setProperty('width', `${rect.width}px`, 'important');
+      subtitleLayer.style.setProperty('height', `${rect.height}px`, 'important');
+      return;
+    }
+    if (overlay.parentElement
+        && (subtitleLayer.parentElement !== overlay.parentElement || overlay.nextSibling !== subtitleLayer)) {
+      overlay.parentElement.insertBefore(subtitleLayer, overlay.nextSibling);
+    }
+    subtitleLayer.style.setProperty('position', 'absolute', 'important');
+    for (const property of ['left', 'top', 'width', 'height']) {
+      subtitleLayer.style.setProperty(property, overlay.style[property], 'important');
+    }
+  }
+
+  function renderSubtitleCues() {
+    if (!subtitleCueRoot || !subtitleTrackVideo) return;
+    const cues = [];
+    for (const track of Array.from(subtitleTrackVideo.textTracks || [])) {
+      if (track.mode === 'disabled' || !track.activeCues) continue;
+      for (const cue of Array.from(track.activeCues)) cues.push(cue);
+    }
+    subtitleCueRoot.replaceChildren();
+    cues.forEach((cue, index) => {
+      const box = document.createElement('div');
+      box.className = 'cue';
+      const size = Number.isFinite(cue.size) ? Math.max(1, Math.min(100, cue.size)) : 100;
+      const position = Number.isFinite(cue.position) ? Math.max(0, Math.min(100, cue.position)) : 50;
+      const align = ['start', 'left'].includes(cue.align) ? 'left'
+        : ['end', 'right'].includes(cue.align) ? 'right' : 'center';
+      const positionAlign = cue.positionAlign || 'auto';
+      const translateX = ['line-left', 'left'].includes(positionAlign) ? '0'
+        : ['line-right', 'right'].includes(positionAlign) ? '-100%'
+          : align === 'left' ? '0' : align === 'right' ? '-100%' : '-50%';
+      box.style.left = `${position}%`;
+      box.style.width = `${size}%`;
+      box.style.textAlign = align;
+      box.style.transform = `translate(${translateX}, var(--fg-cue-y, 0))`;
+      if (cue.vertical === 'rl' || cue.vertical === 'lr') {
+        box.style.writingMode = cue.vertical === 'rl' ? 'vertical-rl' : 'vertical-lr';
+        box.style.width = 'auto';
+        box.style.height = `${size}%`;
+      }
+      const line = cue.line;
+      if (typeof line === 'number' && Number.isFinite(line)) {
+        if (cue.snapToLines === false) {
+          box.style.top = `${Math.max(0, Math.min(100, line))}%`;
+          const lineAlign = cue.lineAlign || 'start';
+          box.style.setProperty('--fg-cue-y', lineAlign === 'end' ? '-100%' : lineAlign === 'center' ? '-50%' : '0');
+        } else if (line < 0) {
+          box.style.bottom = `${Math.abs(line) * 1.2}em`;
+        } else {
+          box.style.top = `${line * 1.2}em`;
+        }
+      } else {
+        box.style.bottom = `${(cues.length - index - 1) * 1.35 + .35}em`;
+      }
+      try {
+        if (typeof cue.getCueAsHTML === 'function') box.append(cue.getCueAsHTML());
+        else box.textContent = cue.text || '';
+      } catch { box.textContent = cue.text || ''; }
+      subtitleCueRoot.append(box);
+    });
+  }
+
+  function clearSubtitleTrackBindings() {
+    for (const [track, listener] of subtitleTrackListeners) track.removeEventListener('cuechange', listener);
+    subtitleTrackListeners.clear();
+    if (subtitleTrackList) {
+      subtitleTrackList.removeEventListener('change', onSubtitleTrackListChange);
+      subtitleTrackList.removeEventListener('addtrack', onSubtitleTrackListChange);
+      subtitleTrackList.removeEventListener('removetrack', onSubtitleTrackListChange);
+    }
+    subtitleTrackList = null;
+    subtitleTrackVideo = null;
+  }
+
+  function onSubtitleTrackListChange() {
+    if (!subtitleTrackVideo) return;
+    const tracks = new Set(Array.from(subtitleTrackVideo.textTracks || []));
+    for (const [track, listener] of subtitleTrackListeners) {
+      if (!tracks.has(track)) {
+        track.removeEventListener('cuechange', listener);
+        subtitleTrackListeners.delete(track);
+      }
+    }
+    for (const track of tracks) {
+      if (subtitleTrackListeners.has(track)) continue;
+      const listener = renderSubtitleCues;
+      track.addEventListener('cuechange', listener);
+      subtitleTrackListeners.set(track, listener);
+    }
+    renderSubtitleCues();
+  }
+
+  const SITE_SUBTITLE_SELECTORS = [
+    '[class*="subtitle" i]', '[id*="subtitle" i]', '[class*="caption" i]', '[id*="caption" i]',
+    '[class*="text-track" i]', '[id*="text-track" i]', '.vjs-text-track-display', '.plyr__captions',
+    '.jw-text-track-display', '.shaka-text-container', '.dplayer-subtitle', '.art-subtitle',
+    '.vds-captions', '.ytp-caption-window-container', '.player-timedtext',
+  ].join(',');
+
+  function restoreSubtitleDomOverrides() {
+    for (const [element, original] of subtitleDomOverrides) {
+      if (original.position.value) element.style.setProperty('position', original.position.value, original.position.priority);
+      else element.style.removeProperty('position');
+      if (original.zIndex.value) element.style.setProperty('z-index', original.zIndex.value, original.zIndex.priority);
+      else element.style.removeProperty('z-index');
+    }
+    subtitleDomOverrides.clear();
+    subtitleDomScanAt = 0;
+  }
+
+  function raiseSiteSubtitleLayers() {
+    const now = performance.now();
+    if (now - subtitleDomScanAt < 250 || !videoEl?.isConnected || !overlay?.parentElement) return;
+    subtitleDomScanAt = now;
+    const videoRect = videoEl.getBoundingClientRect();
+    const canvasBranches = new Map();
+    let canvasNode = overlay, canvasBranch = overlay;
+    while (canvasNode) {
+      canvasBranches.set(canvasNode, canvasBranch);
+      canvasBranch = canvasNode.parentElement;
+      canvasNode = canvasNode.parentElement;
+    }
+    const active = new Set();
+    for (const candidate of document.querySelectorAll(SITE_SUBTITLE_SELECTORS)) {
+      if (!(candidate instanceof HTMLElement) || candidate === overlay || candidate === subtitleLayer
+          || candidate.closest('.fc-controls-root, .fc-hud, .fc-watermark')) continue;
+      const text = (candidate.innerText || candidate.textContent || '').trim();
+      if (!text || text.length > 500) continue;
+      const style = getComputedStyle(candidate);
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) continue;
+      const rect = candidate.getBoundingClientRect();
+      if (rect.width < 8 || rect.height < 8 || rect.right <= videoRect.left || rect.left >= videoRect.right
+          || rect.bottom <= videoRect.top || rect.top >= videoRect.bottom) continue;
+      let branch = candidate;
+      let common = branch.parentElement;
+      while (common && !canvasBranches.has(common)) {
+        branch = common;
+        common = common.parentElement;
+      }
+      if (!common || branch === videoEl || branch === canvasBranches.get(common)) continue;
+      active.add(branch);
+      if (!subtitleDomOverrides.has(branch)) {
+        subtitleDomOverrides.set(branch, {
+          position: { value: branch.style.getPropertyValue('position'), priority: branch.style.getPropertyPriority('position') },
+          zIndex: { value: branch.style.getPropertyValue('z-index'), priority: branch.style.getPropertyPriority('z-index') },
+        });
+      }
+      if (getComputedStyle(branch).position === 'static') branch.style.setProperty('position', 'relative', 'important');
+      branch.style.setProperty('z-index', '2147483647', 'important');
+    }
+    for (const [element, original] of subtitleDomOverrides) {
+      if (active.has(element)) continue;
+      if (original.position.value) element.style.setProperty('position', original.position.value, original.position.priority);
+      else element.style.removeProperty('position');
+      if (original.zIndex.value) element.style.setProperty('z-index', original.zIndex.value, original.zIndex.priority);
+      else element.style.removeProperty('z-index');
+      subtitleDomOverrides.delete(element);
+    }
+  }
+
+  function syncSubtitleOverlay() {
+    const active = cfg.subtitleOverlay && running && needsCanvasPresentation() && !!videoEl;
+    if (!active) {
+      if (subtitleTrackVideo || subtitleTrackList) clearSubtitleTrackBindings();
+      if (subtitleCueRoot?.childNodes.length) subtitleCueRoot.replaceChildren();
+      positionSubtitleLayer(true);
+      if (subtitleLayer && subtitleLayer.style.display !== 'none') subtitleLayer.style.display = 'none';
+      restoreSubtitleDomOverrides();
+      return;
+    }
+    ensureSubtitleLayer();
+    positionSubtitleLayer();
+    raiseSiteSubtitleLayers();
+    if (subtitleTrackVideo !== videoEl) {
+      clearSubtitleTrackBindings();
+      subtitleTrackVideo = videoEl;
+      subtitleTrackList = videoEl.textTracks;
+      subtitleTrackList?.addEventListener('change', onSubtitleTrackListChange);
+      subtitleTrackList?.addEventListener('addtrack', onSubtitleTrackListChange);
+      subtitleTrackList?.addEventListener('removetrack', onSubtitleTrackListChange);
+      onSubtitleTrackListChange();
+    }
+    const visible = overlayFitSupported && overlay?.style.opacity === '1'
+      && overlay.style.visibility !== 'hidden';
+    const display = visible ? 'block' : 'none';
+    if (subtitleLayer.style.display !== display) subtitleLayer.style.display = display;
+  }
+
   function ensureOverlay() {
     keepTwitchControlsAboveOverlay();
     if (overlay) {
@@ -2117,6 +2348,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     setControlsVisible(false);
     uiScan = 0; // the biggest-video answer may change across fullscreen too
     requestAnimationFrame(() => requestAnimationFrame(() => {
+      syncSubtitleOverlay();
       if (cfg.debug) log('diagnostics fullscreen settled', diagnosticSnapshot());
       const v = running ? videoEl : uiVideo;
       if (v && btn && performance.now() < revealUntil) {
@@ -2190,6 +2422,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     const canvasActive = needsCanvasPresentation();
     overlay.style.visibility = supported && canvasActive ? 'visible' : 'hidden';
     overlay.style.pointerEvents = supported && canvasActive && videoEl.controls ? 'auto' : 'none';
+    positionSubtitleLayer();
+    syncSubtitleOverlay();
     if (!supported || !canvasActive) return;
     const cap = Math.min(1, 1920 / bw, 1080 / bh);
     bw = Math.round(bw * cap);
@@ -2329,6 +2563,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       overlay.style.visibility = 'visible';
       overlay.style.opacity = '1'; // reveal only once pixels exist
     }
+    syncSubtitleOverlay();
     const now = performance.now();
     fpsWin.push(now);
     while (fpsWin.length && fpsWin[0] < now - 1000) fpsWin.shift();
@@ -3659,6 +3894,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       overlay.style.visibility = 'hidden';
       overlay.style.pointerEvents = 'none';
     }
+    syncSubtitleOverlay();
   }
   function onPlaybackRateChange() {
     resetAutoController();
@@ -3743,6 +3979,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     running = true;
     nativePassthroughActive = false;
     useNativePassthrough();
+    syncSubtitleOverlay();
     hud.style.display = 'block';
     if (sys.integrated) {
       advise('⚠ Chrome is running on the integrated GPU (' + sys.gpu + '). For full speed: '
@@ -3761,6 +3998,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   function stop() {
     running = false;
     nativePassthroughActive = false;
+    syncSubtitleOverlay();
     diag.loopStops++;
     invalidatePlaybackLoops();
     const stopEpoch = playbackLoopEpoch;
@@ -3819,9 +4057,13 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
           ? `${label} (~${Number(ratePlan.outputHz.toFixed(2))} FPS)`
           : label;
     const srState = cfg.sr ? (!sys.f16 ? 'unavailable (no f16)' : (sr ? 'on x2' : 'loading…')) : 'off';
+    const qualityVideo = videoEl || biggestVideo();
+    const sourceSize = qualityVideo?.videoWidth && qualityVideo?.videoHeight
+      ? `${qualityVideo.videoWidth}×${qualityVideo.videoHeight}` : 'unknown';
     const lines = [`GPU: ${sys.gpu}${sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
       `f16: ${sys.f16 ? 'yes' : 'NO (slow path)'} · model: ${rtModel ? MODELS[rtModel] : MODELS[cfg.model] || cfg.model}`,
       `FG: ${cfg.fg ? 'on' : 'OFF'} · SR: ${srState}`,
+      `decoded source: ${sourceSize}`,
       `output rate: ${rateState}`,
       `HDR: ${!sys.hdrOk ? 'display not HDR' : (cfg.hdr ? (sys.hdrOn ? 'on (ITM)' : 'failed, SDR') : 'off')}`,
       `sharpness: ${cfg.sharpness === 0 ? 'off' : cfg.sharpness}`,
@@ -4295,7 +4537,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.5.0';
+  const VERSION = '1.5.1';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -4391,6 +4633,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
               showFps: false,
               showWatermark: false,
               guard: true,
+              subtitleOverlay: true,
               fillDisplay: false,
               model: 'v7s',
             });
