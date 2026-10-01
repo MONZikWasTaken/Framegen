@@ -814,16 +814,24 @@ fn rup(c: i32, sx: f32, sy: f32) -> f32 {
   // moving-edge pixels transition smoothly.
   const GUARD = staticGuard ? /* wgsl */`
   var d = 0.0;
-  for (var dy = -1; dy <= 1; dy++) {
-    for (var dx = -1; dx <= 1; dx++) {
+  var dMin = 1.0;
+  for (var dy = -4; dy <= 4; dy++) {
+    for (var dx = -4; dx <= 4; dx++) {
       let xx = x + dx; let yy = y + dy;
-      d += max(abs(img(0, xx, yy) - img(3, xx, yy)),
+      let s = max(abs(img(0, xx, yy) - img(3, xx, yy)),
            max(abs(img(1, xx, yy) - img(4, xx, yy)),
                abs(img(2, xx, yy) - img(5, xx, yy))));
+      dMin = min(dMin, s);
+      if (abs(dx) <= 1 && abs(dy) <= 1) { d += s; }
     }
   }
   d *= (1.0 / 9.0);
-  let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  let motion = max(length(vec2<f32>(fx0, fy0)), length(vec2<f32>(fx1, fy1)));
+  let colorStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  let uncertain = smoothstep(0.02, 0.03, d);
+  let wLocal = colorStatic * (1.0 - uncertain * smoothstep(0.5, 1.0, motion));
+  let wHalo = 1.0 - smoothstep(0.02, 0.03, dMin);
+  let wStatic = max(wLocal, wHalo);
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
     let stat = vec3<f32>(
@@ -923,16 +931,26 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   bgr = bgr + textureSampleLevel(resT, samp, uv8, 0.0).xyz;` : '';
   const GUARD = staticGuard ? /* wgsl */`
   var d = 0.0;
+  var dMin = 1.0;
   let guardDim = vec2<f32>(textureDimensions(outTex));
   let mx = i32((f32(x) + 0.5) * ${W}.0 / guardDim.x);
   let my = i32((f32(y) + 0.5) * ${H}.0 / guardDim.y);
-  for (var dy = -1; dy <= 1; dy++) {
-    for (var dx = -1; dx <= 1; dx++) {
-      d += dtap(mx + dx, my + dy);
+  let halo = max(i32(ceil(4.0 * ${W}.0 / guardDim.x)), i32(ceil(4.0 * ${H}.0 / guardDim.y)));
+  for (var dy = -halo; dy <= halo; dy++) {
+    for (var dx = -halo; dx <= halo; dx++) {
+      let s = dtap(mx + dx, my + dy);
+      dMin = min(dMin, s);
+      if (abs(dx) <= 1 && abs(dy) <= 1) { d += s; }
     }
   }
   d *= (1.0 / 9.0);
-  let wStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  let guardScale = guardDim / srcDim;
+  let motion = max(length(fl.xy * guardScale), length(fl.zw * guardScale));
+  let colorStatic = 1.0 - smoothstep(0.03, 0.09, d);
+  let uncertain = smoothstep(0.02, 0.03, d);
+  let wLocal = colorStatic * (1.0 - uncertain * smoothstep(0.5, 1.0, motion));
+  let wHalo = 1.0 - smoothstep(0.02, 0.03, dMin);
+  let wStatic = max(wLocal, wHalo);
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
     let stat = mix(warpT(tex0, srcPos.x, srcPos.y), warpT(tex1, srcPos.x, srcPos.y), t);

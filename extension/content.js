@@ -117,7 +117,16 @@
       }
       if (previousCompare && !cfg.compare) cmpRing = [];
       if ('hdr' in ch || 'sharpness' in ch) configureOverlay();
-      if ('sr' in ch && cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
+      if ('sr' in ch) {
+        msAvg = 0;
+        lastMidCostAt = 0;
+        midCostSamples.length = 0;
+        prepCostMs = 0;
+        prepCostCalls = 0;
+        prepCostSamples.length = 0;
+        resetSrCostTracking();
+        if (cfg.sr && device) ensureSR().catch(e => log('sr sync', e));
+      }
       if (['fg', 'sr', 'hdr', 'sharpness', 'compare'].some(key => Object.hasOwn(ch, key))) {
         reconcilePresentationMode(previousNeedsCanvas, previousSr !== cfg.sr);
       }
@@ -594,6 +603,7 @@
   const subtitleDomOverrides = new Map();
   let subtitleDomScanAt = 0;
   let autoPenalty = 0, penaltyT = 0, dropPressure = 0, lastPressureT = 0;
+  let fullscreenSettleUntil = 0;
   let autoRafPenalty = 0, autoRafPressure = 0, autoRafLastStrainT = 0;
   function resetAutoController(now = performance.now()) {
     autoPenalty = 0;
@@ -722,7 +732,9 @@
   }
 
   function validGpuCostSample(sampleMs) {
-    return Number.isFinite(sampleMs) && sampleMs > 0 && sampleMs <= 1000;
+    return Number.isFinite(sampleMs) && sampleMs > 0 && sampleMs <= 80
+      && !!videoEl && !videoEl.paused
+      && performance.now() >= fullscreenSettleUntil;
   }
 
   function updateRollingGpuCost(samples, currentCostMs, sampleMs) {
@@ -856,12 +868,12 @@
 
   function autoPolicyFactor(midCostMs, sourceHz = playbackAdjustedSourceHz()) {
     const modelCostMs = Number.isFinite(midCostMs) && midCostMs > 0 ? midCostMs : 10;
+    const measuredPairMs = prepCostMs > 0 ? prepCostMs : 0;
     const activeIntervalMs = sourceHz > 0 ? 1000 / sourceHz : intervalMs;
     let factor = 6;
     while (factor > 2
-        && (estimatedLegacyFactorGpuCost(factor, modelCostMs,
-          activeSrCostMs(), sourceHz) > uniqueIntervalMs * 0.85
-          || estimatedActiveIntervalGpuCost(factor, modelCostMs)
+        && (estimatedLegacyFactorGpuCost(factor, modelCostMs, 0, sourceHz, measuredPairMs) > uniqueIntervalMs * 0.85
+          || estimatedActiveIntervalGpuCost(factor, modelCostMs, 0, measuredPairMs)
             > activeIntervalMs * 0.85)) factor--;
     const uniqueHz = uniqueIntervalMs > 1
       ? Math.min(sourceHz, 1000 / uniqueIntervalMs)
@@ -879,16 +891,15 @@
     const motionCeiling = motionAvg > 45 ? 2 : motionAvg > 28 ? 3 : motionAvg > 16 ? 4 : 6;
     factor = Math.min(factor, motionCeiling);
     factor = Math.max(1, factor - autoPenalty - autoRafPenalty);
+    const interpolationFits = factor > 1
+      && estimatedLegacyFactorGpuCost(factor, modelCostMs, 0, sourceHz, measuredPairMs) <= uniqueIntervalMs * 1.1
+      && estimatedActiveIntervalGpuCost(factor, modelCostMs, 0, measuredPairMs) <= activeIntervalMs * 1.1;
     return {
       factor,
       sourceHz,
       uniqueHz,
       presentationHz: Cadence.mixedPresentationHz(sourceHz, uniqueHz, factor),
-      runnable: factor > 1
-        && estimatedLegacyFactorGpuCost(factor, modelCostMs,
-          activeSrCostMs(), sourceHz) <= uniqueIntervalMs * 1.1
-        && estimatedActiveIntervalGpuCost(factor, modelCostMs)
-          <= activeIntervalMs * 1.1,
+      runnable: interpolationFits,
     };
   }
 
@@ -1986,10 +1997,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Theater and fullscreen rebuild the player and these layers fall under the
     // canvas. z-index alone puts them back. position:relative shows them too,
     // but pins the bar to the top of the player.
-    css.textContent = `[data-a-target="player-controls"],
-.player-controls,
-.top-bar,
-.video-player__overlay { z-index: 100 !important; }`;
+    css.textContent = `.video-player__overlay { z-index: 3 !important; }
+.video-player__overlay [data-a-target="player-controls"],
+.video-player__overlay .player-controls,
+.video-player__overlay .top-bar { z-index: 100 !important; }`;
     (document.head || document.documentElement).appendChild(css);
   }
   function ensureSubtitleLayer() {
@@ -2347,6 +2358,18 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     setPanelOpen(false);
     setControlsVisible(false);
     uiScan = 0; // the biggest-video answer may change across fullscreen too
+    // The fullscreen reflow stalls rAF and delivery. That hitch is not a
+    // sustained GPU limit; counting it steps Auto from 3x down to the source rate.
+    fullscreenSettleUntil = performance.now() + 1200;
+    resetAutoController();
+    dropPressure = 0;
+    autoRafPressure = 0;
+    msAvg = 0;
+    lastMidCostAt = 0;
+    midCostSamples.length = 0;
+    prepCostMs = 0;
+    prepCostCalls = 0;
+    prepCostSamples.length = 0;
     requestAnimationFrame(() => requestAnimationFrame(() => {
       syncSubtitleOverlay();
       if (cfg.debug) log('diagnostics fullscreen settled', diagnosticSnapshot());
@@ -2696,11 +2719,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       if (insideVideo && !rt && !rtBuilding && now - preloadFailT > 5000) {
         ensureRuntime().catch((err) => { preloadFailT = performance.now(); log('preload', err); });
       }
-    } else {
-      revealUntil = Math.min(revealUntil, now + 250);
-      blurControlsFocus();
-      setPanelOpen(false);
-      setControlsVisible(false);
+    } else if (revealUntil > now + 250) {
+      revealUntil = now + 250;
     }
   }, { passive: true });
 
@@ -2809,6 +2829,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     }
     if (controlsRoot.dataset.visible === 'true') scheduleControlsPlacement();
     if (performance.now() > revealUntil) {
+      blurControlsFocus();
+      setPanelOpen(false);
       setControlsVisible(false);
     }
   }, 300);
@@ -3185,7 +3207,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     lastPressureT = now;
     if (due >= 0) {
       dropped += due;
-      dropPressure += due;
+      if (now >= fullscreenSettleUntil) dropPressure += due;
       // Feeding these staleness values into the delay target was measured and
       // reverted: on saturated configurations the grown delay triggers a pool
       // realloc (hard cadence reset) mid-flight and turns one stall into a
@@ -3195,7 +3217,9 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // external GPU bursts look exactly like this): learn fast, forget slowly,
       // feeds back into the delay target so the buffer grows to absorb bursts
       const late = now - queue[due].at;
-      lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
+      if (now >= fullscreenSettleUntil) {
+        lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
+      }
       present(queue[due].tex, queue[due].mid);
       recordBenchPresentationBatch(due, now);
       queue.splice(0, due + 1); // drop in place - slice would allocate per presented frame
@@ -3205,8 +3229,9 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     driveJob(now);
     while (dropWin.length && dropWin[0] < now - 2000) dropWin.shift();
     // AIMD controller, evaluated EVERY frame: aggressive decrease on pressure,
-    // additive recovery after a long clean stretch
-    if (cfg.factor === 'auto') {
+    // additive recovery after a long clean stretch. The fullscreen reflow is
+    // excluded: its rAF stall is not a reason to pin Auto at the source rate.
+    if (cfg.factor === 'auto' && now >= fullscreenSettleUntil) {
       // compositor saturation (frames late by a vsync, not yet dropped) feeds the
       // provisional one-step controller. Durable penalties are reserved for
       // actual presentation drops, so harmonic 4/8ms service cannot escalate.
@@ -3653,7 +3678,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // drop feedback and current motion. Capped Auto reuses the same policy.
       const policy = autoPolicyFactor(modelMs);
       n = policy.factor;
-      run = policy.runnable;
+      const gpuIsKeepingUp = dropPressure < 0.15 && autoRafPenalty === 0;
+      run = policy.runnable || (n > 1 && gpuIsKeepingUp);
       if (run) {
         plainAutoProbeAttempts = 0;
         plainAutoProbeNextAt = arrival + Cadence.autoProbeDelayMs(0);
@@ -4521,9 +4547,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       const activeVideo = running ? videoEl : uiVideo;
       const videoRect = activeVideo?.getBoundingClientRect();
       if (videoRect && pointInsideRect(event.clientX, event.clientY, videoRect)) return;
-      blurControlsFocus();
-      setPanelOpen(false);
-      setControlsVisible(false);
+      const now = performance.now();
+      if (revealUntil > now + 250) revealUntil = now + 250;
     });
     window.addEventListener('blur', () => {
       blurControlsFocus();
@@ -4537,7 +4562,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.5.1';
+  const VERSION = '1.5.3';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
@@ -4628,7 +4653,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
               hoverReveal: false,
               compare: false,
               fg: true,
-              sr: false,
+              sr: message.payload?.sr === true,
               hdr: false,
               showFps: false,
               showWatermark: false,

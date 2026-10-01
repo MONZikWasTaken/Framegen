@@ -73,10 +73,10 @@ test('custom selects keep native values, keyboard support, and dynamic profile s
 test('twitch player controls stay above the canvas without shifting the bar', () => {
   const rule = functionBody('keepTwitchControlsAboveOverlay', 'ensureSubtitleLayer');
   assert.match(rule, /\(\^\|\\\.\)twitch\\\.tv\$/);
-  assert.match(rule, /data-a-target="player-controls"/);
-  assert.match(rule, /\.player-controls/);
-  assert.match(rule, /\.top-bar/);
-  assert.match(rule, /\.video-player__overlay/);
+  assert.match(rule, /\.video-player__overlay \[data-a-target="player-controls"\]/);
+  assert.match(rule, /\.video-player__overlay \.player-controls/);
+  assert.match(rule, /\.video-player__overlay \.top-bar/);
+  assert.match(rule, /\.video-player__overlay \{ z-index:\s*3\s*!important; \}/);
   assert.match(rule, /z-index:\s*100\s*!important/);
   assert.doesNotMatch(rule, /textContent = `[\s\S]*position\s*:/);
   assert.match(content, /keepTwitchControlsAboveOverlay\(\)/);
