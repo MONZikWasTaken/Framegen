@@ -9,10 +9,12 @@
   const SETTINGS_KEYS = Object.freeze([
     'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
     'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'guard', 'fillDisplay', 'model',
+    'flowUpsample',
   ]);
   const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
   const RESOLUTIONS = Object.freeze([288, 360, 480, 720, 1080]);
   const MODELS = Object.freeze(['v6', 'v7s']);
+  const FLOW_UPSAMPLE_MODES = Object.freeze(['edge', 'gate', 'bilinear']);
   const TARGET_FPS_MIN = 2;
   const TARGET_FPS_MAX = 1000;
   const FPS_LIMIT_PRESETS = Object.freeze([
@@ -40,6 +42,7 @@
     guard: true,
     fillDisplay: false,
     model: 'v7s',
+    flowUpsample: 'edge',
   });
   const LEGACY_CURRENT_PROFILE = Object.freeze({
     id: 'current-settings',
@@ -137,6 +140,7 @@
       guard: booleanValue(source.guard, DEFAULT_SETTINGS.guard),
       fillDisplay: booleanValue(source.fillDisplay, DEFAULT_SETTINGS.fillDisplay),
       model: MODELS.includes(source.model) ? source.model : DEFAULT_SETTINGS.model,
+      flowUpsample: FLOW_UPSAMPLE_MODES.includes(source.flowUpsample) ? source.flowUpsample : DEFAULT_SETTINGS.flowUpsample,
     };
   }
 

@@ -14,7 +14,7 @@
       <span class="brand-dot" aria-hidden="true"></span>
       <strong>Framegen</strong>
       <h1>Advanced settings</h1>
-      <span class="version">v1.5.3</span>
+      <span class="version">v1.5.4</span>
     </div>
     <div class="header-actions">
       <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
@@ -125,6 +125,18 @@
             <select id="model" name="model" aria-describedby="modelHint">
               <option value="v7s">v7 small · current</option>
               <option value="v6">v6 · legacy</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="flowUpsample">Flow upsample</label>
+              <p id="flowUpsampleHint">How the motion field is upscaled above model resolution. Edge is sharpest; Bilinear removes edge-guided contour tabs; Gate keeps edge guidance but falls back to bilinear on thin lines.</p>
+            </div>
+            <select id="flowUpsample" name="flowUpsample" aria-describedby="flowUpsampleHint">
+              <option value="edge">Edge-guided · default</option>
+              <option value="gate">Gated · thin-line safe</option>
+              <option value="bilinear">Bilinear · no edge guidance</option>
             </select>
           </div>
         </section>

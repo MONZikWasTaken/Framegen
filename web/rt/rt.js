@@ -831,7 +831,7 @@ fn rup(c: i32, sx: f32, sy: f32) -> f32 {
   let uncertain = smoothstep(0.02, 0.03, d);
   let wLocal = colorStatic * (1.0 - uncertain * smoothstep(0.5, 1.0, motion));
   let wHalo = 1.0 - smoothstep(0.02, 0.03, dMin);
-  let wStatic = max(wLocal, wHalo);
+  let wStatic = max(wLocal, wHalo) * (1.0 - smoothstep(0.5, 1.0, motion));
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
     let stat = vec3<f32>(
@@ -920,7 +920,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // (copy then warp) - sharper mids for less bandwidth. Filter precision is the
 // sampler's (~8-bit subtexel) - same +-1 LSB class as the rgba8 store above.
 function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 16, WGY = 8,
-                              experimentalMaskSharpen = null) {
+                              experimentalMaskSharpen = null, flowUpsample = 'edge') {
+  // flow upsample mode (texture path, only runs when output res > model res):
+  //   'edge'     - joint bilateral edge-guided upsample (current default)
+  //   'gate'     - edge-guided, but fall back to bilinear where no low-res grid
+  //                colour matches the output guide (kills thin-line contour tabs)
+  //   'bilinear' - plain hw bilinear flow, no edge guidance at all
+  const edgeGuided = flowUpsample !== 'bilinear';
+  const edgeGate = flowUpsample === 'gate';
+  // confidence floor: exp(-48*dc^2) < EDGE_GATE_CONF  <=>  colour L2 dist > ~0.18.
+  // On a thin high-contrast line no coarse grid sample is that close -> bilinear.
+  const EDGE_GATE_CONF = 0.20;
+  const EDGE_GATE_SNIPPET = edgeGate ? /* wgsl */`
+  let bestQ = max(max(q00q, q10q), max(q01q, q11q));
+  if (bestQ < ${EDGE_GATE_CONF}) { return bilinearFlow; }` : '';
   // v2: tmp8 lives in two rgba16float textures (flow 4ch + mask) written by the
   // deconv - ONE hw bilinear sample replaces the 4-tap software up() per plane
   // (20 buffer reads -> 2 samples), and the refine residual is a texture too.
@@ -950,7 +963,7 @@ function wgslFlowOutTexDirect(W, H, staticGuard = false, withRes = false, WGX = 
   let uncertain = smoothstep(0.02, 0.03, d);
   let wLocal = colorStatic * (1.0 - uncertain * smoothstep(0.5, 1.0, motion));
   let wHalo = 1.0 - smoothstep(0.02, 0.03, dMin);
-  let wStatic = max(wLocal, wHalo);
+  let wStatic = max(wLocal, wHalo) * (1.0 - smoothstep(0.5, 1.0, motion));
   if (wStatic > 0.001) {
     let t = clamp(guardT[0], 0.0, 1.0);
     let stat = mix(warpT(tex0, srcPos.x, srcPos.y), warpT(tex1, srcPos.x, srcPos.y), t);
@@ -1012,10 +1025,14 @@ fn edgeUpsample(uv: vec2<f32>, guide: vec3<f32>, bilinearFlow: vec4<f32>) -> vec
     + textureSampleLevel(tex1, samp, (vec2<f32>(p01) + 0.5) / fdim, 0.0).rgb) * 0.5;
   let c11 = (textureSampleLevel(tex0, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb
     + textureSampleLevel(tex1, samp, (vec2<f32>(p11) + 0.5) / fdim, 0.0).rgb) * 0.5;
-  let w00 = s00 * exp(-48.0 * dot(c00 - guide, c00 - guide));
-  let w10 = s10 * exp(-48.0 * dot(c10 - guide, c10 - guide));
-  let w01 = s01 * exp(-48.0 * dot(c01 - guide, c01 - guide));
-  let w11 = s11 * exp(-48.0 * dot(c11 - guide, c11 - guide));
+  let q00q = exp(-48.0 * dot(c00 - guide, c00 - guide));
+  let q10q = exp(-48.0 * dot(c10 - guide, c10 - guide));
+  let q01q = exp(-48.0 * dot(c01 - guide, c01 - guide));
+  let q11q = exp(-48.0 * dot(c11 - guide, c11 - guide));
+  let w00 = s00 * q00q;
+  let w10 = s10 * q10q;
+  let w01 = s01 * q01q;
+  let w11 = s11 * q11q;${EDGE_GATE_SNIPPET}
   let ws = w00 + w10 + w01 + w11;
   if (!(ws >= 1e-6)) {
     return bilinearFlow;
@@ -1036,11 +1053,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let scale = vec4<f32>(srcDim.x / ${W}.0, srcDim.y / ${H}.0,
                          srcDim.x / ${W}.0, srcDim.y / ${H}.0);
   var flow = textureSampleLevel(t8f, samp, uv8, 0.0);
-  if (outDim.x > ${W}.0 || outDim.y > ${H}.0) {
+${edgeGuided ? /* wgsl */`  if (outDim.x > ${W}.0 || outDim.y > ${H}.0) {
     let guide = (textureSampleLevel(tex0, samp, uv8, 0.0).rgb
       + textureSampleLevel(tex1, samp, uv8, 0.0).rgb) * 0.5;
     flow = edgeUpsample(uv8, guide, flow);
-  }
+  }` : ''}
   let fl = flow * 8.0 * scale;
 ${COMPOSITE}
 ${RES_ADD}
@@ -1421,8 +1438,12 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
                                           staticGuard = false,
                                           sparseRefine = true, refineThr = 0.02,
                                           debugOutputs = false,
-                                          experimentalMaskSharpen = null }) {
+                                          experimentalMaskSharpen = null,
+                                          flowUpsample = 'edge' }) {
   if (w % 16 || h % 16) throw new Error(`rt: dims must be /16 (got ${w}x${h})`);
+  if (!['edge', 'gate', 'bilinear'].includes(flowUpsample)) {
+    throw new Error(`rt: flowUpsample must be 'edge' | 'gate' | 'bilinear' (got ${flowUpsample})`);
+  }
   const QW = w / 4, QH = h / 4, W8 = w / 8, H8 = h / 8, W16 = w / 16, H16 = h / 16;
   const useF16 = device.features.has('shader-f16');
   // channel widths come from the weights themselves (supports slim students)
@@ -1618,7 +1639,7 @@ export async function createRT(device, { w, h, weightsBin, weightsManifest, conv
       : wgslConv(C2, C2, W16, H16, W16, H16, 1, true, false)),
     pipeAsync(wgslDeconv(C2, 5, W16, H16, W8, H8, useF16, direct)),
     pipeAsync(textureOutput
-      ? (direct ? wgslFlowOutTexDirect(w, h, staticGuard, refi, 16, 8, experimentalMaskSharpen) : wgslFlowOutTex(w, h, staticGuard, refi))
+      ? (direct ? wgslFlowOutTexDirect(w, h, staticGuard, refi, 16, 8, experimentalMaskSharpen, flowUpsample) : wgslFlowOutTex(w, h, staticGuard, refi))
       : wgslFlowOut(w, h)),
     sdiff ? pipeAsync(wgslDiff(w, h)) : null,
     // tfact cb6 with the FiLM affine fused into its tile load (f16 path only;

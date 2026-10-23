@@ -38,13 +38,15 @@
   const MODELS = { v6: 'rt_tfact2', v7s: 'rt_v7s' };
   const FPS_LIMIT_STEPS = Profiles.FPS_LIMIT_PRESETS;
   const cfg = { factor: 'auto', targetFps: 120, fpsLimit: null, anime: true, debug: false, res: 480, hoverReveal: true, compare: false,
-    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, subtitleOverlay: true, guard: true, fillDisplay: false, model: 'v7s' };
+    fg: true, sr: false, hdr: false, sharpness: 0, showFps: true, showWatermark: true, showWarnings: true, subtitleOverlay: true, guard: true, fillDisplay: false, model: 'v7s',
+    flowUpsample: 'edge' };
   function sanitizeCfg() {
     const legacyTarget = cfg.factor === 'fps60' ? 60 : cfg.factor === 'fps120' ? 120 : null;
     cfg.factor = Cadence.sanitizeOutputRate(cfg.factor);
     cfg.targetFps = Cadence.sanitizeTargetFps(legacyTarget ?? cfg.targetFps, 120);
     cfg.fpsLimit = canonicalFpsLimit(cfg.fpsLimit);
     if (!MODELS[cfg.model]) cfg.model = 'v7s';
+    if (!['edge', 'gate', 'bilinear'].includes(cfg.flowUpsample)) cfg.flowUpsample = 'edge';
     if (!SIZES[cfg.res]) cfg.res = 480;
     if (![0, 1, 2, 3].includes(cfg.sharpness)) cfg.sharpness = 0;
     cfg.anime = !!cfg.anime; cfg.debug = !!cfg.debug;
@@ -93,7 +95,7 @@
       const previousCompare = cfg.compare;
       for (const k in ch) {
         if (!(k in cfg)) continue;
-        if ((k === 'res' || k === 'model' || k === 'guard') && cfg[k] !== ch[k].newValue) {
+        if ((k === 'res' || k === 'model' || k === 'guard' || k === 'flowUpsample') && cfg[k] !== ch[k].newValue) {
           runtimeChanged = true;
         }
         cfg[k] = ch[k].newValue;
@@ -537,7 +539,7 @@
     syncPanelProfileSelection();
   }
 
-  let rt = null, rtRes = 0, rtModel = '', rtGuard = null, rtGeneration = 0;
+  let rt = null, rtRes = 0, rtModel = '', rtGuard = null, rtFlow = 'edge', rtGeneration = 0;
   let device = null, recoveringDevice = false, deviceRecoveryEpoch = 0;
   let deviceRecoveryVideo = null, videoEl = null;
   let overlay = null, overlayCtx = null, blitPipe = null, blitSampler = null;
@@ -578,6 +580,7 @@
   let plainAutoProbeNextAt = 0, plainAutoProbeAttempts = 0;
   let delayMs = DELAY_MS, dropWin = [], switching = false, preloadFailT = -1e9;
   let schedT = 0, rafFloor = 100, nextUiUpdateAt = 0, motionAvg = 0, lateAvg = 0;
+  let lateTailMs = 0, lateTailT = 0; // fast-attack slow-decay lateness max - sees delivery bursts the mean never does
 
   function syncHudVisibility() {
     if (!hud) return;
@@ -592,6 +595,10 @@
   let outputRatePlanSnapshot = null;
   let outputRatePlanCandidate = null;
   let outputRatePlanCandidateSamples = 0;
+  // A confirmed rate-plan transition discards the in-flight pair decision, and
+  // in cadence mode the just-captured frame only gets its presentation slot
+  // from that decision - the capture side bridges it with an arrival-time slot.
+  let outputRatePlanResetBridge = false;
   const OUTPUT_RATE_TRANSITION_SAMPLES = 16;
   let gpuProbeActive = false, gpuProbeStartedAt = 0, gpuProbeKey = '';
   let lastVr = null, lastVrT = 0; // video rect cached by pump's UI tick - onFrame reuses it
@@ -1081,6 +1088,9 @@
     }
     // Already scheduled textures remain valid under the old cadence epoch.
     // Preserve and drain them; only future planning switches to the new clock.
+    // The pairSeq bump still drops the in-flight pair decision, so ask the
+    // capture side to give the just-captured frame an arrival-time slot.
+    outputRatePlanResetBridge = true;
     resetOutputCadence(false);
     outputRatePlanIdentity = nextIdentity;
     outputRatePlanSnapshot = { ...plan };
@@ -1495,8 +1505,8 @@
   // ---------- device / runtime ----------
   // memoized: the hover-preload and the FC click may race - only one build runs
   let rtBuilding = null;
-  function runtimeMatches(res = cfg.res, model = cfg.model, guard = cfg.guard) {
-    return !!(device && rt && rtRes === res && rtModel === model && rtGuard === guard);
+  function runtimeMatches(res = cfg.res, model = cfg.model, guard = cfg.guard, flow = cfg.flowUpsample) {
+    return !!(device && rt && rtRes === res && rtModel === model && rtGuard === guard && rtFlow === flow);
   }
   async function ensureRuntime() {
     await settingsReady;
@@ -1505,7 +1515,7 @@
     while (!runtimeMatches()) {
       while (rtBuilding) await rtBuilding;
       if (runtimeMatches()) return;
-      const request = Object.freeze({ res: cfg.res, model: cfg.model, guard: cfg.guard });
+      const request = Object.freeze({ res: cfg.res, model: cfg.model, guard: cfg.guard, flowUpsample: cfg.flowUpsample });
       rtBuilding = buildRuntime(request);
       try { await rtBuilding; } finally { rtBuilding = null; }
     }
@@ -1552,6 +1562,7 @@
     rtRes = 0;
     rtModel = '';
     rtGuard = null;
+    rtFlow = 'edge';
     sr = null;
     srProcessedFrames = 0;
     blitPipe = null;
@@ -1710,7 +1721,7 @@
     tuneTimer = setTimeout(tick, 4000);
   }
   let rtC1 = 0, rtC2 = 0;
-  async function buildRuntime({ res: buildRes, model: buildModel, guard: buildGuard }) {
+  async function buildRuntime({ res: buildRes, model: buildModel, guard: buildGuard, flowUpsample: buildFlow = 'edge' }) {
     if (!device) {
       const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in Chrome settings (chrome://settings/system), restart Chrome, and update your GPU driver. Very old GPUs are not supported.';
       if (!navigator.gpu) throw new Error(GPU_HELP);
@@ -1727,7 +1738,7 @@
         .catch(error => log('device loss handler', error));
       classifyAdapter(adapter);
     }
-    if (runtimeMatches(buildRes, buildModel, buildGuard)) return;
+    if (runtimeMatches(buildRes, buildModel, buildGuard, buildFlow)) return;
     if (rt && rt.destroy) { // free the old runtime's VRAM now, not at GC time
       try { rt.destroy(); } catch {}
       rt = null;
@@ -1758,8 +1769,8 @@
     rtC2 = man['block0.conv0.1.0.weight'].shape[0];
     const convTune = await loadConvTune(buildRes, runtimeModel);
     rt = await rtMod.createRT(device, { w: mw, h: mh, textureInput: true, textureOutput: true,
-      staticGuard: buildGuard, weightsBin: bin, weightsManifest: man, convTune });
-    rtRes = buildRes; rtModel = runtimeModel; rtGuard = buildGuard;
+      staticGuard: buildGuard, weightsBin: bin, weightsManifest: man, convTune, flowUpsample: buildFlow });
+    rtRes = buildRes; rtModel = runtimeModel; rtGuard = buildGuard; rtFlow = buildFlow;
     rtGeneration++;
     resetPrepCostTracking();
     if (!convTune) scheduleConvTune(rtMod,
@@ -3219,6 +3230,10 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       const late = now - queue[due].at;
       if (now >= fullscreenSettleUntil) {
         lateAvg = late > lateAvg ? lateAvg * 0.7 + late * 0.3 : lateAvg * 0.985 + late * 0.015;
+        // Delivery bursts live in the tail (p99 ~4ms, spikes past 100ms): attack
+        // instantly, decay over ~700ms, so the delay target can pre-buffer them.
+        lateTailMs = Math.max(late, lateTailMs * Math.exp((lateTailT - now) / 700));
+        lateTailT = now;
       }
       present(queue[due].tex, queue[due].mid);
       recordBenchPresentationBatch(due, now);
@@ -3449,7 +3464,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // The source pool grows only when the buffered history actually needs it.
-      const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2));
+      const burstPad = Math.min(60, Math.max(0, (lateAvg - 4) * 2, (lateTailMs - 8) * 2));
       const floorMs = (msAvg && msAvg < 6 && lateAvg < 3 && effN <= 3) ? 42 : 60;
       const playbackRate = Math.max(0.01, Math.abs(Number(videoEl.playbackRate) || 1));
       const wallPairMs = decodedIntervalMs / playbackRate;
@@ -3517,7 +3532,8 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
         while (cmpRing.length > compareDepth) cmpRing.shift();
       }
       const cadenceMode = cadenceConfigured && ratePlan.interpolationAllowed;
-      if (!cadenceMode) schedulePresentation(tex, srcAt, false);
+      if (!cadenceMode || outputRatePlanResetBridge) schedulePresentation(tex, srcAt, false);
+      outputRatePlanResetBridge = false;
       const prev = lastTex;
       if (!cfg.fg) { // frame generation off: passthrough (SR-only if enabled)
         effN = 1;
@@ -4562,7 +4578,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.5.3';
+  const VERSION = '1.5.4';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
