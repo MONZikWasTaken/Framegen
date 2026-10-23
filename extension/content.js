@@ -547,6 +547,7 @@
   let presentationTextureVersions = new WeakMap();
   const blitBg = new Map();
   let frameTex = [], frameIdx = 0, texW = 0, texH = 0, lastTex = null;
+  let stablePoolDims = null; // pool size committed at the last realloc; poolDims() dead-bands against it
   let lastPresentedSourceTex = null, lastPresentedTex = null;
   let midTexs = [], midIdx = 0;
   let dedupPipe = null, dedupBg = new Map(), dedupStats = null, dedupSampler = null;
@@ -1572,6 +1573,7 @@
     frameIdx = 0;
     texW = 0;
     texH = 0;
+    stablePoolDims = null;
     midTexs = [];
     midIdx = 0;
     dedupPipe = null;
@@ -1822,7 +1824,7 @@
       frameTex.push(device.createTexture({ label: 'fcfr' + poolGen + '_' + i, size: [w, h], format: 'rgba8unorm',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT }));
     }
-    texW = w; texH = h; dedupBg.clear(); blitBg.clear(); lastTex = null;
+    texW = w; texH = h; stablePoolDims = [w, h]; dedupBg.clear(); blitBg.clear(); lastTex = null;
     ensureMidTextures(w, h);
   }
 
@@ -1887,6 +1889,20 @@
     if (cfg.sr && sys.f16 && needsNeuralUpscale(sw, sh)) return [sw, sh];
     if (overlay?.width && overlay?.height) return [overlay.width, overlay.height];
     return [sw, sh];
+  }
+  // Dead-band the pool size against the last committed one. The overlay backing
+  // is round(rect * DPR), so player chrome, hover controls or a scrollbar nudge
+  // it by a few px every tick, and ensureFrameTextures reallocates the entire
+  // source pool (queue wiped, every texture recreated) on ANY dimension change -
+  // a visible freeze. Hold the pool while the change is small; the blit scales
+  // pool -> overlay regardless. A real resize (fullscreen, theater) exceeds the
+  // band and reallocates as before.
+  function holdPoolDims(dims) {
+    if (!stablePoolDims) return dims;
+    const tolW = Math.max(16, Math.round(dims[0] * 0.02));
+    const tolH = Math.max(16, Math.round(dims[1] * 0.02));
+    return (Math.abs(stablePoolDims[0] - dims[0]) <= tolW
+        && Math.abs(stablePoolDims[1] - dims[1]) <= tolH) ? stablePoolDims : dims;
   }
   // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
   // backing differ, capture the whole source then downscale once into the pool.
@@ -3460,7 +3476,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       schedT = (!schedT || Math.abs(arrival - expected) > 80)
         ? arrival : expected + 0.08 * (arrival - expected);
       if (!videoEl.videoWidth || !videoEl.videoHeight) return;
-      const [vw, vh] = poolDims();
+      const [vw, vh] = holdPoolDims(poolDims());
       // presentation delay must cover the batch compute time (own + the previous
       // batch draining), or high factors drop their early mids as already-stale.
       // The source pool grows only when the buffered history actually needs it.
@@ -3983,7 +3999,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       && overlayFitSupported && videoEl.controls ? 'auto' : 'none';
     // seed the canvas with the current video frame so the reveal is seamless -
     // no black flash while the first interpolated frames are still in flight
-    const [vw, vh] = needsCanvasPresentation() && videoEl.videoWidth && videoEl.videoHeight ? poolDims() : [0, 0];
+    const [vw, vh] = needsCanvasPresentation() && videoEl.videoWidth && videoEl.videoHeight ? holdPoolDims(poolDims()) : [0, 0];
     if (vw && vh) {
       ensureFrameTextures(vw, vh);
       const seed = frameTex[frameIdx];
@@ -4016,6 +4032,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     lastPumpT = 0;
     refreshEstimate.stableSamples = 0;
     lastVr = null; // the cached rect belongs to the previous video element
+    stablePoolDims = null; // and so does the committed pool size
     dropped = 0; dups = 0; cuts = 0;
     if (startEpoch !== playbackLoopEpoch || videoEl !== v) return;
     running = true;
@@ -4578,7 +4595,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.5.4';
+  const VERSION = '1.5.5';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
