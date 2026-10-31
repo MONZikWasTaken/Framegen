@@ -1,1 +1,57 @@
-PLACEHOLDER_MANIFEST
+{
+  "manifest_version": 3,
+  "name": "Framegen - Frame Interpolation",
+  "version": "1.5.5",
+  "action": {
+    "default_title": "Framegen",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "permissions": ["storage", "declarativeNetRequest"],
+  "host_permissions": ["<all_urls>"],
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "cors_media", "enabled": true, "path": "rules.json" }]
+  },
+  "description": "Real-time 2x+ frame interpolation with custom target FPS for any <video>. Runs locally on your GPU with WebGPU.",
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["cadence.js", "profile-store.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["rt/*", "assets/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "framegen@maksvolkov7863.github.io",
+      "strict_min_version": "120.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}
