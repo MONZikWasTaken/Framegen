@@ -249,6 +249,20 @@ input:focus-visible,
   font-weight: 620;
 }
 
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+}
+
 .setting-copy p {
   margin: 3px 0 0;
   color: var(--muted);

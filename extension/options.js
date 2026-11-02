@@ -1,12 +1,11 @@
+import { Profiles } from './src/profiles.js';
+
 (function framegenOptions() {
   'use strict';
 
-  const Profiles = globalThis.FramegenProfiles;
-  if (!Profiles) throw new Error('Framegen profile store is unavailable');
-
   const $ = (id) => document.getElementById(id);
   const BOOLEAN_FIELDS = Object.freeze([
-    'fg', 'sr', 'hdr', 'anime', 'guard', 'fillDisplay', 'hoverReveal',
+    'fg', 'sr', 'hdr', 'anime', 'guard', 'fillDisplay', 'limitToDisplay', 'motionAdaptive', 'periodicRepair', 'cadenceSmoothing', 'renderCubic', 'hoverReveal',
     'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'compare', 'debug',
   ]);
   const FPS_LIMIT_PRESETS = Profiles.FPS_LIMIT_PRESETS;
@@ -138,8 +137,6 @@
       targetFps: Number($('targetFps').value),
       fpsLimit: fpsLimitFromSlider(),
       res: Number($('res').value),
-      model: $('model').value,
-      flowUpsample: $('flowUpsample').value,
       sharpness: Number($('sharpness').value),
     };
     for (const key of BOOLEAN_FIELDS) candidate[key] = $(key).checked;
@@ -154,8 +151,6 @@
     $('fpsLimit').value = String(Profiles.fpsLimitPresetIndex(clean.fpsLimit));
     updateFpsLimitPresentation();
     $('res').value = String(clean.res);
-    $('model').value = clean.model;
-    $('flowUpsample').value = clean.flowUpsample;
     $('sharpness').value = String(clean.sharpness);
     for (const key of BOOLEAN_FIELDS) $(key).checked = clean[key];
     updateRateControlVisibility(clean.factor);
@@ -500,6 +495,7 @@
   }
 
   async function initialize() {
+    $('version').textContent = 'v' + chrome.runtime.getManifest().version;
     try {
       storageSnapshot = await chrome.storage.local.get(null);
       runtimeSettings = Profiles.pickFlatSettings(storageSnapshot);

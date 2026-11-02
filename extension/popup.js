@@ -1,5 +1,4 @@
-// Framegen toolbar popup: READ-ONLY status/metadata for the active tab.
-// All controls live in the in-player UI by design.
+// Framegen toolbar popup: read-only status for the active tab. The controls live in the player.
 const $ = (id) => document.getElementById(id);
 
 let tabId = null;
@@ -8,7 +7,7 @@ async function askStatus() {
   if (tabId == null) return null;
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'fcStatus' });
-  } catch { return null; } // no content script (chrome:// pages, store, etc.)
+  } catch { return null; }
 }
 
 function render(s) {
@@ -25,17 +24,13 @@ function render(s) {
   dot.classList.toggle('on', s.running);
   state.textContent = s.running ? 'running' : 'off';
   state.className = s.running ? 'on' : '';
-  const outputRate = s.targetState && !['factor', 'active'].includes(s.targetState)
-    ? `${s.rateLabel} · ${s.targetWarning || s.targetState}`
-    : s.rateClamped
-      ? `${s.rateLabel} → ${s.effectiveTargetHz} FPS (${s.targetReason})`
-      : s.rateLabel || (s.factor === 'auto' ? 'Auto' : `${s.factor}x source`);
   stat.textContent = s.running
-    ? `out: ${s.fps} fps · target: ${outputRate}\n`
-      + `mid: ${s.ms} ms @ ${s.res}p\n`
-      + `drops: ${s.drops} · model: ${s.model}`
-    : '';
-  sys.textContent = `GPU: ${s.gpu || '-'}${s.integrated ? '\n⚠ INTEGRATED - assign Chrome to the discrete GPU\n(Settings → Display → Graphics)' : ''}\nf16: ${s.f16 ? 'yes' : 'no'}`;
+    ? `out: ${s.fps} fps · ×${s.factor}\n`
+      + `rate: ${s.rateState}\n`
+      + `mid: ${s.midMs} ms @ ${s.res}p · drops: ${s.drops}\n`
+      + `engine: ${s.engine || '-'}`
+    : (s.blocked || '');
+  sys.textContent = `GPU: ${s.gpu || '-'}${s.integrated ? '\n⚠ INTEGRATED - assign the browser to the discrete GPU\n(Settings → Display → Graphics)' : ''}\nf16: ${s.f16 ? 'yes' : 'no'}`;
   sys.className = s.integrated ? 'warn' : '';
 }
 
@@ -51,7 +46,7 @@ $('fullSettings').onclick = async () => {
   try {
     await chrome.runtime.openOptionsPage();
     window.close();
-  } catch { /* leave the popup open if Chrome rejects the options request */ }
+  } catch { /* leave the popup open if the browser rejects the request */ }
 };
 
 (async () => {
@@ -59,6 +54,6 @@ $('fullSettings').onclick = async () => {
   tabId = tab ? tab.id : null;
   const first = await askStatus();
   render(first);
-  if (first && first.integrated) showTab(true); // dual-GPU case: open the fix guide
+  if (first && first.integrated) showTab(true);
   setInterval(async () => render(await askStatus()), 1000);
 })();

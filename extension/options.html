@@ -5,8 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Framegen settings</title>
   <link rel="stylesheet" href="options.css">
-  <script defer src="profile-store.js"></script>
-  <script defer src="options.js"></script>
+  <script type="module" src="options.js"></script>
 </head>
 <body>
   <header class="app-bar">
@@ -14,7 +13,7 @@
       <span class="brand-dot" aria-hidden="true"></span>
       <strong>Framegen</strong>
       <h1>Advanced settings</h1>
-      <span class="version">v1.5.5</span>
+      <span class="version" id="version"></span>
     </div>
     <div class="header-actions">
       <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
@@ -44,7 +43,7 @@
         <section class="settings-section" aria-labelledby="interpolationHeading">
           <div class="section-heading">
             <h2 id="interpolationHeading">Frame generation</h2>
-            <p>Output cadence, model, and internal render cost.</p>
+            <p>Output pacing and the engine's render cost.</p>
           </div>
 
           <div class="setting-row">
@@ -105,8 +104,48 @@
 
           <div class="setting-row">
             <div class="setting-copy">
+              <label for="limitToDisplay">Limit to display refresh rate</label>
+              <p id="limitToDisplayHint">On: never generate more frames than the screen can show. Off: generate as many frames as the GPU budget allows; the screen still shows at most its refresh rate (the newest frame wins) and the counter reports generated frames.</p>
+            </div>
+            <input id="limitToDisplay" name="limitToDisplay" class="switch" type="checkbox" aria-describedby="limitToDisplayHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="motionAdaptive">Motion-adaptive Auto</label>
+              <p id="motionAdaptiveHint">On: Auto generates fewer frames on fast scenes to hide interpolation artifacts, so the output rate swings with the content. Off: Auto keeps the highest multiplier the GPU budget allows.</p>
+            </div>
+            <input id="motionAdaptive" name="motionAdaptive" class="switch" type="checkbox" aria-describedby="motionAdaptiveHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="periodicRepair">Periodic-structure repair</label>
+              <p id="periodicRepairHint">Re-checks the motion on fences, railings, window grids and other repeating patterns, where the network can lock onto the wrong period and the pattern doubles during pans. With Anime mode on it is more aggressive (right for drawn content, slightly worse on live footage). Costs a little GPU time per source frame; off reproduces the network's motion as is.</p>
+            </div>
+            <input id="periodicRepair" name="periodicRepair" class="switch" type="checkbox" aria-describedby="periodicRepairHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="cadenceSmoothing">Anime cadence smoothing <span class="badge">Experimental</span></label>
+              <p id="cadenceSmoothingHint">With Anime mode. Anime is drawn on twos and threes: a door, a walking crowd or a slowly turning head gets a new drawing only every 2nd or 3rd frame and stands still in between. This spreads every drawing step evenly over the frames it is held for, so the motion slides instead of stepping. Every frame on screen is then a generated in-between, the real drawings included: on small steps this looks smooth, on big steps (a character walking close to the camera) the in-betweens carry the generator's softness and edges can double. Off keeps the real drawings as they are, as 1.x did. Uses one frame of lookahead (one source frame of delay). Needs periodic-structure repair.</p>
+            </div>
+            <input id="cadenceSmoothing" name="cadenceSmoothing" class="switch" type="checkbox" aria-describedby="cadenceSmoothingHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="renderCubic">Sharper edges (bicubic)</label>
+              <p id="renderCubicHint">Samples the source frames bicubically instead of bilinearly when building each generated frame, so moving edges, hair and fine texture come out crisper and closer to the original. Clear win on drawn and live video; a touch softer-is-safer on game capture, where you can turn it off. Costs about 0.2 ms per generated frame.</p>
+            </div>
+            <input id="renderCubic" name="renderCubic" class="switch" type="checkbox" aria-describedby="renderCubicHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
               <label for="res">Quality</label>
-              <p id="resHint">Internal interpolation resolution. Higher values use more GPU time.</p>
+              <p id="resHint">The size the network runs at. Balanced is the model's native scale; higher settings cost more GPU time and rarely look better.</p>
             </div>
             <select id="res" name="res" aria-describedby="resHint">
               <option value="288">Low power · 288p</option>
@@ -117,28 +156,7 @@
             </select>
           </div>
 
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="model">Model</label>
-              <p id="modelHint">v7 small is the current production model. v6 remains for compatibility.</p>
-            </div>
-            <select id="model" name="model" aria-describedby="modelHint">
-              <option value="v7s">v7 small · current</option>
-              <option value="v6">v6 · legacy</option>
-            </select>
-          </div>
 
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="flowUpsample">Flow upsample</label>
-              <p id="flowUpsampleHint">How the motion field is upscaled above model resolution. Edge is sharpest; Bilinear removes edge-guided contour tabs; Gate keeps edge guidance but falls back to bilinear on thin lines.</p>
-            </div>
-            <select id="flowUpsample" name="flowUpsample" aria-describedby="flowUpsampleHint">
-              <option value="edge">Edge-guided · default</option>
-              <option value="gate">Gated · thin-line safe</option>
-              <option value="bilinear">Bilinear · no edge guidance</option>
-            </select>
-          </div>
         </section>
 
         <section class="settings-section" aria-labelledby="processingHeading">
@@ -150,7 +168,7 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="sr">Upscale</label>
-              <p id="srHint">Apply 2× neural upscaling to generated frames, or to video when frame generation is off.</p>
+              <p id="srHint">2× neural upscaling of every presented frame when the player is larger than the video.</p>
             </div>
             <input id="sr" name="sr" class="switch" type="checkbox" aria-describedby="srHint">
           </div>
@@ -187,7 +205,7 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="guard">Subtitle protection</label>
-              <p id="guardHint">Protect static text and subtitles from interpolation warping.</p>
+              <p id="guardHint">Pixels that did not change over the last frames (burnt-in subtitles, a logo, a HUD) are taken from the source frames instead of being warped with the motion behind them.</p>
             </div>
             <input id="guard" name="guard" class="switch" type="checkbox" aria-describedby="guardHint">
           </div>

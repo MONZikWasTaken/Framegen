@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const extensionSr = await readFile(new URL('../extension/rt/sr.js', import.meta.url), 'utf8');
-const webSr = await readFile(new URL('../web/rt/sr.js', import.meta.url), 'utf8');
 
 function section(source, startMarker, endMarker) {
   const start = source.indexOf(startMarker);
@@ -25,10 +24,6 @@ function selectedCocs(channels, outputChannels, baseCoc) {
     output: outputChannels <= 16 ? outputChannels : safeCoc(outputChannels, baseCoc),
   };
 }
-
-test('extension and web TinySR runtimes stay byte-identical', () => {
-  assert.equal(extensionSr, webSr);
-});
 
 test('per-size state compilation never benchmarks kernels on the playback queue', () => {
   const state = section(extensionSr, 'function stateFor', '  const gx');

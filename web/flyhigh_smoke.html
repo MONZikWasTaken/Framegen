@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Framegen extension smoke (FlyHigh engine)</title>
+<style>body{background:#111;color:#ddd;font:14px system-ui;margin:16px} video{width:960px;height:540px;background:#000}</style></head>
+<body>
+<h3>Framegen extension smoke page</h3>
+<video id="v" src="http://127.0.0.1:8765/web/fixtures/bbb_720_10s.webm" crossorigin="anonymous" autoplay muted loop playsinline controls></video>
+<pre id="info"></pre>
+<script>
+  const v = document.getElementById('v'); const info = document.getElementById('info');
+  setInterval(() => {
+    const hud = [...document.querySelectorAll('div')].find(d => d.style && d.style.zIndex === '2147483647');
+    const canvases = [...document.querySelectorAll('canvas')];
+    info.textContent = `video ${v.videoWidth}x${v.videoHeight} t=${v.currentTime.toFixed(1)} paused=${v.paused}\nhud: ${hud ? hud.textContent : '(none)'}\ncanvases: ${canvases.map(c => c.width + 'x' + c.height + ' op=' + getComputedStyle(c).opacity).join(', ')}`;
+  }, 500);
+</script>
+</body>
+</html>

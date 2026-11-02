@@ -1,17 +1,21 @@
 [CmdletBinding()]
-param([switch] $PromoteLocalAssets)
+param(
+    # A checkout of the FlyHigh engine: its browser module (examples/web/pkg, built by tools/build_web.sh), the adapters and the
+    # model files are copied into extension/engine before validation.
+    [string] $EngineRepo
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# Assemble the self-contained Chrome extension. The tracked extension/ tree is
-# directly loadable; this script refreshes the runtime mirror, validates every
-# bundled model, and creates both release archives.
+# Assemble the extension. The tracked extension/ tree is directly loadable; this script validates every bundled
+# payload and creates the release archives for Chrome, the Web Store and Firefox.
 $root = (Resolve-Path (Split-Path $PSScriptRoot -Parent)).Path
 $extensionRoot = Join-Path $root 'extension'
+$engineRoot = Join-Path $extensionRoot 'engine'
 $runtimeRoot = Join-Path $extensionRoot 'rt'
 $assetRoot = Join-Path $extensionRoot 'assets'
-New-Item -ItemType Directory -Force -Path $runtimeRoot, $assetRoot | Out-Null
+$sourceRoot = Join-Path $extensionRoot 'src'
 
 function Assert-ExactFiles {
     param(
@@ -33,14 +37,53 @@ function Assert-ExactFiles {
     }
 }
 
-foreach ($runtimeName in @('rt.js', 'sr.js')) {
-    $source = Join-Path (Join-Path $root 'web/rt') $runtimeName
-    if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
-        throw "Missing runtime source: $source"
+if ($EngineRepo) {
+    $engine = (Resolve-Path $EngineRepo).Path
+    $copies = @(
+        @{ From = 'examples/web/pkg/flyhigh_web.js'; To = 'flyhigh_web.js' },
+        @{ From = 'examples/web/pkg/flyhigh_web_bg.wasm'; To = 'flyhigh_web_bg.wasm' },
+        @{ From = 'crates/flyhigh-web/js/adapters.js'; To = 'adapters.js' },
+        @{ From = 'models/graph.json'; To = 'graph.json' },
+        @{ From = 'models/flyhighfg.json'; To = 'flyhighfg.json' },
+        @{ From = 'models/flyhighfg.bin'; To = 'flyhighfg.bin' },
+        @{ From = 'models/WEIGHTS_LICENSE.md'; To = 'WEIGHTS_LICENSE.md' }
+    )
+    foreach ($copy in $copies) {
+        $source = Join-Path $engine $copy.From
+        if (!(Test-Path -LiteralPath $source -PathType Leaf)) { throw "Missing engine file: $source" }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $engineRoot $copy.To) -Force
     }
-    Copy-Item -LiteralPath $source -Destination (Join-Path $runtimeRoot $runtimeName) -Force
+    Write-Host "engine payload refreshed from $engine"
 }
-Assert-ExactFiles -Directory $runtimeRoot -AllowedNames @('rt.js', 'sr.js')
+
+# The FlyHigh engine: the wasm-bindgen module, the browser adapters, the model (graph, manifest, f16 weights).
+Assert-ExactFiles -Directory $engineRoot -AllowedNames @(
+    'flyhigh_web.js', 'flyhigh_web_bg.wasm', 'adapters.js',
+    'graph.json', 'flyhighfg.json', 'flyhighfg.bin', 'WEIGHTS_LICENSE.md'
+)
+$wasmHeader = [System.IO.File]::ReadAllBytes((Join-Path $engineRoot 'flyhigh_web_bg.wasm'))[0..3]
+if (($wasmHeader -join ',') -ne '0,97,115,109') { throw 'flyhigh_web_bg.wasm is not a WebAssembly module' }
+$flyManifest = Get-Content -Raw -LiteralPath (Join-Path $engineRoot 'flyhighfg.json') | ConvertFrom-Json
+$flyTensors = $flyManifest.PSObject.Properties['tensors']
+if ($null -eq $flyTensors) { throw "flyhighfg.json has no 'tensors' table" }
+$flyEnd = [long]0
+foreach ($tensorProperty in $flyTensors.Value.PSObject.Properties) {
+    $entry = $tensorProperty.Value
+    $elements = [long]1
+    foreach ($dimensionValue in @($entry.shape)) { $elements *= [long]$dimensionValue }
+    $end = [long]$entry.offset + $elements
+    if ($end -gt $flyEnd) { $flyEnd = $end }
+}
+$flyExpectedBytes = $flyEnd * 2   # little-endian f16
+$flyActualBytes = (Get-Item -LiteralPath (Join-Path $engineRoot 'flyhighfg.bin')).Length
+if ($flyActualBytes -ne $flyExpectedBytes) {
+    throw "FlyHigh weights size mismatch (expected $flyExpectedBytes bytes, got $flyActualBytes)"
+}
+$moduleHead = Get-Content -TotalCount 40 -LiteralPath (Join-Path $engineRoot 'flyhigh_web.js') | Out-String
+if ($moduleHead -notmatch 'FhEngine|export') { throw 'flyhigh_web.js does not look like the wasm-bindgen module' }
+
+# TinySR, the upscaler: sr.js with its conv kernels in conv.js, its weights in assets/.
+Assert-ExactFiles -Directory $runtimeRoot -AllowedNames @('conv.js', 'sr.js')
 
 function Assert-ModelBundle {
     param(
@@ -50,12 +93,8 @@ function Assert-ModelBundle {
 
     $binPath = Join-Path $Directory "$Stem.bin"
     $manifestPath = Join-Path $Directory "$Stem.json"
-    if (!(Test-Path -LiteralPath $binPath -PathType Leaf)) {
-        throw "Missing bundled model weights: $binPath"
-    }
-    if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-        throw "Missing bundled model manifest: $manifestPath"
-    }
+    if (!(Test-Path -LiteralPath $binPath -PathType Leaf)) { throw "Missing bundled model weights: $binPath" }
+    if (!(Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Missing bundled model manifest: $manifestPath" }
 
     try {
         $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
@@ -71,37 +110,12 @@ function Assert-ModelBundle {
         if ($null -eq $offsetProperty -or $null -eq $shapeProperty) {
             throw "Invalid tensor entry '$($property.Name)' in $manifestPath"
         }
-        $offsetNumber = [double]$offsetProperty.Value
-        if ([double]::IsNaN($offsetNumber) -or [double]::IsInfinity($offsetNumber) -or
-            $offsetNumber -lt 0 -or $offsetNumber -ne [math]::Truncate($offsetNumber)) {
-            throw "Invalid tensor offset for '$($property.Name)' in $manifestPath"
-        }
-        $offset = [long]$offsetNumber
-        $shape = @($shapeProperty.Value)
-        if ($shape.Count -eq 0) {
-            throw "Empty tensor shape for '$($property.Name)' in $manifestPath"
-        }
+        $offset = [long]$offsetProperty.Value
         $elements = [long]1
-        foreach ($dimensionValue in $shape) {
-            $dimensionNumber = [double]$dimensionValue
-            if ([double]::IsNaN($dimensionNumber) -or [double]::IsInfinity($dimensionNumber) -or
-                $dimensionNumber -le 0 -or $dimensionNumber -ne [math]::Truncate($dimensionNumber)) {
-                throw "Invalid tensor shape for '$($property.Name)' in $manifestPath"
-            }
-            $dimension = [long]$dimensionNumber
-            if ($elements -gt [long]::MaxValue / $dimension) {
-                throw "Tensor shape overflow for '$($property.Name)' in $manifestPath"
-            }
-            $elements *= $dimension
-        }
-        if ($offset -gt [long]::MaxValue - $elements) {
-            throw "Tensor range overflow for '$($property.Name)' in $manifestPath"
-        }
+        foreach ($dimensionValue in @($shapeProperty.Value)) { $elements *= [long]$dimensionValue }
         $ranges += [pscustomobject]@{ Name = $property.Name; Offset = $offset; End = $offset + $elements }
     }
-    if ($ranges.Count -eq 0) {
-        throw "Empty model manifest: $manifestPath"
-    }
+    if ($ranges.Count -eq 0) { throw "Empty model manifest: $manifestPath" }
 
     $cursor = [long]0
     foreach ($range in ($ranges | Sort-Object Offset)) {
@@ -110,9 +124,6 @@ function Assert-ModelBundle {
         }
         $cursor = $range.End
     }
-    if ($cursor -gt [long]::MaxValue / 4) {
-        throw "Model byte size overflow for $Stem"
-    }
     $expectedBytes = $cursor * 4
     $actualBytes = (Get-Item -LiteralPath $binPath).Length
     if ($actualBytes -ne $expectedBytes) {
@@ -120,70 +131,55 @@ function Assert-ModelBundle {
     }
 }
 
-$modelStems = @('rt_tfact2', 'rt_v7s', 'rt_sr')
-$localAssetRoot = Join-Path $root 'assets'
-$localModelStems = @()
-foreach ($stem in $modelStems) {
-    $localBin = Join-Path $localAssetRoot "$stem.bin"
-    $localManifest = Join-Path $localAssetRoot "$stem.json"
-    $hasLocalBin = Test-Path -LiteralPath $localBin -PathType Leaf
-    $hasLocalManifest = Test-Path -LiteralPath $localManifest -PathType Leaf
-    if ($hasLocalBin -ne $hasLocalManifest) {
-        throw "Incomplete local model export for $stem; both .bin and .json are required"
-    }
-    if (!$hasLocalBin) {
-        continue
-    }
-    $localModelStems += $stem
+Assert-ExactFiles -Directory $assetRoot -AllowedNames @('rt_sr.bin', 'rt_sr.json')
+foreach ($stem in @('rt_sr')) {
+    Assert-ModelBundle -Stem $stem -Directory $assetRoot
+}
 
-    $bundledBin = Join-Path $assetRoot "$stem.bin"
-    $bundledManifest = Join-Path $assetRoot "$stem.json"
-    if ($PromoteLocalAssets) {
-        continue
-    }
-
-    $filePairs = @(
-        [pscustomobject]@{ Local = $localBin; Bundled = $bundledBin },
-        [pscustomobject]@{ Local = $localManifest; Bundled = $bundledManifest }
-    )
-    foreach ($pair in $filePairs) {
-        if (!(Test-Path -LiteralPath $pair.Bundled -PathType Leaf) -or
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $pair.Local).Hash -ne
-            (Get-FileHash -Algorithm SHA256 -LiteralPath $pair.Bundled).Hash) {
-            throw "Local model export for $stem differs from extension/assets; rerun with -PromoteLocalAssets and commit the resulting payload"
+# Every module the content script imports must be a web-accessible file.
+$manifest = Get-Content -Raw -LiteralPath (Join-Path $extensionRoot 'manifest.json') | ConvertFrom-Json
+$accessible = @($manifest.web_accessible_resources | ForEach-Object { $_.resources })
+foreach ($prefix in @('src/*', 'engine/*', 'rt/*', 'assets/*')) {
+    if ($prefix -notin $accessible) { throw "manifest.json web_accessible_resources lacks $prefix" }
+}
+foreach ($module in Get-ChildItem -LiteralPath $sourceRoot -Recurse -Filter '*.js') {
+    $text = Get-Content -Raw -LiteralPath $module.FullName
+    foreach ($match in [regex]::Matches($text, "from '(\./[^']+)'")) {
+        $target = Join-Path $module.DirectoryName $match.Groups[1].Value.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        if (!(Test-Path -LiteralPath $target -PathType Leaf)) {
+            throw "$($module.Name) imports a missing module: $($match.Groups[1].Value)"
         }
     }
 }
 
-if ($PromoteLocalAssets) {
-    # Validate every available export before modifying the tracked payload so a
-    # bad later model cannot leave an earlier one partially promoted.
-    foreach ($stem in $localModelStems) {
-        Assert-ModelBundle -Stem $stem -Directory $localAssetRoot
-    }
-    foreach ($stem in $localModelStems) {
-        Copy-Item -LiteralPath (Join-Path $localAssetRoot "$stem.bin") -Destination (Join-Path $assetRoot "$stem.bin") -Force
-        Copy-Item -LiteralPath (Join-Path $localAssetRoot "$stem.json") -Destination (Join-Path $assetRoot "$stem.json") -Force
+# AMO rejects archives whose entry names use '\' (what Compress-Archive writes on Windows PowerShell 5.1)
+function New-ForwardSlashZip {
+    param(
+        [Parameter(Mandatory)][string] $SourceDir,
+        [Parameter(Mandatory)][string] $ZipPath
+    )
+
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    if (Test-Path -LiteralPath $ZipPath) { Remove-Item -LiteralPath $ZipPath -Force }
+    $archive = [System.IO.Compression.ZipFile]::Open($ZipPath, 'Create')
+    try {
+        $sep = [System.IO.Path]::DirectorySeparatorChar
+        $base = (Resolve-Path -LiteralPath $SourceDir).Path.TrimEnd($sep) + $sep
+        foreach ($file in Get-ChildItem -LiteralPath $SourceDir -Recurse -File) {
+            $entryName = $file.FullName.Substring($base.Length).Replace($sep, '/')
+            [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entryName) | Out-Null
+        }
+    } finally {
+        $archive.Dispose()
     }
 }
 
-Assert-ExactFiles -Directory $assetRoot -AllowedNames @(
-    'rt_tfact2.bin', 'rt_tfact2.json',
-    'rt_v7s.bin', 'rt_v7s.json',
-    'rt_sr.bin', 'rt_sr.json'
-)
-foreach ($stem in $modelStems) {
-    Assert-ModelBundle -Stem $stem -Directory $assetRoot
-}
-
-$size = (Get-ChildItem -LiteralPath $extensionRoot -Recurse -File | Measure-Object Length -Sum).Sum
+$size = (Get-ChildItem -LiteralPath $extensionRoot -Recurse -File | Where-Object { $_.FullName -notmatch '[\\/]_metadata[\\/]' } | Measure-Object Length -Sum).Sum
 Write-Host ("extension ready: {0:N1} MB" -f ($size / 1MB))
 
-# Chrome writes _metadata/ into unpacked extensions. Stage a filtered copy so
-# neither distributable contains reserved browser-owned entries.
+# Chrome writes _metadata/ into unpacked extensions; the archives are made from a filtered copy.
 $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
-$stage = Join-Path $tempBase ('framegen-zip-stage-' + [guid]::NewGuid().ToString('N'))
-$stage = [System.IO.Path]::GetFullPath($stage)
+$stage = [System.IO.Path]::GetFullPath((Join-Path $tempBase ('framegen-zip-stage-' + [guid]::NewGuid().ToString('N'))))
 if (!$stage.StartsWith($tempBase, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Unsafe staging path: $stage"
 }
@@ -203,6 +199,22 @@ try {
     $storeZip = Join-Path $root 'framegen-webstore.zip'
     Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $storeZip -Force
     Write-Host ("store zip: {0} ({1:N1} MB)" -f $storeZip, ((Get-Item -LiteralPath $storeZip).Length / 1MB))
+
+    # Firefox build: the same tree with Gecko manifest keys: an event-page background (no MV3 service worker there),
+    # the add-on id AMO signs, no Chrome-only version_name.
+    $firefoxDir = Join-Path $stage 'framegen-firefox'
+    Copy-Item -LiteralPath $stageDir -Destination $firefoxDir -Recurse -Force
+    $firefoxManifestPath = Join-Path $firefoxDir 'manifest.json'
+    $firefoxManifest = Get-Content -Raw -LiteralPath $firefoxManifestPath | ConvertFrom-Json
+    $firefoxManifest.background = [pscustomobject]@{ scripts = @('background.js') }
+    $firefoxManifest.PSObject.Properties.Remove('version_name')
+    $firefoxManifest | Add-Member -Force -NotePropertyName browser_specific_settings -NotePropertyValue (
+        [pscustomobject]@{ gecko = [pscustomobject]@{ id = 'framegen@flyhigh.dev'; strict_min_version = '141.0' } })
+    [System.IO.File]::WriteAllText($firefoxManifestPath, ($firefoxManifest | ConvertTo-Json -Depth 20),
+        (New-Object System.Text.UTF8Encoding $false))
+    $firefoxZip = Join-Path $root 'framegen-firefox.zip'
+    New-ForwardSlashZip -SourceDir $firefoxDir -ZipPath $firefoxZip
+    Write-Host ("firefox zip: {0} ({1:N1} MB)" -f $firefoxZip, ((Get-Item -LiteralPath $firefoxZip).Length / 1MB))
 } finally {
     if (Test-Path -LiteralPath $stage) {
         Remove-Item -LiteralPath $stage -Recurse -Force

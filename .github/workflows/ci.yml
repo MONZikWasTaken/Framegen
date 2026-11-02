@@ -15,18 +15,9 @@ jobs:
           node-version: 22
       - name: JS syntax
         run: |
-          node --check web/rt/rt.js
-          node --check web/rt/sr.js
-          node --check extension/cadence.js
-          node --check extension/background.js
-          node --check extension/content.js
-          node --check extension/options.js
-          node --check extension/popup.js
-          node --check extension/profile-store.js
-          node --check extension/rt/rt.js
-          node --check extension/rt/sr.js
-          node --check web/player_worker.js
-          node --check tools/run_display_hz_check.mjs
+          for f in web/rt/rt.js web/rt/sr.js web/player_worker.js extension/*.js extension/src/*.js                    extension/src/ui/*.js extension/rt/*.js extension/engine/adapters.js extension/engine/flyhigh_web.js; do
+            node --check "$f"
+          done
 
       - name: Extension unit and acceptance contracts
         run: node --test tools/*.test.mjs
@@ -39,10 +30,6 @@ jobs:
         run: |
           ./tools/build_extension.ps1
           git diff --exit-code -- extension/rt extension/assets
-
-      - name: npm package smoke
-        working-directory: packages/rt
-        run: npm pack --dry-run
 
       - uses: dtolnay/rust-toolchain@stable
       - name: cargo check (wgpu host only - the TensorRT crate needs CUDA)

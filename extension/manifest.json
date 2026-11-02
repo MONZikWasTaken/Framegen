@@ -1,7 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Framegen - Frame Interpolation",
-  "version": "1.5.5",
+  "version": "2.0.0",
+  "version_name": "2.0.0 (FlyHigh engine)",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  },
   "action": {
     "default_title": "Framegen",
     "default_popup": "popup.html",
@@ -27,14 +31,14 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["cadence.js", "profile-store.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["rt/*", "assets/*"],
+      "resources": ["src/*", "engine/*", "rt/*", "assets/*"],
       "matches": ["<all_urls>"]
     }
   ],

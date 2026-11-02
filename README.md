@@ -4,206 +4,105 @@
 
 # Framegen
 
-**Silky-smooth video in your browser.** A Chrome extension that turns 24-30 fps
-video into 60-240 fps in real time - with a neural network running entirely on
-your GPU. No servers, no accounts, nothing leaves your computer.
+**Smooth video in your browser.** An extension that turns 24 to 30 fps video into 60 to 240 fps in real time, with a
+neural network running on your GPU. No servers, no accounts, nothing leaves your computer.
 
 [![Chrome Web Store](https://img.shields.io/chrome-web-store/v/hpdpcjakhclhljfdkpjolonjlopbdhfk?label=chrome%20web%20store&color=19c37d)](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)
 [![License](https://img.shields.io/badge/code-MIT-blue)](LICENSE)
-[![npm](https://img.shields.io/npm/v/framegen?label=npm&color=cb3837)](https://www.npmjs.com/package/framegen)
 [![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
 
 <img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framegen x4 interpolation, side by side">
-
-*Real output of the shipped model (v7 small), not a mockup. In the browser
-this runs in real time: 2.0 ms per generated frame at 720p on an RTX 4060 Ti.*
-
-https://github.com/user-attachments/assets/87fe417d-e161-40d9-8007-ac83edafcbb1
-
-Live demo: real YouTube, the compare slider (original | Framegen), the debug
-HUD - recorded at 60 fps on an RTX 4060 Ti.
-**[Full 50-second version](https://github.com/MONZikWasTaken/Framegen/releases/download/v1.0.0/framegen-live-demo.mp4)**.
-*(Footage: Sintel © Blender Foundation, CC-BY.)*
 
 </div>
 
 ## What it does
 
-- **2×-6× more frames** on any `<video>` - movies, series, sports, anime,
-  screen recordings; YouTube and most video sites
-- **Auto mode** picks the highest factor your GPU actually sustains, and backs
-  off before you'd see a stutter
-- **Anime mode** detects animation drawn "on twos" and interpolates the real
-  motion instead of the duplicated frames
-- **Display-Hz mode** follows your monitor with a small recovery margin so an
-  occasional delayed frame does not turn into a permanent drop
-- **Compare slider** - drag a divider across the video: original on the left,
-  Framegen on the right
-- **Private by construction** - the whole pipeline runs on your GPU; we collect
-  literally nothing
+- **2x to 6x more frames** on any `<video>`: movies, series, sports, anime, screen recordings; YouTube and most video
+  sites
+- **Auto mode** picks the highest factor your GPU and display sustain and backs off before you see a stutter
+- **Anime mode** detects drawings held on twos and threes and interpolates the real motion; the optional cadence
+  smoothing spreads each drawing step evenly over the frames it is held for
+- **Match display and Custom FPS** place the output on an exact grid at your monitor's rate or any rate you ask for
+- **Compare slider**: original on the left, Framegen on the right
+- **Private by construction**: the whole pipeline runs on your GPU; nothing is collected
 
-An interpolated frame costs ~2 ms on a mid-range GPU (RTX 4060 Ti) - the
-model and inference runtime are custom-built for this (a 2.9 MB network on
-hand-written WebGPU kernels; details in [docs/TECHNICAL.md](docs/TECHNICAL.md)).
+Since 2.0 the generation runs on the [FlyHigh engine](https://github.com/getflyhigh/flyhigh-engine): the FlyHighFG
+network (0.78 M parameters) and its WGSL kernels compiled to WebAssembly, with the engine's Pacer deciding what to show
+on every display tick. A generated frame costs about a millisecond on a mid-range GPU.
 
 ## Install
 
-**[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)** - one click.
+**[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)**.
 
-Manual install (if you want the newest build before it clears store review):
-download `framegen-extension.zip` from the
-[latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest),
-extract it, open `chrome://extensions`, enable **Developer mode**, click
-**Load unpacked** and select the extracted folder.
+Manual install: download `framegen-extension.zip` from the
+[latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest), extract it, open `chrome://extensions`,
+enable **Developer mode**, click **Load unpacked** and select the extracted folder. Firefox: `framegen-firefox.zip`
+from the same release, loaded through `about:debugging` until it is listed on AMO.
 
-Requirements: **Chrome 121+** on a machine with a GPU (Windows, macOS with
-Apple Silicon, Linux). Firefox and Safari don't ship the WebGPU features we
-need yet.
-
-### Development install
-
-The repository keeps the WebGPU runtime and released model files in
-`extension/`, so a fresh clone is directly loadable on macOS, Windows, and
-Linux. `tools/build_extension.ps1` validates those files and creates both
-release ZIP layouts; it fails instead of packaging a missing, mismatched, or
-stale runtime payload. If local model exports exist in the ignored `assets/`
-directory, their hashes must match the tracked payload. Use
-`tools/build_extension.ps1 -PromoteLocalAssets` to deliberately promote those
-exports, then review and commit the resulting `extension/assets` changes.
-
-For ordinary non-DRM HTML5 players, the overlay mirrors CSS `object-fit`
-(`fill`, `contain`, `cover`, `none`, and `scale-down`) and `object-position`.
-If an unscaled source exceeds the FHD canvas safety limit, Framegen leaves the
-raw video visible instead of presenting a misaligned overlay.
-
-To load a development checkout locally:
-
-1. Clone or download this repository.
-2. Open `chrome://extensions` or `edge://extensions`.
-3. Enable **Developer mode**, choose **Load unpacked**, and select the
-   repository's `extension` folder.
-4. Reload the video page after reloading the extension.
-
-The Debug setting in Framegen's gear menu shows source-frame timing,
-`requestVideoFrameCallback`, render-loop, inference, presentation, and canvas
-dimensions for troubleshooting.
+Requirements: **Chrome or Edge 121+** (Windows, macOS with Apple Silicon, Linux) or **Firefox 141+ on Windows**, and
+a GPU with WebGPU support. GPUs without `shader-f16` run the engine's f32 kernels, slower but the same picture.
 
 ## How to use
 
-1. Open any video and hover over it - a round **FC** button appears at the
-   left edge of the player.
-2. Click it. The button turns green, an fps readout appears, and the video is
-   now interpolated. Click again to turn it off.
-3. The **gear** button next to it keeps the quick settings inside the player.
-   Choose **Advanced settings** there or in the extension popup when you want the
-   full-screen profile editor.
+1. Open any video and hover over it: the **FG** button appears at the left edge of the player.
+2. Click it. The button turns green, the fps readout appears, and the video is now interpolated. Click again to turn
+   it off.
+3. The settings button next to it opens the quick panel inside the player; **Advanced settings** there or in the
+   extension popup opens the full page with profiles.
 
 | Setting | What it does |
 |---|---|
-| **Output rate** | `auto` is right for most people and can use an optional FPS limit. You can also choose any custom Target FPS, fixed 2×-6×, or `display Hz` to pace just below your monitor's measured limit for recovery headroom. A custom target is kept between 2× the measured source FPS and the real display/GPU limit |
-| **Quality** | Resolution of the inserted frames. `480` is the sweet spot; raise it on a strong GPU |
-| **Model** | `v7s` (current default) or `v6` (legacy; retained until v8 replaces it) |
-| **Anime mode** | Keep on for anime; harmless elsewhere |
-| **SR 2×** | Neural upscale of inserted frames - costs GPU, sharper result |
-| **Compare** | The split slider, for seeing the difference yourself |
+| **Output rate** | `Auto` fits your GPU and display, with an optional FPS limit. `Match display` and `Custom FPS` pace on an exact grid; fixed 2x to 6x multiply the source. **Limit to display refresh rate** (on) makes the screen a ceiling; off, the GPU generates as many frames as its budget allows. **Motion-adaptive Auto** (on) generates fewer frames on fast scenes |
+| **Quality** | The size the network runs at. `Balanced` is the model's native scale; higher costs more GPU time and rarely looks better |
+| **Anime mode** | Held-frame detection and the aggressive periodic-structure repair; keep on for anime |
+| **Anime cadence smoothing** | Experimental, off by default. Drawings on twos slide instead of stepping; every frame becomes a generated in-between, so big steps look softer; one source frame of lookahead |
+| **Upscale** | 2x neural upscaling of every presented frame when the player is larger than the video |
+| **Static protection** | Pixels that did not change over the last frames (burnt-in subtitles, a logo) are taken from the source |
+| **Compare** | The split slider |
 
-The full settings page lets you keep the live settings as-is or save any number
-of your own local profiles that can be created, duplicated, renamed, deleted,
-and reset. It also exposes
-the supported visibility controls, including the FPS counter, small
-`framegen` watermark, and optional performance notices. Existing settings
-are migrated without losing values.
+Profiles on the full settings page keep any number of setups; existing settings migrate without losing values.
 
-**Good first test:** anything shot at 24 fps - a movie trailer, a film scene
-with a slow camera pan, an anime opening. That's where the difference hits
-hardest. On a 60 Hz screen you'll see 24→60; on a 144-240 Hz screen,
-considerably more.
+**Good first test:** anything shot at 24 fps: a film scene with a slow pan, an anime opening. On a 60 Hz screen you
+see 24 to 60; on a 144 to 240 Hz screen, considerably more.
 
 ## FAQ
 
-**It says "no video found" / the button doesn't appear.**
-Make sure the video is actually playing. On some players the button appears
-only when the mouse is over the video itself.
+**It says "no video found" / the button does not appear.** Make sure the video is playing. On some players the button
+appears only when the mouse is over the video itself.
 
-**Does it work on Netflix / Crunchyroll?**
-No, and it can't: DRM-protected video is invisible to extensions by design -
-the browser hands us black frames. YouTube and most other sites work.
+**Does it work on Netflix or Crunchyroll?** No: DRM-protected video is invisible to extensions by design; the browser
+hands over black frames. YouTube and most other sites work.
 
-**My fps counter shows less than the promised factor.**
-Auto mode adapts to your GPU's real headroom - it will never stutter to hit a
-number. Lower the quality setting or the factor ceiling if you want more.
+**The fps counter shows less than the factor I chose.** Auto adapts to the GPU's real headroom and never stutters to
+hit a number; a fixed factor is capped the same way. Lower the quality or the factor if you want more.
 
-**Does it phone home?**
-No. There is no server, no telemetry, no analytics. The extension is a local
-GPU pipeline; the code is right here to check.
+**The panel says the site forbids WebAssembly.** A few sites (reddit.com among the ones checked) send a security
+policy that Chrome also applies to extensions' WebAssembly. Framegen cannot run there; Firefox is not affected.
 
-**Is my GPU good enough?**
-If it can run the video at all, 2× at 480p almost certainly fits. The HUD
-shows the per-frame cost in ms - budget is roughly `(factor-1) × cost <
-frame interval`.
+**Does it phone home?** No. There is no server, no telemetry, no analytics; the code is here to check.
 
-## The story
+## Development
 
-Framegen is older than this repo. The idea - and the first prototype - date
-back six months before the first commit here. That prototype never got
-published: it worked far too poorly to show anyone. But the idea refused to
-go away, and for half a year I kept watching the space - and nobody shipped
-it properly: real-time neural frame interpolation, in the browser, on any
-video, for anyone. So I decided to build it myself. That's how Framegen
-happened.
+```pwsh
+node --test tools/*.test.mjs
+pwsh tools/build_extension.ps1                      # validates every payload, writes the three release zips
+pwsh tools/build_extension.ps1 -EngineRepo <path>   # also refreshes extension/engine from an engine checkout
+```
+
+`extension/` is directly loadable (Load unpacked). [docs/architecture.md](docs/architecture.md) explains how the host
+maps onto the engine; [AGENTS.md](AGENTS.md) lists the layout and the conventions. The previous engine stays in
+`web/rt` and on npm as [`framegen`](https://www.npmjs.com/package/framegen) ([packages/rt](packages/rt)); its notes are
+in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engine directly.
 
 ## Support the project
 
-Framegen is built by **one person** with one mid-range GPU. The extension is
-free and will stay free - but the models behind it are not free to make:
-every training experiment runs on rented cloud GPUs paid out of pocket
-($5-30 per run, and a new model generation takes dozens of runs before one
-is good enough to ship). The next, bigger model is designed and waiting -
-mostly for GPU-hours.
-
-If Framegen made your video smoother and you want the next model to exist
-sooner:
+Framegen is built by one person with one mid-range GPU. The extension is free and will stay free; the models behind it
+are trained on rented cloud GPUs paid out of pocket. If Framegen made your video smoother:
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/monzikxd)
 
-Starring the repo helps too - visibility is the other currency.
-
-## Use it as a library
-
-The inference runtime is on npm as [`framegen`](https://www.npmjs.com/package/framegen)
-(MIT) - real-time neural frame interpolation for your own project in ~20
-lines, weights included:
-
-```js
-import { createRT } from 'framegen';
-
-const BASE = 'https://cdn.jsdelivr.net/npm/framegen@1.5.3/weights';
-const rt = await createRT(device, {
-  w: 1280, h: 720, textureInput: true, textureOutput: true,
-  weightsBin: await fetch(`${BASE}/rt_v7s.bin`).then(r => r.arrayBuffer()),
-  weightsManifest: await fetch(`${BASE}/rt_v7s.json`).then(r => r.json()),
-});
-rt.prepPair(frameA, frameB); // t-free trunk, once per pair
-rt.runT(0.5, outTexture);    // any t in (0,1), ~1-2 ms each
-```
-
-Full API and notes: [packages/rt](packages/rt). Working example: [framegen-fps-booster](https://github.com/MONZikWasTaken/framegen-fps-booster) ([live](https://monzikwastaken.github.io/framegen-fps-booster/)).
-
-## Under the hood (the short version)
-
-A distilled RIFE-family student (2.9 MB) runs on a hand-written WGSL runtime -
-raw WebGPU compute shaders, no ML framework, matching the PyTorch reference to
-1 LSB. The pipeline is fully GPU-resident: frames never cross to the CPU. From
-the first naive browser attempt to today is a **×500-980 speedup**
-(1957 ms → 2.0-3.75 ms per frame, 720p-1080p).
-
-Full story, numbers, model ladder and training instructions:
-**[docs/TECHNICAL.md](docs/TECHNICAL.md)**
-
 ## License
 
-Code: **MIT** ([LICENSE](LICENSE)) - the extension and the inference runtime
-([`framegen`](packages/rt) on npm), embed it in anything, commercial included.
-Model weights: non-commercial research/personal use
-([WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md)) - they are distilled from a
-RIFE-family teacher whose license chain isn't clean enough to free them yet.
+Code: **MIT** ([LICENSE](LICENSE)). Model weights: the FlyHighFG weights under
+[CC BY-NC 4.0](extension/engine/WEIGHTS_LICENSE.md); the previous engine's weights for personal and research use
+([WEIGHTS_LICENSE.md](WEIGHTS_LICENSE.md)).

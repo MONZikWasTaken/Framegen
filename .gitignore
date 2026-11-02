@@ -34,6 +34,7 @@ extension/_metadata/
 
 framegen-extension.zip
 framegen-webstore.zip
+framegen-firefox.zip
 
 docs/media/*.mp4
 packages/rt/rt.js
