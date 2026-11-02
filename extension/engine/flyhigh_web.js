@@ -36,6 +36,16 @@ export class FhEngine {
         return takeFromExternrefTable0(ret[0]);
     }
     /**
+     * The kernels compiled so far: record them (they are the same on every site) to `precompile` them next time.
+     * @returns {string[]}
+     */
+    compiledKernels() {
+        const ret = wasm.fhengine_compiledKernels(this.__wbg_ptr);
+        var v1 = getArrayJsValueFromWasm0(ret[0], ret[1]);
+        wasm.__wbindgen_free(ret[0], ret[1] * 4, 4);
+        return v1;
+    }
+    /**
      * Creates the WebGPU device (`{ precision: 'auto' | 'f16' | 'f32' }`; the device needs `shader-f16` for the f16
      * path and falls back to f32 without it).
      * @param {any} options
@@ -86,6 +96,20 @@ export class FhEngine {
             throw takeFromExternrefTable0(ret[1]);
         }
         return FhModel.__wrap(ret[0]);
+    }
+    /**
+     * Compiles the named kernels not compiled yet and returns how many; unknown names are skipped. Chrome compiles in
+     * the process that composites the page and caches per site: a stream's worth at once freezes the video for about a
+     * second on a new site. Pass a few names per animation frame (awaiting `device.queue.onSubmittedWorkDone()`
+     * between) before `stream`, which then finds them compiled.
+     * @param {string[]} names
+     * @returns {number}
+     */
+    precompile(names) {
+        const ptr0 = passArrayJsValueToWasm0(names, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.fhengine_precompile(this.__wbg_ptr, ptr0, len0);
+        return ret >>> 0;
     }
     /**
      * @returns {any}
@@ -1640,17 +1664,17 @@ function __wbg_get_imports() {
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 32, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__68);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__70);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 32, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__69);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__71);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
             // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 32, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__70);
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__72);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0) {
@@ -1691,22 +1715,22 @@ function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bin
     }
 }
 
-function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__68(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__68(arg0, arg1, arg2);
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
-    }
-}
-
-function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__69(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__69(arg0, arg1, arg2);
-    if (ret[1]) {
-        throw takeFromExternrefTable0(ret[0]);
-    }
-}
-
 function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__70(arg0, arg1, arg2) {
     const ret = wasm.wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__70(arg0, arg1, arg2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__71(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__71(arg0, arg1, arg2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+function wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__72(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_c62ffef2a4cf3bda___convert__closures_____invoke___wasm_bindgen_c62ffef2a4cf3bda___sys__JsNullable_wgpu_3e8ff71263307194___backend__webgpu__webgpu_sys__gen_GpuAdapter__GpuAdapter___core_608f92abc48d28da___result__Result_____wasm_bindgen_c62ffef2a4cf3bda___JsError___true__72(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
@@ -1845,6 +1869,17 @@ function debugString(val) {
     return className;
 }
 
+function getArrayJsValueFromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    const mem = getDataViewMemory0();
+    const result = [];
+    for (let i = ptr; i < ptr + 4 * len; i += 4) {
+        result.push(wasm.__wbindgen_externrefs.get(mem.getUint32(i, true)));
+    }
+    wasm.__externref_drop_slice(ptr, len);
+    return result;
+}
+
 function getArrayJsValueViewFromWasm0(ptr, len) {
     ptr = ptr >>> 0;
     const mem = getDataViewMemory0();
@@ -1925,6 +1960,16 @@ function passArray8ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 1, 1) >>> 0;
     getUint8ArrayMemory0().set(arg, ptr / 1);
     WASM_VECTOR_LEN = arg.length;
+    return ptr;
+}
+
+function passArrayJsValueToWasm0(array, malloc) {
+    const ptr = malloc(array.length * 4, 4) >>> 0;
+    for (let i = 0; i < array.length; i++) {
+        const add = addToExternrefTable0(array[i]);
+        getDataViewMemory0().setUint32(ptr + 4 * i, add, true);
+    }
+    WASM_VECTOR_LEN = array.length;
     return ptr;
 }
 

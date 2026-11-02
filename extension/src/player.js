@@ -16,6 +16,7 @@ const ENGINE_URLS = {
 const SR_URLS = { module: url('rt/sr.js'), weights: url('assets/rt_sr.bin'), manifest: url('assets/rt_sr.json') };
 const BLOCKED_MESSAGE = "This site's security policy forbids WebAssembly for extensions, so Framegen cannot run here";
 const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in the browser settings, restart the browser and update the GPU driver. Very old GPUs are not supported.';
+const NO_ADAPTER_HELP = 'The browser gives WebGPU no GPU right now. Restart the browser (after a driver reset, for example when a game crashed, it stays off until then); if it persists, check that WebGPU is hardware accelerated on chrome://gpu and update the GPU driver.';
 const MAX_INPUTS = 24, MAX_OUTPUTS = 20;
 // an output not named by a present within this time after its due was dropped or superseded: the slot is free again
 const OUTPUT_HOLD_MS = 250;
@@ -41,6 +42,7 @@ export class Player {
     this.benchMode = benchMode;
     this.backend = null;
     this.backendLoading = null;
+    this.kernelsReady = null;
     this.blocked = null;
     this.sys = { gpu: '-', f16: false, integrated: false, hdrOk: false, hdrOn: false };
     try { this.sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch { /* no media queries */ }
@@ -100,6 +102,9 @@ export class Player {
       this.backendLoading = (async () => {
         await this.settings.ready;
         if (!navigator.gpu) throw new Error(GPU_HELP);
+        // the engine would fail on the same empty answer with wgpu's backend dump instead of something a viewer can act on
+        const adapter = await navigator.gpu.requestAdapter().catch(() => null);
+        if (!adapter) throw new Error(NO_ADAPTER_HELP);
         await tuneStore.load();
         let backend;
         try {
@@ -122,6 +127,8 @@ export class Player {
           .catch(e => log('device loss handler', e));
         this.backend = backend;
         log('backend', backend.kind, backend.class, backend.name, backend.timestamps ? 'timestamps' : 'no timestamps');
+        // starts on hover, before the click: start() waits for whatever is left
+        this.kernelsReady = backend.precompile().catch(e => log('precompile', e));
         return backend;
       })().finally(() => { this.backendLoading = null; });
     }
@@ -422,19 +429,25 @@ export class Player {
     this.pacer.reset(now);
 
     if (this.needsCanvas() && video.videoWidth && video.videoHeight && this.overlay.fitSupported) {
+      if (this.kernelsReady) {
+        const t0 = performance.now();
+        await this.kernelsReady;
+        if (epoch !== this.epoch || this.video !== video) return;
+        if (this.cfg.debug) log('kernels ready', `${(performance.now() - t0).toFixed(0)} ms after the click`);
+      }
       const [w, h] = this.poolDimsNow();
       this.ensureStream(w, h);
-      // the canvas seeded with the current frame, so the reveal is seamless
+      // a cross-origin video fails on its first read: find out (and reload it with CORS) before anything is shown
       try {
-        await this.seed(video);
+        this.probe(video);
       } catch (e) {
         if (isCorsError(e)) {
           this.notices.showCritical('Framegen: the video lacks CORS, reloading it');
           await makeReadable(video, log);
           if (epoch !== this.epoch || this.video !== video) return;
-          try { await this.seed(video); } catch (e2) { log('seed skipped', e2.name || e2); }
+          try { this.probe(video); } catch (e2) { log('probe skipped', e2.name || e2); }
         } else if (e?.name === 'OperationError') {
-          log('seed skipped (no decoded frame yet)');
+          log('probe skipped (no decoded frame yet)');
         } else throw e;
       }
       if (epoch !== this.epoch || this.video !== video) return;
@@ -444,6 +457,7 @@ export class Player {
         this.warmedUp = true;
         if (epoch !== this.epoch || this.video !== video) return;
         log('warm-up', `${(performance.now() - t0).toFixed(0)} ms`);
+        backend.rememberKernels();
       }
     }
     this.ensureUpscaler();
@@ -462,15 +476,18 @@ export class Player {
     this.armTicks(epoch);
   }
 
-  async seed(video) {
+  // Reads the current frame into a slot without presenting it: the canvas stays transparent over the playing video until
+  // the Pacer's first present, so the kernels' first-use compilation (the warm-up) never shows as a frozen frame.
+  probe(video) {
     const slot = this.stream.nextInput([]);
     if (slot < 0) return;
     this.source.write(slot, video);
-    this.present(this.stream.inputTexture(slot), performance.now(), { source: slot });
   }
 
   stop() {
     const wasRunning = this.running;
+    // kernels compiled while running (the classifier, the cadence composite, a tuned conv variant) join the list
+    this.backend?.rememberKernels();
     this.running = false;
     this.cancelLoops();
     this.overlay.fadeOut(() => !this.running);

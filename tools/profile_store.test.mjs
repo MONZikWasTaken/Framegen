@@ -38,7 +38,7 @@ test('the schema is the one the options page edits', () => {
     assert.match(optionsHtml, new RegExp(`id="${key}"`), `options.html has no control for ${key}`);
   }
   assert.doesNotMatch(optionsHtml, /id="model"|id="flowUpsample"/);
-  assert.equal(manifest.version, '2.0.0');
+  assert.match(manifest.version, /^2\./, 'the 2.x line: the engine host');
   assert.deepEqual(manifest.content_scripts[0].js, ['content.js']);
 });
 

@@ -36,6 +36,40 @@ export const tuneStore = {
   },
 };
 
+// The kernels the extension's configurations compile (realtime at 720p and 1080p, the 720 rung, cadence smoothing with
+// its composite), recorded with engine 0.1.3; what a device compiles beyond them is remembered in kernelStore.
+const DEFAULT_KERNELS = ['avgpool', 'binary', 'blendmix', 'chcopy', 'classify', 'convex', 'film', 'gm_box_h', 'gm_box_v',
+  'gm_composite', 'gm_cost', 'gm_fit_reduce', 'gm_fit_solve', 'gm_mask', 'gm_select', 'gm_stats', 'gm_trust', 'grad',
+  'interp', 'keep_static', 'keep_static_age', 'keep_static_age_tex', 'luma', 'render_static', 'render_tex', 'sad',
+  'skreduce', 'tconv', 'tconv32', 'tex_down', 'tex_in', 'tex_out', 'unary', 'warp'];
+// Kernels compiled per animation frame: Chrome compiles in the process that composites the page, about 20 ms a kernel
+// on a site whose shader cache is cold (the cache is per site), so a stream's worth at once froze the video for a second.
+const KERNELS_PER_FRAME = 2;
+
+export const kernelStore = {
+  names: null,
+  async load() {
+    if (this.names) return this.names;
+    let stored = [];
+    try { stored = (await chrome.storage.local.get('fhKernels')).fhKernels || []; } catch { /* storage unavailable */ }
+    this.names = [...new Set([...DEFAULT_KERNELS, ...stored])];
+    return this.names;
+  },
+  async remember(compiled) {
+    const names = await this.load();
+    const fresh = compiled.filter(k => !names.includes(k));
+    if (!fresh.length) return;
+    names.push(...fresh);
+    try { await chrome.storage.local.set({ fhKernels: names.filter(k => !DEFAULT_KERNELS.includes(k)) }); } catch { /* storage unavailable */ }
+  },
+};
+
+const nextFrame = () => new Promise(resolve => {
+  // a hidden tab gets no animation frames; the timer keeps the compilation going there
+  const timer = setTimeout(resolve, 50);
+  requestAnimationFrame(() => { clearTimeout(timer); resolve(); });
+});
+
 export async function loadEngine(urls) {
   const [mod, adapters] = await Promise.all([import(urls.module), import(urls.adapters)]);
   try {
@@ -66,6 +100,7 @@ async function adapterName() {
 export class EngineBackend {
   constructor(mod, adapters, engine, model, gpuName) {
     this.kind = 'engine';
+    this.freed = false;
     this.mod = mod;
     this.adapters = adapters;
     this.engine = engine;
@@ -138,7 +173,24 @@ export class EngineBackend {
     return this.engine.report();
   }
 
+  // Compiles the remembered kernels a few per frame, so the stream that opens later finds them compiled.
+  async precompile() {
+    const names = await kernelStore.load();
+    for (let i = 0; i < names.length; i += KERNELS_PER_FRAME) {
+      if (this.freed) return;
+      if (this.engine.precompile(names.slice(i, i + KERNELS_PER_FRAME))) {
+        await this.device.queue.onSubmittedWorkDone();
+        await nextFrame();
+      }
+    }
+  }
+
+  rememberKernels() {
+    try { return kernelStore.remember(this.engine.compiledKernels()); } catch { return Promise.resolve(); }
+  }
+
   free() {
+    this.freed = true;
     try { this.model.free(); } catch { /* already freed */ }
     try { this.engine.free(); } catch { /* already freed */ }
   }
