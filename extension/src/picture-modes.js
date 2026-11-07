@@ -1,11 +1,11 @@
 export const PICTURE_MODES = Object.freeze({
   original: { label: 'Original', contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 0 },
-  cinema: { label: 'Cinema', contrast: 0.10, saturation: 0.94, lift: 0, warmth: 0.025, detail: 0 },
-  'cinema-home': { label: 'Cinema Home', contrast: 0.04, saturation: 0.98, lift: 0.08, warmth: 0.018, detail: 0 },
-  noir: { label: 'Noir', contrast: 0.20, saturation: 0, lift: 0.015, warmth: 0, detail: 0 },
-  vivid: { label: 'Vivid', contrast: 0.14, saturation: 1.18, lift: 0.025, warmth: 0, detail: 0 },
-  sports: { label: 'Sports', contrast: 0.06, saturation: 1.08, lift: 0.06, warmth: 0, detail: 0.35 },
-  detail: { label: 'Detail Boost', contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 0.65 },
+  cinema: { label: 'Cinema', contrast: 0.38, saturation: 0.84, lift: 0, warmth: 0.065, detail: 0 },
+  'cinema-home': { label: 'Cinema Home', contrast: 0.16, saturation: 1.06, lift: 0.28, warmth: 0.045, detail: 0 },
+  noir: { label: 'Noir', contrast: 0.65, saturation: 0, lift: 0.02, warmth: 0, detail: 0 },
+  vivid: { label: 'Vivid', contrast: 0.40, saturation: 1.40, lift: 0.06, warmth: 0, detail: 0 },
+  sports: { label: 'Sports', contrast: 0.22, saturation: 1.22, lift: 0.18, warmth: 0, detail: 0.7 },
+  detail: { label: 'Detail Boost', contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 1.2 },
 });
 
 export function pictureMode(value) {
