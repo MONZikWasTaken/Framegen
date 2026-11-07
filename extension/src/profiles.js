@@ -1,11 +1,13 @@
 // The settings schema and the profile store (chrome.storage.local, key fcProfileStore). Shared by the content script,
 // the options page and the tests; the one place that says which keys exist and what their valid values are.
 
+import { PICTURE_MODES } from './picture-modes.js';
+
 const SCHEMA_VERSION = 5;
 const STORE_KEY = 'fcProfileStore';
 const SETTINGS_KEYS = Object.freeze([
   'factor', 'targetFps', 'fpsLimit', 'anime', 'debug', 'res', 'hoverReveal', 'compare',
-  'fg', 'sr', 'hdr', 'sharpness', 'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'guard', 'fillDisplay',
+  'fg', 'sr', 'hdr', 'sharpness', 'pictureMode', 'showFps', 'showWatermark', 'showWarnings', 'subtitleOverlay', 'guard', 'fillDisplay',
   'limitToDisplay', 'motionAdaptive', 'periodicRepair', 'cadenceSmoothing', 'renderCubic',
 ]);
 const OUTPUT_RATES = Object.freeze(['auto', 'hz', 'target', 2, 3, 4, 5, 6]);
@@ -30,6 +32,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   sr: false,
   hdr: false,
   sharpness: 0,
+  pictureMode: 'original',
   showFps: true,
   showWatermark: true,
   showWarnings: true,
@@ -131,6 +134,7 @@ function sanitizeSettings(value = {}) {
     sr: booleanValue(source.sr, DEFAULT_SETTINGS.sr),
     hdr: booleanValue(source.hdr, DEFAULT_SETTINGS.hdr),
     sharpness: [0, 1, 2, 3].includes(Number(source.sharpness)) ? Number(source.sharpness) : DEFAULT_SETTINGS.sharpness,
+    pictureMode: Object.hasOwn(PICTURE_MODES, source.pictureMode) ? source.pictureMode : 'original',
     showFps: booleanValue(source.showFps, DEFAULT_SETTINGS.showFps),
     showWatermark: booleanValue(source.showWatermark, DEFAULT_SETTINGS.showWatermark),
     showWarnings: booleanValue(source.showWarnings, DEFAULT_SETTINGS.showWarnings),

@@ -1,6 +1,7 @@
 // The in-player controls: the stage clipped to the video box with the FG and settings buttons on its rail, and the quick
 // settings panel that morphs out of it. Settings changes go through the settings object; the host reacts to them.
 import { Profiles } from '../profiles.js';
+import { PICTURE_MODES } from '../picture-modes.js';
 import { svgIcon, GITHUB_PATH, FRAMEGEN_MARK } from './icons.js';
 
 const INLINE_SETTINGS_MIN_WIDTH = 300, INLINE_SETTINGS_MIN_HEIGHT = 180;
@@ -460,6 +461,10 @@ export class Controls {
           <option>Loading profiles…</option>
         </select></div>
       <div class="fc-divider"></div>
+      <label class="fc-row"><span>Picture mode<small>Choose a color and detail treatment</small></span>
+        <select class="fc-sel" id="fcPictureMode">
+          ${Object.entries(PICTURE_MODES).map(([key, mode]) => `<option value="${key}">${mode.label}</option>`).join('')}
+        </select></label>
       <label class="fc-row"><span>Frame generation<small>Create smoother motion</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
       <div class="fc-row"><span>Output rate<small>Choose how playback is paced</small></span>
@@ -534,6 +539,7 @@ export class Controls {
     q('#fcFG').onchange = e => set({ fg: e.currentTarget.checked });
     q('#fcSR').onchange = e => set({ sr: e.currentTarget.checked });
     q('#fcHDR').onchange = e => set({ hdr: e.currentTarget.checked });
+    q('#fcPictureMode').onchange = e => set({ pictureMode: e.currentTarget.value });
     q('#fcShowFps').onchange = e => set({ showFps: e.currentTarget.checked });
     q('#fcWatermark').onchange = e => set({ showWatermark: e.currentTarget.checked });
     q('#fcWarnings').onchange = e => set({ showWarnings: e.currentTarget.checked });
@@ -544,6 +550,9 @@ export class Controls {
     const panel = this.panel;
     if (!panel) return;
     const cfg = this.settings.cfg;
+    const picture = panel.querySelector('#fcPictureMode');
+    picture.value = cfg.pictureMode;
+    this.syncCustomSelect(picture);
     const factor = panel.querySelector('#fcFactor');
     const resolution = panel.querySelector('#fcRes');
     factor.value = String(cfg.factor);

@@ -138,6 +138,7 @@ import { Profiles } from './src/profiles.js';
       fpsLimit: fpsLimitFromSlider(),
       res: Number($('res').value),
       sharpness: Number($('sharpness').value),
+      pictureMode: $('pictureMode').value,
     };
     for (const key of BOOLEAN_FIELDS) candidate[key] = $(key).checked;
     draftSettings = settingsCopy(candidate);
@@ -152,6 +153,7 @@ import { Profiles } from './src/profiles.js';
     updateFpsLimitPresentation();
     $('res').value = String(clean.res);
     $('sharpness').value = String(clean.sharpness);
+    $('pictureMode').value = clean.pictureMode;
     for (const key of BOOLEAN_FIELDS) $(key).checked = clean[key];
     updateRateControlVisibility(clean.factor);
   }

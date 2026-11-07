@@ -167,6 +167,22 @@
 
           <div class="setting-row">
             <div class="setting-copy">
+              <label for="pictureMode">Picture mode</label>
+              <p id="pictureModeHint">Cinema: gentle warmth. Cinema Home: brighter midtones. Noir: black and white. Vivid: richer color. Sports: clarity. Detail Boost: optional 2× upscale when supported and needed. These looks preserve your motion settings and do not promise 4K output.</p>
+            </div>
+            <select id="pictureMode" name="pictureMode" aria-describedby="pictureModeHint">
+              <option value="original">Original</option>
+              <option value="cinema">Cinema</option>
+              <option value="cinema-home">Cinema Home</option>
+              <option value="noir">Noir</option>
+              <option value="vivid">Vivid</option>
+              <option value="sports">Sports</option>
+              <option value="detail">Detail Boost</option>
+            </select>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
               <label for="sr">Upscale</label>
               <p id="srHint">2× neural upscaling of every presented frame when the player is larger than the video.</p>
             </div>

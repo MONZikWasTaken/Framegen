@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { Profiles } from '../extension/src/profiles.js';
+import { PICTURE_MODES } from '../extension/src/picture-modes.js';
 
 const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
 const optionsHtml = readFileSync(new URL('../extension/options.html', import.meta.url), 'utf8');
@@ -20,6 +21,7 @@ const customSettings = Object.freeze({
   sr: true,
   hdr: true,
   sharpness: 0,
+  pictureMode: 'original',
   showFps: false,
   showWatermark: false,
   showWarnings: false,
@@ -31,6 +33,20 @@ const customSettings = Object.freeze({
   periodicRepair: false,
   cadenceSmoothing: false,
   renderCubic: false,
+});
+
+test('picture modes roundtrip through saved profiles without altering motion settings', () => {
+  for (const pictureMode of Object.keys(PICTURE_MODES)) {
+    const settings = Profiles.sanitizeSettings({ ...customSettings, pictureMode });
+    const store = Profiles.upsertProfile(Profiles.emptyStore(), { id: 'picture-test', name: 'Picture', settings });
+    assert.deepEqual(Profiles.getProfile(store, 'picture-test').settings, settings);
+    assert.equal(settings.factor, customSettings.factor);
+    assert.equal(settings.targetFps, customSettings.targetFps);
+    assert.equal(settings.pictureMode, pictureMode);
+  }
+  for (const pictureMode of [undefined, null, '__proto__', 'invalid']) {
+    assert.equal(Profiles.sanitizeSettings({ pictureMode }).pictureMode, 'original');
+  }
 });
 
 test('the schema is the one the options page edits', () => {

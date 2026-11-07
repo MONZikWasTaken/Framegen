@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Framegen - Frame Interpolation",
   "version": "2.0.3",
-  "version_name": "2.0.3 (FlyHigh engine)",
+  "version_name": "2.0.3 (FlyHigh + Picture Modes)",
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
