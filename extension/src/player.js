@@ -187,8 +187,11 @@ export class Player {
       lookahead: !!this.spec?.video,
       gpuTimestamps: !!this.backend?.timestamps,
       playbackRate: this.playbackRate(),
-      // 10 ms at 848 x 480 until the first measurement; a fullscreen pool is 2 to 4 times that
-      midCostSeedMs: Math.min(40, Math.max(10, 10 * (w * h) / (848 * 480))),
+      // until the first measurement: with the fast render and linear t a generated frame is only the render (about
+      // 0.2 to 1 ms); the full mid is 10 ms at 848 x 480 and a fullscreen pool 2 to 4 times that. A seed far above the
+      // real cost kept fixed factors from generating at all (nothing generated, nothing measured)
+      midCostSeedMs: this.backend?.sessionOptions(this.spec || { width: w, height: h, res: this.cfg.res }).linearT
+        ? 1 : Math.min(40, Math.max(10, 10 * (w * h) / (848 * 480))),
     };
   }
 
