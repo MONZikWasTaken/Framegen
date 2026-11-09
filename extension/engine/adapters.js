@@ -146,13 +146,20 @@ export class TickSource {
 }
 
 /** GPU cost samples for the Pacer from the frames' own work: a timed push and a timed generate every `every` calls,
- * plus every probe the Pacer asks for. Replaces `stream.push` and `stream.generate` in the host's loop. */
+ * plus every probe the Pacer asks for. Replaces `stream.push` and `stream.generate` in the host's loop. A sample that
+ * did not land is taken again on the next call: a request that wrote nothing has no cost (in video mode the requests
+ * of an interval start with the re-timing of a real frame, and a fixed stride over 2 or 5 requests an interval only
+ * ever met those), and the Pacer refuses samples inside a settle window. Without a sample Auto stays on the seeds. */
 export class CostSampler {
   constructor(pacer, nudge, every = 30) {
     this.pacer = pacer; this.nudge = nudge; this.every = every; this.pushes = 0; this.mids = 0;
+    this.due = { pair: false, mid: false };
+    this.missed = { pair: 0, mid: 0 };
   }
   push(stream, slot, pts) {
-    if (this.pushes++ % this.every === 0) {
+    const stride = this.pushes++ % this.every === 0;
+    if (stride) this.missed.pair = 0;
+    if (stride || this.due.pair) {
       const p = stream.pushTimed(slot, pts);
       this.take('pair', p.cost);
       return p;
@@ -161,15 +168,22 @@ export class CostSampler {
   }
   /** Returns whether a frame was written (what `pacer.generated` / `pacer.skipped` want to know). */
   generate(stream, request, out) {
-    if (request.probe || this.mids++ % this.every === 0) {
+    const stride = this.mids++ % this.every === 0;
+    if (stride) this.missed.mid = 0;
+    if (request.probe || stride || this.due.mid) {
       const g = stream.generateTimed(request.t, out);
-      this.take('mid', g.cost);
+      this.take('mid', g.written ? g.cost : null);
       return g.written;
     }
     return stream.generate(request.t, out);
   }
   take(stage, cost) {
-    if (!cost) return;
-    this.nudge.wrap(cost).then((ms) => { if (ms !== null) this.pacer.costSample(performance.now(), stage, ms); }).catch(() => {});
+    // a device without timestamp queries never has a cost: eight misses, then the stride again
+    const miss = () => { this.due[stage] = ++this.missed[stage] < 8; };
+    if (!cost) { miss(); return; }
+    this.due[stage] = false;
+    this.nudge.wrap(cost)
+      .then((ms) => { if (ms !== null && this.pacer.costSample(performance.now(), stage, ms)) this.missed[stage] = 0; else miss(); })
+      .catch(miss);
   }
 }

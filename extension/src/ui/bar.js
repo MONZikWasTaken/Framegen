@@ -106,17 +106,25 @@ export class ControlBar {
     if (this.el && this.el.parentElement !== host) host.appendChild(this.el);
   }
 
-  layout(rect, show) {
+  layout(rect, show, now = performance.now()) {
     const bar = this.ensure();
+    if (show) this.lastShown = now;
+    // Out of the layout once it has faded: a fixed layer over the canvas costs the compositor even at opacity 0. In
+    // Firefox it stalled the display loop 50 to 100 ms two or three times a second, which read as drops, and Auto
+    // sat at x1 below the video's own rate.
+    if (!show && this.height && now - (this.lastShown ?? -Infinity) > 250) { this.hide(); return; }
     const m = Math.max(10, Math.min(16, rect.width * 0.02));
+    const wasOut = bar.style.display === 'none';
     bar.style.display = 'flex';
     if (!this.height) this.height = bar.offsetHeight;
     bar.style.left = (rect.left + m) + 'px';
     bar.style.width = (rect.width - 2 * m) + 'px';
     bar.style.top = (rect.bottom - this.height - m) + 'px';
-    bar.style.opacity = show ? '1' : '0';
-    bar.style.transform = show ? 'translateY(0)' : 'translateY(8px)';
-    bar.style.pointerEvents = show ? 'auto' : 'none';
+    // back in the layout at opacity 0 for one tick first, so the fade-in has something to start from
+    const visible = show && !wasOut;
+    bar.style.opacity = visible ? '1' : '0';
+    bar.style.transform = visible ? 'translateY(0)' : 'translateY(8px)';
+    bar.style.pointerEvents = visible ? 'auto' : 'none';
   }
 
   hide() {

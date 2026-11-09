@@ -188,10 +188,9 @@ export class Player {
       gpuTimestamps: !!this.backend?.timestamps,
       playbackRate: this.playbackRate(),
       // until the first measurement: with the fast render and linear t a generated frame is only the render (about
-      // 0.2 to 1 ms); the full mid is 10 ms at 848 x 480 and a fullscreen pool 2 to 4 times that. A seed far above the
-      // real cost kept fixed factors from generating at all (nothing generated, nothing measured)
-      midCostSeedMs: this.backend?.sessionOptions(this.spec || { width: w, height: h, res: this.cfg.res }).linearT
-        ? 1 : Math.min(40, Math.max(10, 10 * (w * h) / (848 * 480))),
+      // 0.2 to 1 ms), the exact render about 1 ms at the 480 rung on a mid-range GPU. A seed far above the real cost
+      // kept fixed factors from generating at all, and held Auto at x2 wherever the measurement did not land
+      midCostSeedMs: this.backend?.sessionOptions(this.spec || { width: w, height: h, res: this.cfg.res }).linearT ? 1 : 3,
     };
   }
 
@@ -547,7 +546,7 @@ export class Player {
       const [w, h] = this.poolDimsNow();
       this.ensureStream(w, h);
       const stream = this.stream;
-      const pts = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime * 1000 : now;
+      const pts = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime * 1000 : now * this.playbackRate();
       const presented = Number(metadata?.presentedFrames);
       let skipped = 0;
       if (Number.isFinite(presented)) {
@@ -589,7 +588,9 @@ export class Player {
         motion = c.motion;
       }
       const t = performance.now();
-      const flush = this.pacer.sourceFrame(t, { id: slot, ptsMs: pts / this.playbackRate(), kind, motion, skipped });
+      // media time as it is: the Pacer has the playback rate. Dividing here as well made a 60 fps video at 1.5x read as
+      // 135 fps, and Auto stopped generating
+      const flush = this.pacer.sourceFrame(t, { id: slot, ptsMs: pts, kind, motion, skipped });
       this.generate(t, flush);
       const p = this.costs.push(stream, slot, pts);
       if (p.statsPending) await this.backend.nudge.wrap(stream.stats());
