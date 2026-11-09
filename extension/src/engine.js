@@ -173,9 +173,21 @@ export class EngineBackend {
     return this.engine.report();
   }
 
-  // Compiles the remembered kernels a few per frame, so the stream that opens later finds them compiled.
+  // Compiles the remembered kernels before the stream opens. The browser first compiles all of them at once with
+  // createComputePipelineAsync (in parallel, off the thread that composites the page: a cold site takes about 0.5 s
+  // instead of about 2 s one by one); the engine's own creation, a few per frame, then finds them in the browser's
+  // cache.
   async precompile() {
     const names = await kernelStore.load();
+    if (this.engine.kernelSource) {
+      await Promise.all(names.map(name => {
+        const k = this.engine.kernelSource(name);
+        if (!k) return null;
+        const module = this.device.createShaderModule({ label: name, code: k.code });
+        return this.device.createComputePipelineAsync({ label: name, layout: 'auto', compute: { module, entryPoint: k.entry } })
+          .catch(() => null);
+      }));
+    }
     for (let i = 0; i < names.length; i += KERNELS_PER_FRAME) {
       if (this.freed) return;
       if (this.engine.precompile(names.slice(i, i + KERNELS_PER_FRAME))) {

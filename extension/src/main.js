@@ -35,6 +35,7 @@ export function boot() {
       splitX: () => (split ? split.x : 0.5),
       candidateVideo: () => hoverVideo || biggestVideo(),
       onStateChange: running => controls?.setActive(running),
+      onPreparing: on => controls?.setPreparing(on),
       onStatus: () => { if (controls?.isPanelOpen()) controls.updateStatus(); },
       onVideoGone: () => { if (inFeed()) reattach(); },
       onUiTick: (now, rect) => uiTick(now, rect),
@@ -103,7 +104,7 @@ export function boot() {
       const video = biggestVideo();
       if (!video) { notices.showCritical('Framegen: no video found'); return; }
       try { await player.start(video); }
-      catch (e) { notices.showCritical('Framegen error: ' + (e?.message || e)); if (!player.blocked) log(e); }
+      catch (e) { player.preparing(false); notices.showCritical('Framegen error: ' + (e?.message || e)); if (!player.blocked) log(e); }
     } finally { toggling = false; }
   }
 
@@ -166,7 +167,7 @@ export function boot() {
       if (!v || !v.videoWidth || toggling) { setTimeout(tick, 150); return; }
       toggling = true;
       try { await player.start(v); }
-      catch (e) { log('feed reattach', e); }
+      catch (e) { player.preparing(false); log('feed reattach', e); }
       finally { toggling = false; }
     };
     setTimeout(tick, 120);

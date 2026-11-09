@@ -55,6 +55,8 @@ const CSS = `
   .fc-side:focus-visible{outline:1px solid rgba(255,255,255,.72)!important;outline-offset:-2px!important}
   .fc-side[data-active="true"]{background:var(--fc-green)!important;color:#fff!important}
   .fc-side[data-active="true"]:hover{background:#20cd85!important}
+  .fc-side[data-preparing="true"]{animation:fc-prep 1.1s ease-in-out infinite!important}
+  @keyframes fc-prep{0%,100%{opacity:1}50%{opacity:.45}}
   .fc-side[data-open="true"]{background:rgba(255,255,255,.11)!important;color:#fff!important}
   .fc-side svg{display:block!important;margin:auto!important}
   .fc-mark{width:19px!important;height:14px!important}
@@ -290,6 +292,11 @@ export class Controls {
     if (!this.btn) return;
     this.btn.dataset.active = String(!!active);
     this.btn.setAttribute('aria-pressed', String(!!active));
+  }
+
+  // FG switched on, the first generated frame not shown yet
+  setPreparing(on) {
+    if (this.btn) this.btn.dataset.preparing = String(!!on);
   }
 
   // ---------- the morphing surface ----------

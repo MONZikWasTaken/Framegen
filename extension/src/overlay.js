@@ -113,11 +113,12 @@ export class Overlay {
     this.canvas.style.display = 'block';
   }
 
-  // Revealed only once pixels exist, so there is no black flash.
+  // Revealed only once pixels exist, so there is no black flash, and faded in: the canvas shows the picture of the
+  // video under it, so the switch to generated frames has no edge to see.
   reveal() {
     const c = this.canvas;
     if (!c || c.style.opacity === '1') return;
-    c.style.transition = '';
+    c.style.transition = 'opacity .18s linear';
     c.style.visibility = 'visible';
     c.style.opacity = '1';
   }

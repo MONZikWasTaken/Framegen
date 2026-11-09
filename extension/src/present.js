@@ -66,10 +66,17 @@ export class Presenter {
       this.ctx.configure({ device: this.device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
     const module = this.device.createShaderModule({ code: BLIT_VS + fragment(sharpness, hdrOn) });
-    this.pipe = this.device.createRenderPipeline({ layout: 'auto',
-      vertex: { module, entryPoint: 'vs' },
-      fragment: { module, entryPoint: 'fs', targets: [{ format: hdrOn ? 'rgba16float' : 'rgba8unorm' }] } });
+    // compiled off the thread that composites the page: a synchronous pipeline on a site whose shader cache is cold
+    // held the video for about 0.2 s at the first present
+    this.pipe = null;
     this.bindGroups.clear();
+    const gen = (this.gen || 0) + 1;
+    this.gen = gen;
+    this.ready = this.device.createRenderPipelineAsync({ layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format: hdrOn ? 'rgba16float' : 'rgba8unorm' }] } })
+      .then(pipe => { if (this.gen === gen) { this.pipe = pipe; this.bindGroups.clear(); } })
+      .catch(e => this.log('present pipeline', e));
     this.hdr = hdrOn;
     return hdrOn;
   }
@@ -85,8 +92,9 @@ export class Presenter {
     return bg;
   }
 
+  // Returns whether anything was drawn (nothing until the pipeline exists).
   present(texture, { compare = null, splitX = 0.5, width = 0, height = 0 } = {}) {
-    if (!this.pipe) return;
+    if (!this.pipe) return false;
     const enc = this.device.createCommandEncoder();
     const pass = enc.beginRenderPass({ colorAttachments: [{
       view: this.ctx.getCurrentTexture().createView(),
@@ -102,6 +110,7 @@ export class Presenter {
     pass.end();
     this.device.queue.submit([enc.finish()]);
     this.presents++;
+    return true;
   }
 
   // The slot textures changed (a new stream): the cached bind groups point at destroyed textures.

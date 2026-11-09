@@ -373,8 +373,10 @@ export class Player {
       while (ring.length > 1 && ring[1].at <= now) ring.shift();
       if (ring.length && ring[0].at <= now) compare = this.stream.inputTexture(ring[0].slot);
     }
-    this.presenter.present(tex, { compare, splitX: this.hooks.splitX(), width: this.overlay.width, height: this.overlay.height });
+    const drawn = this.presenter.present(tex, { compare, splitX: this.hooks.splitX(), width: this.overlay.width, height: this.overlay.height });
+    if (!drawn) return;
     if (source >= 0) this.lastShownSource = source;
+    if (!this.overlay.visible) this.preparing(false);
     this.overlay.reveal();
     this.stats.presents++;
     const win = this.stats.fpsWin;
@@ -411,6 +413,7 @@ export class Player {
     if (this.running && this.video === video) return;
     this.running = false;
     const epoch = this.cancelLoops();
+    this.preparing(true);
     this.video = video;
     this.watch(video);
     await this.ensureBackend();
@@ -431,7 +434,7 @@ export class Player {
     if (this.needsCanvas() && video.videoWidth && video.videoHeight && this.overlay.fitSupported) {
       if (this.kernelsReady) {
         const t0 = performance.now();
-        await this.kernelsReady;
+        await Promise.all([this.kernelsReady, this.presenter.ready]);
         if (epoch !== this.epoch || this.video !== video) return;
         if (this.cfg.debug) log('kernels ready', `${(performance.now() - t0).toFixed(0)} ms after the click`);
       }
@@ -465,7 +468,7 @@ export class Player {
     this.pacer.reset(performance.now());
     // the first seconds stall while the browser prepares pipelines: not a GPU limit
     this.pacer.modeChange(performance.now());
-    if (!this.needsCanvas()) this.overlay.passthrough();
+    if (!this.needsCanvas()) { this.overlay.passthrough(); this.preparing(false); }
     this.notices.setHud('', this.cfg.debug || this.cfg.showFps);
     if (this.sys.integrated) {
       this.notices.advise(`Chrome is running on the integrated GPU (${this.sys.gpu}). For full speed: `
@@ -484,8 +487,15 @@ export class Player {
     this.source.write(slot, video);
   }
 
+  preparing(on) {
+    if (this.isPreparing === on) return;
+    this.isPreparing = on;
+    this.hooks.onPreparing?.(on);
+  }
+
   stop() {
     const wasRunning = this.running;
+    this.preparing(false);
     // kernels compiled while running (the classifier, the cadence composite, a tuned conv variant) join the list
     this.backend?.rememberKernels();
     this.running = false;
