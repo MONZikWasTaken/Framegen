@@ -2430,11 +2430,27 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
     // scale-down is exactly the smaller concrete object size from none/contain.
     // Resolve it before sizing the canvas because its own intrinsic dimensions
     // otherwise influence which branch the browser chooses.
+    // Ultrawide stretch and zoom extensions leave object-fit:contain on
+    // the video and stretch it with scale/translate/transform. The bounding rect is
+    // the post-transform box, so fitting into it letterboxes where the video is
+    // stretched. Use the same layout box and the same transforms instead.
+    const transformed = videoStyle.transform !== 'none' || videoStyle.scale !== 'none'
+      || videoStyle.translate !== 'none' || videoStyle.rotate !== 'none';
+    const boxW = transformed ? parseFloat(videoStyle.width) || r.width : r.width;
+    const boxH = transformed ? parseFloat(videoStyle.height) || r.height : r.height;
     if (fit === 'scale-down' && sourceWidth && sourceHeight) {
-      fit = sourceWidth <= r.width && sourceHeight <= r.height ? 'none' : 'contain';
+      fit = sourceWidth <= boxW && sourceHeight <= boxH ? 'none' : 'contain';
     }
     overlay.style.objectFit = fit;
     overlay.style.objectPosition = videoStyle.objectPosition;
+    overlay.style.transform = videoStyle.transform;
+    overlay.style.scale = videoStyle.scale;
+    overlay.style.translate = videoStyle.translate;
+    overlay.style.rotate = videoStyle.rotate;
+    overlay.style.transformOrigin = videoStyle.transformOrigin;
+    // size before measuring: with a transform the rect depends on it
+    overlay.style.width = boxW + 'px';
+    overlay.style.height = boxH + 'px';
     // self-calibrating placement: measure where the overlay actually landed and nudge
     // by the delta - immune to whatever containing block/margins the site uses
     const cur = overlay.getBoundingClientRect();
@@ -2443,8 +2459,6 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       overlay.style.left = ((parseFloat(overlay.style.left) || 0) + dx) + 'px';
       overlay.style.top = ((parseFloat(overlay.style.top) || 0) + dy) + 'px';
     }
-    overlay.style.width = r.width + 'px';
-    overlay.style.height = r.height + 'px';
     overlay.style.outline = cfg.debug ? '3px solid #19c37d' : 'none';
     let bw = r.width * devicePixelRatio, bh = r.height * devicePixelRatio;
     let supported = fit === 'fill' || !!(sourceWidth && sourceHeight);
@@ -4595,7 +4609,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   // frame gets the message; the RUNNING frame answers instantly, a frame that merely
   // has a video answers after 120ms, video-less frames after 250ms - first response
   // wins, so the most relevant frame speaks for the tab.
-  const VERSION = '1.5.5';
+  const VERSION = '1.5.6';
   try {
     chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg && msg.type === 'fcStatus') {
