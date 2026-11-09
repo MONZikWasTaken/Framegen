@@ -46,11 +46,26 @@ export class Overlay {
     if (!['fill', 'contain', 'cover', 'none', 'scale-down'].includes(fit)) fit = 'fill';
     // scale-down is the smaller of none and contain; resolved here because the canvas's own intrinsic size would
     // otherwise decide which one the browser picks
+    // Ultrawide stretch and zoom extensions leave object-fit:contain on the video and stretch it with
+    // scale/translate/transform. The bounding rect is the post-transform box, so fitting into it letterboxes where
+    // the video is stretched (issue #24). Use the same layout box and the same transforms instead.
+    const transformed = style.transform !== 'none' || style.scale !== 'none'
+      || style.translate !== 'none' || style.rotate !== 'none';
+    const boxW = transformed ? parseFloat(style.width) || r.width : r.width;
+    const boxH = transformed ? parseFloat(style.height) || r.height : r.height;
     if (fit === 'scale-down' && sourceWidth && sourceHeight) {
-      fit = sourceWidth <= r.width && sourceHeight <= r.height ? 'none' : 'contain';
+      fit = sourceWidth <= boxW && sourceHeight <= boxH ? 'none' : 'contain';
     }
     canvas.style.objectFit = fit;
     canvas.style.objectPosition = style.objectPosition;
+    canvas.style.transform = style.transform;
+    canvas.style.scale = style.scale;
+    canvas.style.translate = style.translate;
+    canvas.style.rotate = style.rotate;
+    canvas.style.transformOrigin = style.transformOrigin;
+    // size before measuring: with a transform the rect depends on it
+    canvas.style.width = boxW + 'px';
+    canvas.style.height = boxH + 'px';
     // self-calibrating placement: measure where the canvas landed and nudge by the delta, whatever containing block
     // and margins the site uses
     const cur = canvas.getBoundingClientRect();
@@ -59,8 +74,6 @@ export class Overlay {
       canvas.style.left = ((parseFloat(canvas.style.left) || 0) + dx) + 'px';
       canvas.style.top = ((parseFloat(canvas.style.top) || 0) + dy) + 'px';
     }
-    canvas.style.width = r.width + 'px';
-    canvas.style.height = r.height + 'px';
     canvas.style.outline = debug ? '3px solid #19c37d' : 'none';
     let bw = r.width * devicePixelRatio, bh = r.height * devicePixelRatio;
     let supported = fit === 'fill' || !!(sourceWidth && sourceHeight);
