@@ -577,6 +577,10 @@ export class Player {
         return;
       }
       this.source.write(slot, video);
+      // the first frame after a start goes up at once: the canvas appears with the picture the video shows and holds
+      // it for the presentation delay, after which the Pacer's frames follow it forwards. Appearing with the Pacer's
+      // first frame instead stepped the picture back by that delay, and a fade blended the two timelines
+      if (!this.overlay.visible) this.present(stream.inputTexture(slot), now, { source: slot });
       let kind = 'motion', motion;
       if (this.prev >= 0) {
         const c = await this.backend.nudge.wrap(stream.classify(this.prev, slot));
