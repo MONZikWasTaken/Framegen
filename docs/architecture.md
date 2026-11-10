@@ -34,8 +34,8 @@ passed to `nextInput`; the ring grows up to 24 slots.
 | Quality (288 to 1080) | session `internal` = the rung, clamped to the frame |
 | Anime mode | stream `heldFrames` on, `repair` 2, Pacer motion units from the classifier |
 | Anime cadence smoothing (with Anime mode and repair) | stream `mode: 'video'`, `cadence: true`, Pacer `lookahead` |
-| Periodic-structure repair | session `repair` 1 (2 in Anime mode), 0 when off |
-| Sharper edges (bicubic) | session `render: 'bicubic'`, else `'bilinear'` |
+| Repeating-pattern repair | session `repair` 1 (2 in Anime mode), 0 when off |
+| Sharper edges | session `render: 'bicubic'`, else `'bilinear'` |
 | Static protection | session `staticProtection: true` |
 | Output rate, FPS limit, Custom FPS | Pacer `mode` (`auto`, `display_hz`, `{ factor }`, `{ target }`), `fpsLimit` |
 | Limit to display, Full refresh rate, Motion-adaptive | Pacer `limitToDisplay`, `fillDisplay`, `motionAdaptive` |

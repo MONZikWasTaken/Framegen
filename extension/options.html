@@ -12,11 +12,12 @@
     <div class="brand">
       <span class="brand-dot" aria-hidden="true"></span>
       <strong>Framegen</strong>
-      <h1>Advanced settings</h1>
+      <h1>Settings</h1>
       <span class="version" id="version"></span>
     </div>
     <div class="header-actions">
       <div id="runtimeStatus" class="runtime-status" role="status" aria-live="polite">Loading settings…</div>
+      <a class="engine-link" href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">Powered by <b>FlyHigh engine</b></a>
       <a class="icon-link" href="https://github.com/MONZikWasTaken/Framegen"
         target="_blank" rel="noopener noreferrer" aria-label="Open Framegen on GitHub">
         <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -27,29 +28,37 @@
   </header>
 
   <div class="app-shell">
+    <nav class="side-nav" aria-label="Sections">
+      <a href="#generation" data-nav>Frame generation</a>
+      <a href="#motion" data-nav>Motion</a>
+      <a href="#picture" data-nav>Picture</a>
+      <a href="#player" data-nav>Player</a>
+      <a href="#diagnostics" data-nav>Diagnostics</a>
+    </nav>
+
     <main class="workspace">
       <div class="profile-toolbar">
         <label for="profileSelect">Profile</label>
         <select id="profileSelect" aria-describedby="runtimeStatus"></select>
         <div class="profile-actions" aria-label="Profile actions">
-          <button id="newProfile" class="button" type="button">New profile</button>
           <button id="duplicateProfile" class="button button-quiet" type="button">Duplicate</button>
           <button id="renameProfile" class="button button-quiet" type="button">Rename</button>
           <button id="deleteProfile" class="button button-danger" type="button">Delete</button>
+          <button id="newProfile" class="button" type="button">New profile</button>
         </div>
       </div>
 
       <form id="settingsForm" novalidate>
-        <section class="settings-section" aria-labelledby="interpolationHeading">
+        <section id="generation" class="settings-section" aria-labelledby="generationHeading">
           <div class="section-heading">
-            <h2 id="interpolationHeading">Frame generation</h2>
-            <p>Output pacing and the engine's render cost.</p>
+            <h2 id="generationHeading">Frame generation</h2>
+            <p>How many frames are generated and how they are paced.</p>
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
               <label for="fg">Frame generation</label>
-              <p id="fgHint">Generate intermediate frames during video playback.</p>
+              <p id="fgHint">Generate in-between frames while a video plays.</p>
             </div>
             <input id="fg" name="fg" class="switch" type="checkbox" aria-describedby="fgHint">
           </div>
@@ -57,10 +66,10 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="factor">Output rate</label>
-              <p id="factorHint">Follow the display, request a custom rate, or use a source multiplier.</p>
+              <p id="factorHint">Auto picks the smoothest rate your display and GPU can hold.</p>
             </div>
             <select id="factor" name="factor" aria-describedby="factorHint">
-              <option value="auto">Auto</option>
+              <option value="auto">Auto · recommended</option>
               <option value="hz">Match display</option>
               <option value="target">Custom FPS</option>
               <option value="2">2× source</option>
@@ -74,7 +83,7 @@
           <div id="targetFpsRow" class="setting-row" hidden>
             <div class="setting-copy">
               <label for="targetFps">Custom FPS</label>
-              <p id="targetFpsHint">Request 2–1000 FPS. The result stays at least 2× source and within display/GPU limits.</p>
+              <p id="targetFpsHint">2–1000. Stays at least 2× the source and within what the display and GPU allow.</p>
             </div>
             <input id="targetFps" name="targetFps" class="number-input" type="number"
               min="2" max="1000" step="0.01" inputmode="decimal" aria-describedby="targetFpsHint">
@@ -83,7 +92,7 @@
           <div id="fpsLimitRow" class="setting-row setting-row-range" hidden>
             <div class="setting-copy">
               <label for="fpsLimit">FPS limit</label>
-              <p id="fpsLimitHint">Choose a common ceiling. Auto may run lower to stay smooth.</p>
+              <p id="fpsLimitHint">A ceiling for Auto. It may run lower to stay smooth.</p>
             </div>
             <div class="range-control">
               <span id="fpsLimitValue" class="range-value">Unlimited</span>
@@ -97,7 +106,7 @@
           <div id="fillDisplayRow" class="setting-row" hidden>
             <div class="setting-copy">
               <label for="fillDisplay">Full refresh rate</label>
-              <p id="fillDisplayHint">Use the measured monitor refresh instead of 97% of it. Frames are not scheduled faster than the screen.</p>
+              <p id="fillDisplayHint">Use the display's measured refresh rate instead of 97% of it.</p>
             </div>
             <input id="fillDisplay" name="fillDisplay" class="switch" type="checkbox" aria-describedby="fillDisplayHint">
           </div>
@@ -105,7 +114,7 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="limitToDisplay">Limit to display refresh rate</label>
-              <p id="limitToDisplayHint">On: never generate more frames than the screen can show. Off: generate as many frames as the GPU budget allows; the screen still shows at most its refresh rate (the newest frame wins) and the counter reports generated frames.</p>
+              <p id="limitToDisplayHint">Never generate more frames than the screen can show. Off: generate as many as the GPU allows; the counter then reports generated frames.</p>
             </div>
             <input id="limitToDisplay" name="limitToDisplay" class="switch" type="checkbox" aria-describedby="limitToDisplayHint">
           </div>
@@ -113,39 +122,15 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="motionAdaptive">Motion-adaptive Auto</label>
-              <p id="motionAdaptiveHint">On: Auto generates fewer frames on fast scenes to hide interpolation artifacts, so the output rate swings with the content. Off: Auto keeps the highest multiplier the GPU budget allows.</p>
+              <p id="motionAdaptiveHint">Auto generates fewer frames on fast scenes, where artifacts would show. Off: always the highest rate the GPU allows.</p>
             </div>
             <input id="motionAdaptive" name="motionAdaptive" class="switch" type="checkbox" aria-describedby="motionAdaptiveHint">
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
-              <label for="periodicRepair">Periodic-structure repair</label>
-              <p id="periodicRepairHint">Re-checks the motion on fences, railings, window grids and other repeating patterns, where the network can lock onto the wrong period and the pattern doubles during pans. With Anime mode on it is more aggressive (right for drawn content, slightly worse on live footage). Costs a little GPU time per source frame; off reproduces the network's motion as is.</p>
-            </div>
-            <input id="periodicRepair" name="periodicRepair" class="switch" type="checkbox" aria-describedby="periodicRepairHint">
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="cadenceSmoothing">Anime cadence smoothing <span class="badge">Experimental</span></label>
-              <p id="cadenceSmoothingHint">With Anime mode. Anime is drawn on twos and threes: a door, a walking crowd or a slowly turning head gets a new drawing only every 2nd or 3rd frame and stands still in between. This spreads every drawing step evenly over the frames it is held for, so the motion slides instead of stepping. Every frame on screen is then a generated in-between, the real drawings included: on small steps this looks smooth, on big steps (a character walking close to the camera) the in-betweens carry the generator's softness and edges can double. Off keeps the real drawings as they are, as 1.x did. Uses one frame of lookahead (one source frame of delay). Needs periodic-structure repair.</p>
-            </div>
-            <input id="cadenceSmoothing" name="cadenceSmoothing" class="switch" type="checkbox" aria-describedby="cadenceSmoothingHint">
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="renderCubic">Sharper edges (bicubic)</label>
-              <p id="renderCubicHint">Samples the source frames bicubically instead of bilinearly when building each generated frame, so moving edges, hair and fine texture come out crisper and closer to the original. Clear win on drawn and live video; a touch softer-is-safer on game capture, where you can turn it off. Costs about 0.2 ms per generated frame.</p>
-            </div>
-            <input id="renderCubic" name="renderCubic" class="switch" type="checkbox" aria-describedby="renderCubicHint">
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
               <label for="res">Quality</label>
-              <p id="resHint">The size the network runs at. Balanced is the model's native scale; higher settings cost more GPU time and rarely look better.</p>
+              <p id="resHint">The size the network runs at. Balanced is its native scale; higher costs more GPU time and rarely looks better.</p>
             </div>
             <select id="res" name="res" aria-describedby="resHint">
               <option value="288">Low power · 288p</option>
@@ -155,20 +140,98 @@
               <option value="1080">Ultra · 1080p</option>
             </select>
           </div>
-
-
         </section>
 
-        <section class="settings-section" aria-labelledby="processingHeading">
+        <section id="motion" class="settings-section" aria-labelledby="motionHeading">
           <div class="section-heading">
-            <h2 id="processingHeading">Enhancements</h2>
-            <p>Optional image processing and scene-specific safeguards.</p>
+            <h2 id="motionHeading">Motion</h2>
+            <p>How generated frames handle animation, patterns and on-screen text.</p>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="anime">Animation mode</label>
+              <p id="animeHint">For drawn content: frames the animation repeats are not blended into the next drawing.</p>
+            </div>
+            <input id="anime" name="anime" class="switch" type="checkbox" aria-describedby="animeHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="cadenceSmoothing">Anime cadence smoothing <span class="badge">Experimental</span></label>
+              <p id="cadenceSmoothingHint">With Animation mode. Spreads animation drawn on twos and threes evenly over the frames each drawing is held for, so motion slides instead of stepping. Every shown frame is then generated; can look soft or wrong on fast action.</p>
+            </div>
+            <input id="cadenceSmoothing" name="cadenceSmoothing" class="switch" type="checkbox" aria-describedby="cadenceSmoothingHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="periodicRepair">Repeating-pattern repair</label>
+              <p id="periodicRepairHint">Re-checks motion on fences, railings and window grids, which can double during pans. Stronger with Animation mode. Small GPU cost.</p>
+            </div>
+            <input id="periodicRepair" name="periodicRepair" class="switch" type="checkbox" aria-describedby="periodicRepairHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="guard">Subtitle protection</label>
+              <p id="guardHint">Burnt-in subtitles, logos and HUDs are taken from the source frames instead of moving with the picture behind them.</p>
+            </div>
+            <input id="guard" name="guard" class="switch" type="checkbox" aria-describedby="guardHint">
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label for="renderCubic">Sharper edges</label>
+              <p id="renderCubicHint">Bicubic sampling for generated frames: crisper edges, hair and texture. About 0.2 ms per generated frame.</p>
+            </div>
+            <input id="renderCubic" name="renderCubic" class="switch" type="checkbox" aria-describedby="renderCubicHint">
+          </div>
+        </section>
+
+        <section id="picture" class="settings-section" aria-labelledby="pictureHeading">
+          <div class="section-heading">
+            <h2 id="pictureHeading">Picture</h2>
+            <p>Looks and image processing applied to what you see.</p>
+          </div>
+
+          <div class="setting-row setting-row-stack">
+            <div class="setting-copy">
+              <label id="pictureModeLabel" for="pictureMode">Picture mode</label>
+              <p id="pictureModeHint">A color and detail look on top of the video. Detail Boost sharpens and adds the 2× upscale where it applies.</p>
+            </div>
+            <select id="pictureMode" name="pictureMode" class="choice-source" tabindex="-1" aria-hidden="true">
+              <option value="original">Original</option>
+              <option value="cinema">Cinema</option>
+              <option value="cinema-home">Cinema Home</option>
+              <option value="noir">Noir</option>
+              <option value="vivid">Vivid</option>
+              <option value="sports">Sports</option>
+              <option value="detail">Detail Boost</option>
+            </select>
+            <div class="look-grid" data-choice="pictureMode" role="radiogroup"
+              aria-labelledby="pictureModeLabel" aria-describedby="pictureModeHint"></div>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
+              <label id="sharpnessLabel" for="sharpness">Sharpness</label>
+              <p id="sharpnessHint">Edge enhancement. High can create halos.</p>
+            </div>
+            <select id="sharpness" name="sharpness" class="choice-source" tabindex="-1" aria-hidden="true">
+              <option value="0">Off</option>
+              <option value="1">Low</option>
+              <option value="2">Medium</option>
+              <option value="3">High</option>
+            </select>
+            <div class="segmented" data-choice="sharpness" role="radiogroup"
+              aria-labelledby="sharpnessLabel" aria-describedby="sharpnessHint"></div>
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
               <label for="sr">Upscale</label>
-              <p id="srHint">2× neural upscaling of every presented frame when the player is larger than the video.</p>
+              <p id="srHint">2× neural upscaling when the player is larger than the video.</p>
             </div>
             <input id="sr" name="sr" class="switch" type="checkbox" aria-describedby="srHint">
           </div>
@@ -176,51 +239,22 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="hdr">HDR</label>
-              <p id="hdrHint">Expand brightness on a compatible HDR display.</p>
+              <p id="hdrHint">Brighter highlights on an HDR display.</p>
             </div>
             <input id="hdr" name="hdr" class="switch" type="checkbox" aria-describedby="hdrHint">
           </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="sharpness">Sharpness</label>
-              <p id="sharpnessHint">Edge enhancement for the WebGPU canvas. High can create halos.</p>
-            </div>
-            <select id="sharpness" name="sharpness" aria-describedby="sharpnessHint">
-              <option value="0">Off</option>
-              <option value="1">Low</option>
-              <option value="2">Medium</option>
-              <option value="3">High</option>
-            </select>
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="anime">Animation mode</label>
-              <p id="animeHint">Reduce artifacts when animation repeats the same source frame.</p>
-            </div>
-            <input id="anime" name="anime" class="switch" type="checkbox" aria-describedby="animeHint">
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
-              <label for="guard">Subtitle protection</label>
-              <p id="guardHint">Pixels that did not change over the last frames (burnt-in subtitles, a logo, a HUD) are taken from the source frames instead of being warped with the motion behind them.</p>
-            </div>
-            <input id="guard" name="guard" class="switch" type="checkbox" aria-describedby="guardHint">
-          </div>
         </section>
 
-        <section class="settings-section" aria-labelledby="playerHeading">
+        <section id="player" class="settings-section" aria-labelledby="playerHeading">
           <div class="section-heading">
             <h2 id="playerHeading">Player</h2>
-            <p>Controls and diagnostics shown over video.</p>
+            <p>What Framegen shows over the video.</p>
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
               <label for="hoverReveal">Hover controls</label>
-              <p id="hoverRevealHint">Reveal Framegen controls when the pointer is over a video.</p>
+              <p id="hoverRevealHint">Show the Framegen buttons when the pointer is over a video.</p>
             </div>
             <input id="hoverReveal" name="hoverReveal" class="switch" type="checkbox" aria-describedby="hoverRevealHint">
           </div>
@@ -228,23 +262,15 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="showFps">FPS counter</label>
-              <p id="showFpsHint">Show output frame rate in the player overlay.</p>
+              <p id="showFpsHint">Output frame rate and render time in the corner.</p>
             </div>
             <input id="showFps" name="showFps" class="switch" type="checkbox" aria-describedby="showFpsHint">
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
-              <label for="subtitleOverlay">Subtitle overlay</label>
-              <p id="subtitleOverlayHint">Keep subtitles above generated frames when the player exposes a text track or detectable caption layer.</p>
-            </div>
-            <input id="subtitleOverlay" name="subtitleOverlay" class="switch" type="checkbox" aria-describedby="subtitleOverlayHint">
-          </div>
-
-          <div class="setting-row">
-            <div class="setting-copy">
               <label for="showWatermark">Watermark</label>
-              <p id="showWatermarkHint">Show the Framegen label while interpolation is active.</p>
+              <p id="showWatermarkHint">The Framegen label while generation is on.</p>
             </div>
             <input id="showWatermark" name="showWatermark" class="switch" type="checkbox" aria-describedby="showWatermarkHint">
           </div>
@@ -252,15 +278,30 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="showWarnings">Warnings</label>
-              <p id="showWarningsHint">Show optional performance notices. Errors always remain visible.</p>
+              <p id="showWarningsHint">Performance notices. Errors are always shown.</p>
             </div>
             <input id="showWarnings" name="showWarnings" class="switch" type="checkbox" aria-describedby="showWarningsHint">
           </div>
 
           <div class="setting-row">
             <div class="setting-copy">
+              <label for="subtitleOverlay">Subtitle overlay</label>
+              <p id="subtitleOverlayHint">Keep the player's subtitles above generated frames.</p>
+            </div>
+            <input id="subtitleOverlay" name="subtitleOverlay" class="switch" type="checkbox" aria-describedby="subtitleOverlayHint">
+          </div>
+        </section>
+
+        <section id="diagnostics" class="settings-section" aria-labelledby="diagnosticsHeading">
+          <div class="section-heading">
+            <h2 id="diagnosticsHeading">Diagnostics</h2>
+            <p>Tools for checking what Framegen does.</p>
+          </div>
+
+          <div class="setting-row">
+            <div class="setting-copy">
               <label for="compare">Compare</label>
-              <p id="compareHint">Show an original and processed split view.</p>
+              <p id="compareHint">Split view: the original on the left, the processed picture on the right.</p>
             </div>
             <input id="compare" name="compare" class="switch" type="checkbox" aria-describedby="compareHint">
           </div>
@@ -268,7 +309,7 @@
           <div class="setting-row">
             <div class="setting-copy">
               <label for="debug">Debug overlay</label>
-              <p id="debugHint">Show the processing border and detailed runtime telemetry.</p>
+              <p id="debugHint">A border around the processed area and detailed runtime numbers.</p>
             </div>
             <input id="debug" name="debug" class="switch" type="checkbox" aria-describedby="debugHint">
           </div>

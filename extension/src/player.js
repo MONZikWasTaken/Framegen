@@ -26,8 +26,8 @@ const TUNE_IDLE_POLL_MS = 3000, TUNE_FORCE_AFTER_MS = 120000;
 
 export const STREAM_KEYS = ['res', 'anime', 'periodicRepair', 'cadenceSmoothing', 'guard', 'renderCubic', 'sr'];
 export const PACER_KEYS = ['factor', 'targetFps', 'fpsLimit', 'limitToDisplay', 'fillDisplay', 'motionAdaptive', 'anime', 'cadenceSmoothing', 'periodicRepair'];
-export const PRESENT_KEYS = ['hdr', 'sharpness'];
-export const MODE_KEYS = ['fg', 'sr', 'hdr', 'sharpness', 'compare'];
+export const PRESENT_KEYS = ['hdr', 'sharpness', 'pictureMode'];
+export const MODE_KEYS = ['fg', 'sr', 'hdr', 'sharpness', 'pictureMode', 'compare'];
 
 const isIntegrated = name => /intel|iris|uhd|graphics 6|vega|radeon\(tm\) graphics|apu/i.test(name)
   && !/nvidia|geforce|rtx|gtx|radeon rx|arc a|arc b/i.test(name);
@@ -92,7 +92,7 @@ export class Player {
 
   needsCanvas() {
     const c = this.cfg;
-    return c.fg || (c.sr && !!this.backend?.f16) || (c.hdr && this.sys.hdrOk) || c.sharpness > 0 || c.compare;
+    return c.fg || (c.sr && !!this.backend?.f16) || (c.hdr && this.sys.hdrOk) || c.sharpness > 0 || c.pictureMode !== 'original' || c.compare;
   }
 
   // ---------- backend ----------
@@ -353,11 +353,11 @@ export class Player {
 
   configurePresenter() {
     if (!this.presenter) return;
-    this.sys.hdrOn = this.presenter.configure({ hdr: this.cfg.hdr && this.sys.hdrOk, sharpness: this.cfg.sharpness });
+    this.sys.hdrOn = this.presenter.configure({ hdr: this.cfg.hdr && this.sys.hdrOk, sharpness: this.cfg.sharpness, pictureMode: this.cfg.pictureMode });
   }
 
   ensureUpscaler() {
-    if (!this.cfg.sr || !this.backend?.f16) return;
+    if (!(this.cfg.sr || this.cfg.pictureMode === 'detail') || !this.backend?.f16) return;
     if (!this.upscaler) this.upscaler = new Upscaler(this.backend.device, SR_URLS, { nudge: this.backend.nudge, log });
     this.upscaler.load().catch(e => log('SR', e));
   }
@@ -365,7 +365,7 @@ export class Player {
   present(texture, now, { source = -1 } = {}) {
     if (!this.presenter || !this.overlay.fitSupported) return;
     let tex = texture;
-    if (this.cfg.sr && this.backend.f16 && this.upscaler?.ready
+    if ((this.cfg.sr || this.cfg.pictureMode === 'detail') && this.backend.f16 && this.upscaler?.ready
         && Upscaler.needed(texture.width, texture.height, this.overlay.width, this.overlay.height)) {
       tex = this.upscaler.process(texture, now, this.pacer) || texture;
     }
@@ -716,7 +716,7 @@ export class Player {
       this.pacer.reset(performance.now());
     }
     if (has(PRESENT_KEYS)) this.configurePresenter();
-    if (changed.has('sr')) this.ensureUpscaler();
+    if (changed.has('sr') || changed.has('pictureMode')) this.ensureUpscaler();
     if (has(MODE_KEYS) && this.running) {
       if (this.pacer) this.pacer.reset(performance.now());
       if (!this.needsCanvas()) this.overlay.passthrough();
@@ -728,6 +728,20 @@ export class Player {
     if (changed.has('showWarnings') && !this.cfg.showWarnings) this.notices.hideWarnings();
     if (changed.has('showWatermark') && !this.cfg.showWatermark) this.notices.watermark.style.display = 'none';
     if (changed.has('subtitleOverlay')) this.layoutOverlay(null);
+    if (has(PRESENT_KEYS)) this.redrawPaused();
+  }
+
+  // A paused video delivers no frames, so a new look would not show until playback resumed.
+  redrawPaused() {
+    const epoch = this.epoch, presenter = this.presenter;
+    presenter?.ready?.then(() => {
+      if (!this.running || epoch !== this.epoch || presenter !== this.presenter) return;
+      if (!this.video?.paused || !this.needsCanvas() || !this.stream || !this.source) return;
+      const slot = this.stream.nextInput(this.inUse());
+      if (slot < 0) return;
+      this.source.write(slot, this.video);
+      this.present(this.stream.inputTexture(slot), performance.now(), { source: slot });
+    });
   }
 
   onFullscreenChange() {

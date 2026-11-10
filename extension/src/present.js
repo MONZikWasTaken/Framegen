@@ -2,6 +2,8 @@
 // canvas, SDR or HDR (inverse tone mapping on an fp16 canvas in extended tone-mapping mode: highlights expand past SDR
 // white, the idea of RTX Video HDR; the browser only ever hands us tonemapped SDR), with the optional sharpening and the
 // compare split (the delayed source frame on the left of the divider).
+import { pictureMode, pictureGradeWGSL } from './picture-modes.js';
+
 const BLIT_VS = `
 @group(0) @binding(0) var tex: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -14,7 +16,8 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   return o;
 }`;
 
-function fragment(sharpness, hdr) {
+function fragment(sharpness, hdr, mode) {
+  sharpness = Math.max(sharpness, pictureMode(mode).detail);
   const sampleColor = sharpness ? `
 fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   let c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
@@ -28,9 +31,9 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
 fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   return textureSampleLevel(tex, samp, uv, 0.0).rgb;
 }`;
-  return sampleColor + (hdr ? `
+  return sampleColor + pictureGradeWGSL(mode) + (hdr ? `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  let c = sampleColor(v.uv);
+  let c = grade(sampleColor(v.uv));
   let lin = pow(max(c, vec3(0.0)), vec3(2.2));
   let y = max(lin.r, max(lin.g, lin.b));
   let t = smoothstep(0.35, 1.0, y);
@@ -38,7 +41,7 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
   return vec4(pow(lin * gain, vec3(1.0 / 2.2)), 1.0);
 }` : `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return vec4<f32>(sampleColor(v.uv), 1.0);
+  return vec4<f32>(grade(sampleColor(v.uv)), 1.0);
 }`);
 }
 
@@ -55,7 +58,7 @@ export class Presenter {
   }
 
   // Returns whether HDR output is on after this configuration.
-  configure({ hdr, sharpness }) {
+  configure({ hdr, sharpness, pictureMode: mode = 'original' }) {
     let hdrOn = !!hdr;
     try {
       this.ctx.configure({ device: this.device, format: hdrOn ? 'rgba16float' : 'rgba8unorm', alphaMode: 'opaque',
@@ -65,7 +68,7 @@ export class Presenter {
       hdrOn = false;
       this.ctx.configure({ device: this.device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
-    const module = this.device.createShaderModule({ code: BLIT_VS + fragment(sharpness, hdrOn) });
+    const module = this.device.createShaderModule({ code: BLIT_VS + fragment(sharpness, hdrOn, mode) });
     // compiled off the thread that composites the page: a synchronous pipeline on a site whose shader cache is cold
     // held the video for about 0.2 s at the first present
     this.pipe = null;

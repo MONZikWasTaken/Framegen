@@ -8,6 +8,10 @@ const ICONS = {
     + '<path d="m15.5 9.5 5 5m0-5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
   full: '<path d="M8.5 3.5H5a1.5 1.5 0 0 0-1.5 1.5v3.5m17 0V5A1.5 1.5 0 0 0 19 3.5h-3.5m0 17H19a1.5 1.5 0 0 0 1.5-1.5v-3.5m-17 0V19A1.5 1.5 0 0 0 5 20.5h3.5"'
     + ' fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
+  picture: '<path d="M10 3.6l1.7 4.5a2 2 0 0 0 1.2 1.2l4.5 1.7-4.5 1.7a2 2 0 0 0-1.2 1.2L10 18.4l-1.7-4.5a2 2 0 0 0-1.2-1.2'
+    + 'L2.6 11l4.5-1.7a2 2 0 0 0 1.2-1.2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>'
+    + '<path d="M18.6 2.9l.6 1.7 1.7.6-1.7.6-.6 1.7-.6-1.7-1.7-.6 1.7-.6zM18.4 15.4l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2'
+    + '-2.2-.8 2.2-.8z" fill="currentColor"/>',
   gear: '<path d="M4 21v-7m0-4V3m8 18v-9m0-4V3m8 18v-5m0-4V3M1.5 14H7m2-6h6m2.5 8H21"'
     + ' fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>',
 };
