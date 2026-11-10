@@ -3,65 +3,62 @@
 <head>
 <meta charset="utf-8">
 <style>
-  body { width: 300px; margin: 0; background: #131418; color: #e8e8e8;
-         font: 12px/1.5 system-ui; user-select: none; }
-  .wrap { padding: 12px 16px 10px; }
-  .title { font: 600 15px system-ui; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-  .dot { width: 9px; height: 9px; border-radius: 50%; background: #555; }
-  .dot.on { background: #19c37d; box-shadow: 0 0 8px rgba(25,195,125,.7); }
-  .ver { color: #667; font: 400 10px system-ui; }
-  .tabs { display: flex; gap: 4px; margin-bottom: 10px; background: #1c1e24;
-          border-radius: 9px; padding: 3px; }
-  .tabs button { flex: 1; border: none; background: none; color: #9aa0aa; font: 600 11px system-ui;
-                 padding: 5px 0; border-radius: 7px; cursor: pointer; transition: background .15s, color .15s; }
-  .tabs button.act { background: #2c2f36; color: #fff; }
-  .full-settings { width: 100%; height: 34px; display: flex; align-items: center;
-                   justify-content: space-between; margin: 0 0 10px; padding: 0 10px;
-                   border: 1px solid #28684f; border-radius: 7px; background: #17241f;
-                   color: #8be2bc; font: 600 11px system-ui; cursor: pointer; }
-  .full-settings:hover { border-color: #3d9672; background: #1b2b24; color: #a4edcd; }
-  .full-settings:focus-visible { outline: 2px solid #19c37d; outline-offset: 2px; }
-  .full-settings svg { flex: 0 0 auto; }
-  #state { font: 600 12px system-ui; margin-bottom: 8px; color: #aab; }
-  #state.on { color: #7ee2b8; }
-  hr { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 8px 0; }
-  #stat { font: 11px/1.8 ui-monospace, monospace; color: #9c9; white-space: pre-wrap; }
-  #sys { font: 11px/1.7 system-ui; color: #8a8f98; white-space: pre-wrap; }
-  #sys.warn { color: #ffd88a; }
-  .hint { margin-top: 10px; font: 10px system-ui; color: #667; }
-  #help h4 { font: 600 12px system-ui; color: #cdd3dd; margin: 10px 0 3px; }
-  #help h4:first-child { margin-top: 0; }
-  #help p, #help ol { margin: 0 0 4px; color: #9aa0aa; font: 11px/1.6 system-ui; }
-  #help ol { padding-left: 16px; }
-  .foot { display: flex; justify-content: space-between; align-items: center;
-          margin-top: 10px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.08); }
-  .foot a { color: #7ab8ff; font: 11px system-ui; text-decoration: none; display: flex;
-            align-items: center; gap: 5px; }
-  .foot a:hover { text-decoration: underline; }
-  .foot .v { color: #556; font: 10px system-ui; }
+  :root { color-scheme: dark; }
+  body { width: 320px; margin: 0; background: #0d0e10; color: #eceeef;
+         font: 12.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
+  .wrap { padding: 14px 14px 10px; }
+  .title { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 15px; font-weight: 650; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a4e55; }
+  .dot.on { background: #19c37d; box-shadow: 0 0 0 3px rgba(25,195,125,.18); }
+  .ver { color: #70767e; font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+  #state { margin-left: auto; padding: 2px 8px; border-radius: 20px; background: #1a1c1f; color: #a3a8af;
+           font-size: 11px; font-weight: 600; }
+  #state.on { background: #14211c; color: #6fdcae; }
+  .tabs { display: flex; gap: 2px; margin-bottom: 10px; padding: 3px; background: #141618;
+          border: 1px solid #24272b; border-radius: 8px; }
+  .tabs button { flex: 1; padding: 5px 0; border: 0; border-radius: 5px; background: none; color: #a3a8af;
+                 font: 550 12px system-ui; cursor: pointer; transition: background-color .12s, color .12s; }
+  .tabs button:hover { color: #eceeef; }
+  .tabs button.act { background: #2a2e33; color: #fff; }
+  .card { padding: 10px 12px; background: #141618; border: 1px solid #24272b; border-radius: 8px; }
+  .card + .card { margin-top: 8px; }
+  .card:empty { display: none; }
+  #stat { font: 11.5px/1.7 ui-monospace, "Cascadia Mono", Consolas, monospace; color: #c9cdd2; white-space: pre-wrap; }
+  #sys { font-size: 12px; line-height: 1.6; color: #a3a8af; white-space: pre-wrap; }
+  #sys.warn { color: #f0c674; border-color: #5a4a1f; }
+  .hint { margin: 10px 2px 0; color: #70767e; font-size: 11.5px; }
+  .full-settings { width: 100%; height: 34px; display: flex; align-items: center; justify-content: space-between;
+                   margin: 10px 0 0; padding: 0 12px; border: 1px solid #34383d; border-radius: 7px;
+                   background: #212428; color: #eceeef; font: 550 12.5px system-ui; cursor: pointer;
+                   transition: background-color .12s, border-color .12s; }
+  .full-settings:hover { background: #2a2e33; border-color: #50555c; }
+  .full-settings:focus-visible, .tabs button:focus-visible, .foot a:focus-visible { outline: 2px solid #19c37d; outline-offset: 2px; }
+  .full-settings svg { flex: 0 0 auto; color: #a3a8af; }
+  #help h4 { margin: 12px 0 3px; color: #eceeef; font-size: 12.5px; font-weight: 600; }
+  #help h4:first-child { margin-top: 2px; }
+  #help p, #help ol { margin: 0 0 4px; color: #a3a8af; font-size: 12px; line-height: 1.55; }
+  #help ol { padding-left: 18px; }
+  #help b { color: #d5d8dc; font-weight: 600; }
+  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 9px;
+          border-top: 1px solid #24272b; }
+  .foot a { display: flex; align-items: center; gap: 6px; color: #a3a8af; font-size: 12px; text-decoration: none;
+            border-radius: 4px; }
+  .foot a:hover { color: #eceeef; }
+  .foot .v { color: #70767e; font-size: 11px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="title"><span class="dot" id="dot"></span>Framegen <span class="ver" id="ver"></span></div>
+  <div class="title"><span class="dot" id="dot"></span>Framegen <span class="ver" id="ver"></span><span id="state">Off</span></div>
   <div class="tabs">
     <button id="tabStatus" class="act">Status</button>
     <button id="tabHelp">Help</button>
   </div>
-  <button id="fullSettings" class="full-settings" type="button">
-    <span>Full settings</span>
-    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
-      <path fill="currentColor" d="M3 2h4v2H4v8h8V9h2v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm6 0h5v5h-2V5.4L7.7 9.7 6.3 8.3 10.6 4H9V2Z"/>
-    </svg>
-  </button>
 
   <div id="status">
-    <div id="state">-</div>
-    <div id="stat"></div>
-    <hr>
-    <div id="sys"></div>
-    <div class="hint">Controls and settings live inside the player: hover a video,
-      the FG and ⚙ buttons appear on the left.</div>
+    <div id="stat" class="card"></div>
+    <div id="sys" class="card"></div>
+    <div class="hint">Hover a video: the Framegen buttons appear on its left edge.</div>
   </div>
 
   <div id="help" style="display:none">
@@ -86,19 +83,27 @@
     <p>Desktop Chrome or Edge 121+, or Firefox 141+ on Windows, and a GPU from
        roughly 2016 or newer. Safari and phones - no.</p>
     <h4>How to use</h4>
-    <p>Hover any video → the FG (on/off) and settings buttons appear on the left.
-       Settings include Compare - an original/processed split slider.</p>
+    <p>Hover any video: the FG (on/off), picture and settings buttons appear on its left edge.
+       Compare, an original/processed split view, is in the full settings.</p>
     <h4>What does not work</h4>
     <p>Netflix, Crunchyroll and other DRM sites - the browser never hands us their
        pixels, a platform limitation. On some sites the video may reload for a couple
        of seconds the first time you enable FG (CORS) - that is normal.</p>
   </div>
 
+  <button id="fullSettings" class="full-settings" type="button">
+    <span>Open settings</span>
+    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
+      <path fill="currentColor" d="M3 2h4v2H4v8h8V9h2v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm6 0h5v5h-2V5.4L7.7 9.7 6.3 8.3 10.6 4H9V2Z"/>
+    </svg>
+  </button>
+
   <div class="foot">
     <a href="https://github.com/MONZikWasTaken/Framegen" target="_blank">
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="#7ab8ff"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub</a>
-    <span class="v">Framegen · free for personal use</span>
+    <a href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">FlyHigh engine</a>
+    <span class="v">Open source · MIT</span>
   </div>
 </div>
 <script src="popup.js"></script>

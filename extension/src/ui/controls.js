@@ -1,9 +1,13 @@
 // The in-player controls: the stage clipped to the video box with the FG and settings buttons on its rail, and the quick
 // settings panel that morphs out of it. Settings changes go through the settings object; the host reacts to them.
 import { Profiles } from '../profiles.js';
+import { PICTURE_MODES, PICTURE_SWATCH_FILTERS } from '../picture-modes.js';
 import { svgIcon, GITHUB_PATH, FRAMEGEN_MARK } from './icons.js';
 
 const INLINE_SETTINGS_MIN_WIDTH = 300, INLINE_SETTINGS_MIN_HEIGHT = 180;
+const ISLAND_HALF = 57;
+const VIEW_HEIGHT = { settings: 626, picture: 436 };
+const SHARPNESS_LABELS = ['Off', 'Low', 'Medium', 'High'];
 const clampUnit = value => Math.min(1, Math.max(0, value));
 const ease = value => { const t = clampUnit(value); return t * t * (3 - 2 * t); };
 const mix = (from, to, progress) => from + (to - from) * progress;
@@ -61,8 +65,8 @@ const CSS = `
   .fc-side svg{display:block!important;margin:auto!important}
   .fc-mark{width:19px!important;height:14px!important}
   .fc-settings-icon{width:17px!important;height:17px!important}
-  .fc-panel{position:absolute!important;left:43px!important;top:0!important;width:calc(100% - 44px)!important;
-    height:100%!important;min-width:0!important;max-width:none!important;padding:14px 16px 15px!important;
+  .fc-panel{position:absolute!important;left:43px!important;top:var(--fc-open-top,0px)!important;
+    width:calc(100% - 44px)!important;height:var(--fc-open-height,100%)!important;min-width:0!important;max-width:none!important;padding:14px 16px 15px!important;
     margin:0!important;box-sizing:border-box!important;border:0!important;border-radius:0!important;
     background:transparent!important;box-shadow:none!important;color:#ddd!important;
     font:12px/1.5 system-ui,sans-serif!important;overflow-y:auto!important;overscroll-behavior:contain;
@@ -80,6 +84,28 @@ const CSS = `
     margin:0 0 8px;padding:0;border:0}
   .fc-brand{display:flex;align-items:center;gap:6px;color:#f4f5f5;font:12px/1 system-ui}
   .fc-brand strong{font:650 14px/1 system-ui;color:#f4f5f5}
+  .fc-panel[data-view="settings"] .fc-view[data-view="picture"],
+  .fc-panel[data-view="picture"] .fc-view[data-view="settings"],
+  .fc-panel[data-view="picture"] .fc-version,
+  .fc-panel[data-view="picture"] .fc-icon-link{display:none!important}
+  .fc-looks{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:2px 0 4px;padding:0}
+  .fc-look{display:flex;align-items:center;gap:9px;min-width:0;height:44px;margin:0;padding:0 10px 0 6px;
+    border:1px solid #2b2e32;border-radius:7px;background:#17191c;color:#d8dadd;font:500 12px/1.2 system-ui;
+    text-align:left;cursor:pointer;outline:0;transition:background-color .12s ease,border-color .12s ease}
+  .fc-look:hover{background:#1e2124;border-color:#44484e;color:#f4f5f5}
+  .fc-look:focus-visible{outline:2px solid var(--fc-green);outline-offset:1px}
+  .fc-look[aria-checked="true"]{border-color:var(--fc-green);background:#14211c;color:#fff}
+  .fc-look:first-child{grid-column:1 / -1}
+  .fc-look-swatch{width:32px;height:32px;flex:none;border-radius:5px;
+    background:linear-gradient(135deg,#27357f 0%,#b4405e 48%,#efb84c 100%)}
+  .fc-look-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fc-seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;width:196px;height:31px;flex:none;padding:2px;
+    box-sizing:border-box;border:1px solid #34373b;border-radius:var(--fc-rail-radius);background:#181a1d}
+  .fc-seg button{min-width:0;margin:0;padding:0;border:0;border-radius:3px;background:transparent;color:#a5aab1;
+    font:500 11px/1 system-ui;cursor:pointer;outline:0;transition:background-color .12s ease,color .12s ease}
+  .fc-seg button:hover{color:#f4f5f5}
+  .fc-seg button:focus-visible{outline:2px solid var(--fc-green);outline-offset:1px}
+  .fc-seg button[aria-checked="true"]{background:#33373c;color:#fff}
   .fc-version{color:#747980;font:400 10px/1 system-ui}
   .fc-icon-link{width:28px;height:28px;display:flex;align-items:center;justify-content:center;
     border-radius:7px;color:#92979e;text-decoration:none;outline:none;
@@ -117,7 +143,7 @@ const CSS = `
   .fc-select-trigger:focus-visible{outline:2px solid var(--fc-green);outline-offset:1px}
   .fc-select-trigger:disabled{opacity:.55;cursor:wait}
   .fc-select[data-open="true"] .fc-select-trigger{background:#202327;border-color:#5a5f66}
-  .fc-select-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fc-select-value{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.5}
   .fc-select-chevron{width:12px;height:12px;flex:none;color:#8d9299;transition:transform .12s ease}
   .fc-select[data-open="true"] .fc-select-chevron{transform:rotate(180deg)}
   .fc-select-menu{position:absolute;z-index:20;top:calc(100% + 4px);right:0;width:164px;
@@ -165,7 +191,13 @@ const CSS = `
     transition:background .15s,border-color .15s}
   .fc-open-settings:hover{background:#22262a;border-color:#50555c}
   .fc-open-settings:focus-visible{outline:2px solid #19c37d;outline-offset:1px}
-  .fc-open-settings:disabled{opacity:.55;cursor:wait}`;
+  .fc-open-settings:disabled{opacity:.55;cursor:wait}
+  .fc-panel:focus{outline:0}
+  .fc-engine-link{display:block;margin:9px 0 1px;text-align:center;color:#70767e;font:500 10.5px/1.4 system-ui;
+    text-decoration:none;border-radius:4px;transition:color .12s}
+  .fc-engine-link b{color:#a3a8af;font-weight:600;transition:color .12s}
+  .fc-engine-link:hover,.fc-engine-link:hover b{color:#f2f3f3}
+  .fc-engine-link:focus-visible{outline:2px solid #19c37d;outline-offset:2px}`;
 
 export class Controls {
   constructor({ version, settings, host, log }) {
@@ -174,7 +206,8 @@ export class Controls {
     this.host = host;
     this.log = log;
     this.root = null; this.stage = null; this.surface = null; this.shape = null; this.clip = null;
-    this.btn = null; this.gear = null; this.panel = null;
+    this.btn = null; this.gear = null; this.pic = null; this.panel = null;
+    this.view = 'settings';
     this.width = 376; this.height = 626; this.islandCenter = 313;
     this.surfaceProgress = 0; this.surfaceFrame = 0;
     this.panelOpen = false;
@@ -186,6 +219,11 @@ export class Controls {
     this.documentHandlers = false;
     this.profileStore = null;
     this.revealUntil = 0;
+  }
+
+  setAdvancedLabel(text) {
+    const label = this.panel?.querySelector('#fcOpenSettings span');
+    if (label) label.textContent = text;
   }
 
   revealFor(ms) { this.revealUntil = Math.max(this.revealUntil, performance.now() + ms); }
@@ -232,21 +270,34 @@ export class Controls {
     gear.setAttribute('aria-controls', 'fcSettingsPanel');
     gear.setAttribute('aria-expanded', 'false');
     gear.innerHTML = `<svg class="fc-settings-icon" viewBox="0 0 24 24" aria-hidden="true">${svgIcon('gear').replace(/^<svg[^>]*>|<\/svg>$/g, '')}</svg>`;
-    rail.append(btn, gear);
+    const pic = document.createElement('button');
+    pic.className = 'fc-side';
+    pic.type = 'button';
+    pic.dataset.open = 'false';
+    pic.setAttribute('aria-label', 'Open picture settings');
+    pic.setAttribute('aria-controls', 'fcSettingsPanel');
+    pic.setAttribute('aria-expanded', 'false');
+    pic.innerHTML = `<svg class="fc-settings-icon" viewBox="0 0 24 24" aria-hidden="true">${svgIcon('picture').replace(/^<svg[^>]*>|<\/svg>$/g, '')}</svg>`;
+    rail.append(btn, pic, gear);
     this.btn = btn;
     this.gear = gear;
+    this.pic = pic;
 
     this.buildPanel();
     this.applySurfaceProgress(0);
     btn.onclick = () => this.host.onToggle();
-    gear.onclick = () => {
+    const toggleView = view => {
       if (this.width < INLINE_SETTINGS_MIN_WIDTH || this.height < INLINE_SETTINGS_MIN_HEIGHT) {
         this.setPanelOpen(false);
         this.host.onOpenAdvanced();
         return;
       }
-      this.setPanelOpen(!this.panelOpen);
+      const same = this.panelOpen && this.view === view;
+      this.view = view;
+      this.setPanelOpen(!same);
     };
+    gear.onclick = () => toggleView('settings');
+    pic.onclick = () => toggleView('picture');
     root.addEventListener('keydown', event => {
       if (event.key !== 'Escape' || !this.panelOpen) return;
       event.preventDefault();
@@ -255,6 +306,7 @@ export class Controls {
     });
     root.addEventListener('pointerdown', event => {
       if (!event.target.closest('.fc-select')) this.closeCustomSelects();
+      this.pressedInsideAt = performance.now();
       event.stopPropagation();
     });
     root.addEventListener('click', event => event.stopPropagation());
@@ -264,9 +316,12 @@ export class Controls {
       this.revealFor(2000);
       this.place(video.getBoundingClientRect(), video);
     });
+    // Focus leaving the controls closes the panel, but a press on the panel itself is not leaving: a click on a
+    // label or on bare background takes the focus off the button that had it and gives it to nothing.
     root.addEventListener('focusout', () => {
       requestAnimationFrame(() => {
         if (this.root?.contains(document.activeElement)) return;
+        if (performance.now() - (this.pressedInsideAt ?? -Infinity) < 400) return;
         this.setPanelOpen(false);
       });
     });
@@ -305,25 +360,37 @@ export class Controls {
     const y = ease((progress - .12) / .88);
     const px = (from, to) => coord(mix(from, to, x));
     const py = (from, to) => coord(mix(from, to, y));
-    const islandTop = this.islandCenter - 39;
-    const islandBottom = this.islandCenter + 39;
+    const islandTop = this.islandCenter - ISLAND_HALF;
+    const islandBottom = this.islandCenter + ISLAND_HALF;
     const openRight = this.width - 1;
     const openRightInset = this.width - 12;
-    const openBottom = this.height - 1;
-    return `M${px(-2, 55)} ${py(islandTop, 1)}H${px(38, openRightInset)}`
-      + `Q${px(43, openRight)} ${py(islandTop, 1)} ${px(43, openRight)} ${py(islandTop + 5, 12)}`
+    const { top, height } = this.openBox();
+    const openTop = top + 1;
+    const openBottom = top + height - 1;
+    return `M${px(-2, 55)} ${py(islandTop, openTop)}H${px(38, openRightInset)}`
+      + `Q${px(43, openRight)} ${py(islandTop, openTop)} ${px(43, openRight)} ${py(islandTop + 5, openTop + 11)}`
       + `V${py(islandBottom - 5, openBottom - 11)}`
       + `Q${px(43, openRight)} ${py(islandBottom, openBottom)} ${px(38, openRightInset)} ${py(islandBottom, openBottom)}`
       + `H${px(-2, 55)}Q${px(-2, 43)} ${py(islandBottom, openBottom)} `
       + `${px(-2, 43)} ${py(islandBottom, openBottom - 12)}`
-      + `V${islandBottom}H-2V${islandTop}H${px(-2, 43)}V${py(islandTop, 13)}`
-      + `Q${px(-2, 43)} ${py(islandTop, 1)} ${px(-2, 55)} ${py(islandTop, 1)}Z`;
+      + `V${islandBottom}H-2V${islandTop}H${px(-2, 43)}V${py(islandTop, openTop + 12)}`
+      + `Q${px(-2, 43)} ${py(islandTop, openTop)} ${px(-2, 55)} ${py(islandTop, openTop)}Z`;
+  }
+
+  // The open panel is as tall as its view needs, around the rail and inside the stage.
+  openBox() {
+    const height = Math.min(this.height, Math.max(2 * ISLAND_HALF + 2, VIEW_HEIGHT[this.view]));
+    const top = Math.max(0, Math.min(this.height - height, Math.round(this.islandCenter - height / 2)));
+    return { top, height };
   }
 
   applySurfaceProgress(progress) {
     this.surfaceProgress = clampUnit(progress);
     if (!this.shape || !this.clip) return;
     const path = this.surfacePath(this.surfaceProgress);
+    const box = this.openBox();
+    this.root.style.setProperty('--fc-open-top', box.top + 'px');
+    this.root.style.setProperty('--fc-open-height', box.height + 'px');
     this.shape.setAttribute('d', path);
     this.clip.style.clipPath = `path("${path}")`;
   }
@@ -354,15 +421,25 @@ export class Controls {
     if (!this.panelOpen) this.closeCustomSelects();
     if (!this.root) return;
     this.root.dataset.panelOpen = String(this.panelOpen);
-    this.gear.dataset.open = String(this.panelOpen);
-    this.gear.setAttribute('aria-expanded', String(this.panelOpen));
+    for (const [button, view] of [[this.gear, 'settings'], [this.pic, 'picture']]) {
+      const open = this.panelOpen && this.view === view;
+      button.dataset.open = String(open);
+      button.setAttribute('aria-expanded', String(open));
+    }
     this.panel.setAttribute('aria-hidden', String(!this.panelOpen));
+    if (this.panelOpen) {
+      this.panel.dataset.view = this.view;
+      this.panel.setAttribute('aria-label', this.view === 'picture' ? 'Framegen picture' : 'Framegen settings');
+      this.panel.querySelector('#fcPanelTitle').textContent = this.view === 'picture' ? 'Picture' : 'Framegen';
+      this.panel.scrollTop = 0;
+      this.applySurfaceProgress(this.surfaceProgress);
+    }
     this.animateSurface(this.panelOpen);
     if (this.panelOpen) {
       this.syncPanel();
       this.updateStatus();
     } else if (restoreFocus) {
-      this.gear.focus({ preventScroll: true });
+      (this.view === 'picture' ? this.pic : this.gear).focus({ preventScroll: true });
     }
   }
 
@@ -417,7 +494,7 @@ export class Controls {
     const bottomBound = Math.min(innerHeight, floorRaster(r.bottom));
     const width = Math.min(376, right - left);
     const height = Math.min(626, bottomBound - topBound);
-    if (width < 80 || height < 78) {
+    if (width < 80 || height < 2 * ISLAND_HALF) {
       this.setPanelOpen(false);
       this.setVisible(false);
       return;
@@ -427,7 +504,7 @@ export class Controls {
     }
     const preferredTop = Math.round(r.top + r.height / 2 - height / 2);
     const top = Math.max(topBound, Math.min(preferredTop, bottomBound - height));
-    const center = Math.max(39, Math.min(height - 39, Math.round(r.top + r.height / 2 - top)));
+    const center = Math.max(ISLAND_HALF, Math.min(height - ISLAND_HALF, Math.round(r.top + r.height / 2 - top)));
     const p = this.placed;
     if (left !== p.left || top !== p.top || width !== p.width || height !== p.height || center !== p.center) {
       this.placed = { left, top, width, height, center };
@@ -450,10 +527,13 @@ export class Controls {
     panel.id = 'fcSettingsPanel';
     panel.setAttribute('aria-label', 'Framegen settings');
     panel.setAttribute('aria-hidden', 'true');
+    // focusable by a press, so the focus stays inside the controls when the panel's own surface is clicked
+    panel.tabIndex = -1;
+    panel.dataset.view = this.view;
     panel.innerHTML = `
       <div class="fc-panel-head">
         <div class="fc-brand">
-          <strong>Framegen</strong>
+          <strong id="fcPanelTitle">Framegen</strong>
           <span class="fc-version">v${this.version}</span>
         </div>
         <a class="fc-icon-link" href="https://github.com/MONZikWasTaken/Framegen"
@@ -462,6 +542,24 @@ export class Controls {
           <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${GITHUB_PATH}"/></svg>
         </a>
       </div>
+      <div class="fc-view" data-view="picture">
+      <div class="fc-looks" id="fcLooks" role="radiogroup" aria-label="Picture mode">
+        ${Object.entries(PICTURE_MODES).map(([key, mode]) => `<button class="fc-look" type="button" role="radio"
+          aria-checked="false" data-mode="${key}"><span class="fc-look-swatch"
+          style="filter:${PICTURE_SWATCH_FILTERS[key]}"></span><span class="fc-look-name">${mode.label}</span></button>`).join('')}
+      </div>
+      <div class="fc-divider"></div>
+      <div class="fc-row"><span>Sharpness</span>
+        <div class="fc-seg" id="fcSharpness" role="radiogroup" aria-label="Sharpness">
+          ${SHARPNESS_LABELS.map((label, value) => `<button type="button" role="radio" aria-checked="false"
+            data-value="${value}">${label}</button>`).join('')}
+        </div></div>
+      <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
+        <input class="fc-sw" type="checkbox" id="fcSR"></label>
+      <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
+        <input class="fc-sw" type="checkbox" id="fcHDR"></label>
+      </div>
+      <div class="fc-view" data-view="settings">
       <div class="fc-row fc-profile-row"><span>Profile<small>Apply a saved setup</small></span>
         <select class="fc-sel fc-profile" id="fcProfile" disabled>
           <option>Loading profiles…</option>
@@ -469,7 +567,7 @@ export class Controls {
       <div class="fc-divider"></div>
       <label class="fc-row"><span>Frame generation<small>Create smoother motion</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <div class="fc-row"><span>Output rate<small>Choose how playback is paced</small></span>
+      <div class="fc-row"><span>Output rate<small>How playback is paced</small></span>
         <select class="fc-sel" id="fcFactor">
           <option value="auto">Auto · recommended</option>
           <option value="hz">Match display</option>
@@ -488,17 +586,14 @@ export class Controls {
           <span>15</span><span>60</span><span>120</span><span>240</span><span>∞</span>
         </span>
       </label>
-      <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
-        <input class="fc-sw" type="checkbox" id="fcSR"></label>
-      <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
-        <input class="fc-sw" type="checkbox" id="fcHDR"></label>
-      <div class="fc-row"><span>Quality<small>Balance detail and GPU load</small></span>
+      <div class="fc-row"><span>Quality<small>Detail against GPU load</small></span>
         <select class="fc-sel" id="fcRes">
           <option value="288">Low power</option><option value="360">Efficient</option>
           <option value="480">Balanced</option>
           <option value="720">High</option>
           <option value="1080">Ultra</option>
         </select></div>
+      <div class="fc-divider"></div>
       <label class="fc-row"><span>FPS counter<small>Show frame rate and render time</small></span>
         <input class="fc-sw" type="checkbox" id="fcShowFps"></label>
       <label class="fc-row"><span>Watermark<small>Show the Framegen label on video</small></span>
@@ -511,7 +606,10 @@ export class Controls {
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path fill="currentColor" d="m6 3 5 5-5 5-1.2-1.2L8.6 8 4.8 4.2 6 3Z"/>
         </svg>
-      </button>`;
+      </button>
+      </div>
+      <a class="fc-engine-link" href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">Powered by
+        <b>FlyHigh engine</b></a>`;
     this.clip.appendChild(panel);
     this.panel = panel;
     this.enhanceCustomSelects(panel);
@@ -541,6 +639,14 @@ export class Controls {
     q('#fcFG').onchange = e => set({ fg: e.currentTarget.checked });
     q('#fcSR').onchange = e => set({ sr: e.currentTarget.checked });
     q('#fcHDR').onchange = e => set({ hdr: e.currentTarget.checked });
+    q('#fcLooks').onclick = e => {
+      const look = e.target.closest('.fc-look');
+      if (look) set({ pictureMode: look.dataset.mode });
+    };
+    q('#fcSharpness').onclick = e => {
+      const option = e.target.closest('button');
+      if (option) set({ sharpness: Number(option.dataset.value) });
+    };
     q('#fcShowFps').onchange = e => set({ showFps: e.currentTarget.checked });
     q('#fcWatermark').onchange = e => set({ showWatermark: e.currentTarget.checked });
     q('#fcWarnings').onchange = e => set({ showWarnings: e.currentTarget.checked });
@@ -551,6 +657,12 @@ export class Controls {
     const panel = this.panel;
     if (!panel) return;
     const cfg = this.settings.cfg;
+    for (const look of panel.querySelectorAll('.fc-look')) {
+      look.setAttribute('aria-checked', String(look.dataset.mode === cfg.pictureMode));
+    }
+    for (const option of panel.querySelectorAll('#fcSharpness button')) {
+      option.setAttribute('aria-checked', String(Number(option.dataset.value) === cfg.sharpness));
+    }
     const factor = panel.querySelector('#fcFactor');
     const resolution = panel.querySelector('#fcRes');
     factor.value = String(cfg.factor);

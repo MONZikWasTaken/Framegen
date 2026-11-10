@@ -86,12 +86,18 @@ export function boot() {
   }
 
   async function openAdvancedSettings() {
+    // after the extension was updated or reloaded, the script already in a page has lost it: nothing it asks for can
+    // be answered until the page is loaded again, so say that instead of doing nothing
+    if (!chrome.runtime?.id) { controls?.setAdvancedLabel('Reload the page: Framegen was updated'); return; }
     try {
       const response = await chrome.runtime.sendMessage({ type: 'fcOpenOptions' });
       if (!response?.ok) throw new Error(response?.error || 'Could not open settings');
     } catch (messageError) {
       try { await chrome.runtime.openOptionsPage(); }
-      catch (directError) { log('open settings', directError || messageError); }
+      catch (directError) {
+        log('open settings', directError || messageError);
+        controls?.setAdvancedLabel(chrome.runtime?.id ? 'Open settings from the toolbar icon' : 'Reload the page: Framegen was updated');
+      }
     }
   }
 

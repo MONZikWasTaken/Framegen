@@ -14,7 +14,7 @@ function render(s) {
   const dot = $('dot'), state = $('state'), stat = $('stat'), sys = $('sys');
   if (!s) {
     dot.classList.remove('on');
-    state.textContent = 'off';
+    state.textContent = 'Off';
     state.className = '';
     stat.textContent = '';
     sys.textContent = '';
@@ -22,15 +22,16 @@ function render(s) {
   }
   $('ver').textContent = 'v' + s.version;
   dot.classList.toggle('on', s.running);
-  state.textContent = s.running ? 'running' : 'off';
+  state.textContent = s.running ? 'Running' : 'Off';
   state.className = s.running ? 'on' : '';
   stat.textContent = s.running
-    ? `out: ${s.fps} fps · ×${s.factor}\n`
-      + `rate: ${s.rateState}\n`
-      + `mid: ${s.midMs} ms @ ${s.res}p · drops: ${s.drops}\n`
-      + `engine: ${s.engine || '-'}`
+    ? `Output   ${s.fps} fps · ×${s.factor}\n`
+      + `Rate     ${s.rateState}\n`
+      + `Render   ${s.midMs} ms at ${s.res}p · ${s.drops} dropped\n`
+      + `Engine   ${s.engine || '-'}`
     : (s.blocked || '');
-  sys.textContent = `GPU: ${s.gpu || '-'}${s.integrated ? '\n⚠ INTEGRATED - assign the browser to the discrete GPU\n(Settings → Display → Graphics)' : ''}\nf16: ${s.f16 ? 'yes' : 'no'}`;
+  sys.textContent = `GPU: ${s.gpu || '-'}${s.f16 ? '' : ' · no half-float support'}`
+    + (s.integrated ? '\nIntegrated GPU in use. Assign the browser to the discrete one: Windows Settings → Display → Graphics.' : '');
   sys.className = s.integrated ? 'warn' : '';
 }
 

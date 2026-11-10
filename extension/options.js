@@ -1,4 +1,5 @@
 import { Profiles } from './src/profiles.js';
+import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
 
 (function framegenOptions() {
   'use strict';
@@ -131,6 +132,66 @@ import { Profiles } from './src/profiles.js';
     return false;
   }
 
+  // Tiles and segments that stand in for a select: the select stays the form's value, these show and set it.
+  function buildChoices() {
+    for (const group of document.querySelectorAll('[data-choice]')) {
+      const select = $(group.dataset.choice);
+      const look = group.classList.contains('look-grid');
+      group.replaceChildren(...[...select.options].map(option => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('role', 'radio');
+        button.dataset.value = option.value;
+        if (look) {
+          button.className = 'look';
+          const swatch = document.createElement('span');
+          swatch.className = 'look-swatch';
+          swatch.style.filter = PICTURE_SWATCH_FILTERS[option.value] || 'none';
+          const name = document.createElement('span');
+          name.className = 'look-name';
+          name.textContent = option.textContent;
+          button.append(swatch, name);
+        } else {
+          button.textContent = option.textContent;
+        }
+        return button;
+      }));
+      group.addEventListener('click', event => {
+        const button = event.target.closest('button');
+        if (!button || select.disabled) return;
+        select.value = button.dataset.value;
+        syncChoices();
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+  }
+
+  function syncChoices() {
+    for (const group of document.querySelectorAll('[data-choice]')) {
+      const value = $(group.dataset.choice).value;
+      for (const button of group.children) button.setAttribute('aria-checked', String(button.dataset.value === value));
+    }
+  }
+
+  function watchSections() {
+    const links = [...document.querySelectorAll('[data-nav]')];
+    const mark = id => { for (const link of links) link.setAttribute('aria-current', String(link.hash === '#' + id)); };
+    const visible = new Set();
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) visible.add(entry.target.id);
+        else visible.delete(entry.target.id);
+      }
+      const first = links.find(link => visible.has(link.hash.slice(1)));
+      if (first && !atEnd()) mark(first.hash.slice(1));
+    }, { rootMargin: '-80px 0px -55% 0px' });
+    // the last sections are too short to reach the top of the window
+    const atEnd = () => innerHeight + scrollY >= document.documentElement.scrollHeight - 2;
+    addEventListener('scroll', () => { if (atEnd()) mark(links.at(-1).hash.slice(1)); }, { passive: true });
+    for (const link of links) observer.observe($(link.hash.slice(1)));
+    mark(links[0].hash.slice(1));
+  }
+
   function readForm() {
     const candidate = {
       factor: $('factor').value,
@@ -138,6 +199,7 @@ import { Profiles } from './src/profiles.js';
       fpsLimit: fpsLimitFromSlider(),
       res: Number($('res').value),
       sharpness: Number($('sharpness').value),
+      pictureMode: $('pictureMode').value,
     };
     for (const key of BOOLEAN_FIELDS) candidate[key] = $(key).checked;
     draftSettings = settingsCopy(candidate);
@@ -152,7 +214,9 @@ import { Profiles } from './src/profiles.js';
     updateFpsLimitPresentation();
     $('res').value = String(clean.res);
     $('sharpness').value = String(clean.sharpness);
+    $('pictureMode').value = clean.pictureMode;
     for (const key of BOOLEAN_FIELDS) $(key).checked = clean[key];
+    syncChoices();
     updateRateControlVisibility(clean.factor);
   }
 
@@ -503,6 +567,8 @@ import { Profiles } from './src/profiles.js';
       store = loaded.store;
       loadCurrentDraft();
       renderFpsLimitScale();
+      buildChoices();
+      watchSections();
       writeForm(draftSettings);
       bindEvents();
       renderAll();
