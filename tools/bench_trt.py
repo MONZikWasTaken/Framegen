@@ -4,8 +4,9 @@ import numpy as np
 import pycuda.driver as cuda
 import pycuda.autoinit
 import time, sys, os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-ENGINE = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\MONZik\Desktop\InterModule\assets\rife_lite_trt_fp16.engine"
+ENGINE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'assets', 'rife_lite_trt_fp16.engine')
 
 logger = trt.Logger(trt.Logger.WARNING)
 runtime = trt.Runtime(logger)

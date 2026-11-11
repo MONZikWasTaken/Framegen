@@ -1,7 +1,7 @@
 """Distill a 2-block RIFE student from the full 3-block+refine teacher.
 
 Student = block0 + block1 of IFNet_m (init from teacher), scales [4,2], no refinement -
-same graph as the `2blk_noref` ablation (docs/phase5_ablation.md), which measured
+same graph as the `2blk_noref` ablation, which measured
 4x on browser webgpu / 1.9x on TensorRT at -2.6..-0.8 dB. Training tries to win that
 PSNR back at identical inference cost.
 
@@ -43,7 +43,7 @@ cv2.setNumThreads(0)
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-sys.path.insert(0, r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref")
+sys.path.insert(0, os.environ.get("RIFE_REF", "rife_ref"))
 from model.IFNet_m import IFNet_m
 from model.laplacian import LapLoss
 from model.warplayer import warp

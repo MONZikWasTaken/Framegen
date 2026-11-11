@@ -1,9 +1,11 @@
 """PSNR comparison: Rust mid_rust.png vs PyTorch mid_pytorch.rgb (ground truth)."""
 import numpy as np
 from PIL import Image
+import os
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-rust_path = r"C:\Users\MONZik\Desktop\InterModule\demo\mid_rust.png"
-py_rgb_path = r"C:\Users\MONZik\Desktop\InterModule\demo\mid_pytorch.rgb"
+rust_path = os.path.join(ROOT, 'demo', 'mid_rust.png')
+py_rgb_path = os.path.join(ROOT, 'demo', 'mid_pytorch.rgb')
 
 # Rust output (RGB PNG)
 rust = np.array(Image.open(rust_path).convert("RGB"), dtype=np.float32)  # HxWx3 RGB

@@ -11,10 +11,10 @@ import sys
 import os
 import torch
 
-sys.path.insert(0, r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref")
+sys.path.insert(0, os.environ.get("RIFE_REF", "rife_ref"))
 from model.RIFE import Model
 
-WEIGHTS = r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_m\RIFE_m_train_log"
+WEIGHTS = os.environ.get("RIFE_WEIGHTS", "RIFE_m_train_log")
 H, W = int(sys.argv[1]) if len(sys.argv) > 1 else 720, int(sys.argv[2]) if len(sys.argv) > 2 else 1280
 OUT_ONNX = os.path.join(os.path.dirname(__file__), "..", "assets", f"rife_lite_{H}x{W}.onnx")
 
