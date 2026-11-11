@@ -10,14 +10,15 @@ import numpy as np
 import cv2
 import torch
 
-sys.path.insert(0, r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref")
+sys.path.insert(0, os.environ.get("RIFE_REF", "rife_ref"))
 from model.RIFE import Model
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-WEIGHTS = r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_m\RIFE_m_train_log"
-IMG0 = r"C:\Users\MONZik\Desktop\InterModule\demo\I0_0.png"
-IMG1 = r"C:\Users\MONZik\Desktop\InterModule\demo\I0_1.png"
-OUT_PNG = r"C:\Users\MONZik\Desktop\InterModule\demo\mid_pytorch.png"
-OUT_RGB = r"C:\Users\MONZik\Desktop\InterModule\demo\mid_pytorch.rgb"
+WEIGHTS = os.environ.get("RIFE_WEIGHTS", "RIFE_m_train_log")
+IMG0 = os.path.join(ROOT, 'demo', 'I0_0.png')
+IMG1 = os.path.join(ROOT, 'demo', 'I0_1.png')
+OUT_PNG = os.path.join(ROOT, 'demo', 'mid_pytorch.png')
+OUT_RGB = os.path.join(ROOT, 'demo', 'mid_pytorch.rgb')
 
 torch.set_grad_enabled(False)
 device = torch.device("cpu")

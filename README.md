@@ -92,7 +92,7 @@ pwsh tools/build_extension.ps1 -EngineRepo <path>   # also refreshes extension/e
 ```
 
 `extension/` is directly loadable (Load unpacked). [docs/architecture.md](docs/architecture.md) explains how the host
-maps onto the engine; [AGENTS.md](AGENTS.md) lists the layout and the conventions. The previous engine stays in
+maps onto the engine. The previous engine stays in
 `web/rt` and on npm as [`framegen`](https://www.npmjs.com/package/framegen) ([packages/rt](packages/rt)); its notes are
 in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engine directly.
 
@@ -101,7 +101,7 @@ in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engin
 - [@NimaJafariComp](https://github.com/NimaJafariComp): picture modes
   ([#25](https://github.com/MONZikWasTaken/Framegen/pull/25), in 2.0.10).
 
-Pull requests are welcome against the `dev` branch; see [AGENTS.md](AGENTS.md) for how the code is laid out.
+Pull requests are welcome against the `dev` branch; [docs/architecture.md](docs/architecture.md) explains how the code is laid out.
 
 ## Support the project
 

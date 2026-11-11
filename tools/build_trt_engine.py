@@ -3,8 +3,9 @@ import tensorrt as trt
 import os
 
 import sys, os
-ONNX = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\MONZik\Desktop\InterModule\assets\rife_lite_inlined.onnx"
-ENGINE = sys.argv[2] if len(sys.argv) > 2 else r"C:\Users\MONZik\Desktop\InterModule\assets\rife_lite_trt_fp16.engine"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ONNX = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'assets', 'rife_lite_inlined.onnx')
+ENGINE = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'assets', 'rife_lite_trt_fp16.engine')
 
 logger = trt.Logger(trt.Logger.WARNING)
 builder = trt.Builder(logger)

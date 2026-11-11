@@ -15,7 +15,7 @@ import sys
 
 import torch
 
-sys.path.insert(0, r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref")
+sys.path.insert(0, os.environ.get("RIFE_REF", "rife_ref"))
 from model.RIFE import Model
 from model.warplayer import warp
 

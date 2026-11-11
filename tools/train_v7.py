@@ -36,7 +36,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 
-sys.path.insert(0, os.environ.get("RIFE_REF", r"C:\Users\MONZik\AppData\Local\Temp\opencode\rife_ref"))
+sys.path.insert(0, os.environ.get("RIFE_REF", "rife_ref"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from model.IFNet_m import IFBlock
 from model.laplacian import LapLoss
