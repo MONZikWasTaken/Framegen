@@ -96,6 +96,13 @@ maps onto the engine; [AGENTS.md](AGENTS.md) lists the layout and the convention
 `web/rt` and on npm as [`framegen`](https://www.npmjs.com/package/framegen) ([packages/rt](packages/rt)); its notes are
 in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engine directly.
 
+## Contributors
+
+- [@NimaJafariComp](https://github.com/NimaJafariComp): picture modes
+  ([#25](https://github.com/MONZikWasTaken/Framegen/pull/25), in 2.0.10).
+
+Pull requests are welcome against the `dev` branch; see [AGENTS.md](AGENTS.md) for how the code is laid out.
+
 ## Support the project
 
 Framegen is built by one person with one mid-range GPU. The extension is free and will stay free; the models behind it
