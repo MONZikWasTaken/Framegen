@@ -127,6 +127,7 @@ export class EngineBackend {
       repair: spec.repair,
       render: spec.render,
       staticProtection: spec.guard,
+      nearestSource: true,
       // mids rendered straight from the source textures with the t-dependent network once per pair: the same picture
       // at a fraction of the GPU time; needs an internal size below the frame, and cadence re-timing (video mode)
       // renders the exact path
