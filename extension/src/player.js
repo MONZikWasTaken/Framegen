@@ -818,6 +818,7 @@ export class Player {
   warningText(r) {
     const c = this.cfg;
     if (!c.fg || !r) return null;
+    if (this.source?.path === 'canvas') return 'This Firefox version is too old for smooth frame generation: update Firefox';
     const presents = Math.max(1, this.stats.fpsWin.length);
     const dropping = (this.stats.dropWin.length / 2) / presents > 0.12;
     const fixed = typeof c.factor === 'number';
