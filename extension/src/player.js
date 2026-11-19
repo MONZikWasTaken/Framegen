@@ -916,6 +916,7 @@ export class Player {
     const hz = plan.output_hz ? ` (~${Number(plan.output_hz.toFixed(2))} FPS)` : '';
     if (plan.state === 'measuring') return `${label} · measuring`;
     if (!plan.interpolation_allowed) return `${label} · ${plan.warning || plan.state.replace(/_/g, ' ')}`;
+    if (plan.clamp === 'display') return `${label}${hz} · browser callback limit`;
     if (plan.clamp) return `${label}${hz} · ${plan.clamp.replace(/_/g, ' ')}`;
     return `${label}${hz}`;
   }
@@ -949,7 +950,7 @@ export class Player {
     return [
       `${v.videoWidth}x${v.videoHeight}@${srcHz} → ${fps}fps ×${this.stats.factor} (${this.rateLabel()})`,
       `pair ${r.pair_cost_ms.toFixed(1)} + mid ${mid.toFixed(1)}ms@${this.cfg.res}p · present ${r.present_cost_ms.toFixed(1)}`,
-      `buf ${r.delay_ms.toFixed(0)} · display ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
+      `buf ${r.delay_ms.toFixed(0)} · rAF ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
       `drop ${this.stats.drops} (${r.pressure.toFixed(1)}) · penalty ${r.penalty}+${r.strain_penalty}`,
       `cut ${r.counters.cuts} hold ${r.counters.holds} · motion ${r.motion_avg.toFixed(0)} · queue ${r.queued}`,
       `${this.backend.class} · pool ${this.spec?.width}x${this.spec?.height}${this.spec?.video ? ' video' : ''}`,
@@ -977,7 +978,7 @@ export class Player {
       const pool = this.spec ? this.spec.width * this.spec.height * 4 * (this.stream?.report().inputs + this.stream?.report().outputs) / 1048576 : 0;
       lines.push(
         `out: ${this.stats.fpsWin.length}fps · factor ×${this.stats.factor}`,
-        `display: ${r.display.display_hz}Hz · source: ${r.source_hz ? r.source_hz.toFixed(2) : '?'}fps`,
+        `browser callbacks: ${r.display.measured ? r.display.display_hz + 'Hz' : 'measuring'} · source: ${r.source_hz ? r.source_hz.toFixed(2) : '?'}fps`,
         `pair: ${r.pair_cost_ms.toFixed(1)}ms · mid: ${r.mid_cost_ms.toFixed(1)}ms @ ${c.res}p · present: ${r.present_cost_ms.toFixed(1)}ms`,
         `delay: ${r.delay_ms.toFixed(0)}ms · drops: ${this.stats.drops} · queue: ${r.queued}`,
         `VRAM pool: ~${pool.toFixed(0)}MB${this.spec?.video ? ' · video mode (lookahead)' : ''}`);
@@ -996,6 +997,7 @@ export class Player {
       midMs: r ? +r.mid_cost_ms.toFixed(1) : 0, pairMs: r ? +r.pair_cost_ms.toFixed(1) : 0,
       drops: this.stats.drops, res: this.cfg.res,
       rateLabel: this.rateLabel(), rateState: this.rateState(r),
+      browserCallbackHz: r?.display?.measured ? r.display.raw_hz : null,
       presentationMode: this.needsCanvas() ? 'canvas' : 'native',
       pool: frameSize ? { width: frameSize.width, height: frameSize.height, video: !!frameSize.video } : null,
       pacer: r,
