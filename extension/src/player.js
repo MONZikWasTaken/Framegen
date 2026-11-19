@@ -70,7 +70,7 @@ export class Player {
     this.outputsFreeAt = [];
     this.compareRing = [];
     this.lastShownSource = -1;
-    this.busy = false;
+    this.busyEpoch = null;
     this.lastPts = null;
     this.lastPresentedFrames = null;
     this.sourceIntervalMs = 42;
@@ -558,12 +558,12 @@ export class Player {
     if (this.stream) this.backend?.rememberKernels();
     this.running = false;
     this.cancelLoops();
+    this.busyEpoch = null;
+    this.releaseInterpolation();
     this.freePictureInput();
     this.overlay.fadeOut(() => !this.running);
     this.notices.hideAll();
     this.subtitles.sync({ active: false, video: this.video, canvas: this.overlay.canvas, canvasVisible: false });
-    this.compareRing = [];
-    if (this.pacer) this.pacer.reset(performance.now());
     if (wasRunning) this.hooks.onStateChange(false);
   }
 
@@ -595,8 +595,8 @@ export class Player {
     if (video.videoWidth !== this.overlay.sourceWidth || video.videoHeight !== this.overlay.sourceHeight) this.layoutOverlay(null);
     if (!this.overlay.fitSupported) return;
     if (!this.needsCanvas()) { this.overlay.passthrough(); return; }
-    if (this.busy) return;
-    this.busy = true;
+    if (this.busyEpoch !== null) return;
+    this.busyEpoch = epoch;
     let stream;
     try {
       const now = performance.now();
@@ -676,7 +676,7 @@ export class Player {
         this.fail('Framegen error: ' + (e?.message || e), e);
       }
     } finally {
-      this.busy = false;
+      if (this.busyEpoch === epoch) this.busyEpoch = null;
     }
   }
 
