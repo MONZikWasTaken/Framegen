@@ -16,6 +16,8 @@ function fixture() {
   };
   const interp = { models: 0, streams: 0, pacers: 0, released: 0, pushed: 0 };
   let pacersFreed = 0;
+  let modeChanges = 0;
+  const gpuSamples = [];
   const backend = {
     device: {
       createTexture(desc) {
@@ -31,6 +33,7 @@ function fixture() {
         write(slot, video) { writes.push([this.inputs.inputTexture(slot), video]); }
       },
       CostSampler: class {
+        constructor(pacer) { this.pacer = pacer; }
         push() { interp.pushed++; return {}; }
       },
     },
@@ -45,7 +48,8 @@ function fixture() {
     },
     createPacer() {
       interp.pacers++;
-      return { reset: noop, modeChange: noop, setOptions: noop, sourceFrame: () => [], delayMs: () => 0,
+      return { reset: noop, modeChange() { modeChanges++; }, setOptions: noop, sourceFrame: () => [], delayMs: () => 0,
+        costSample(...sample) { gpuSamples.push(sample); return true; },
         free() { pacersFreed++; } };
     },
     warmUp: async () => {}, rememberKernels: noop,
@@ -60,7 +64,8 @@ function fixture() {
   player.present = texture => drawn.push(texture);
   player.armVideoFrames = player.armTicks = player.scheduleTune = noop;
   const frame = (mediaTime = 1) => player.onVideoFrame({ mediaTime }, player.epoch);
-  return { player, video, overlay, cfg, backend, interp, textures, drawn, writes, frame, pacersFreed: () => pacersFreed };
+  return { player, video, overlay, cfg, backend, interp, textures, drawn, writes, frame, pacersFreed: () => pacersFreed,
+    gpuSamples, modeChanges: () => modeChanges };
 }
 
 test('Vivid without FG reuses one source texture and does not load or open the interpolation pipeline', async () => {
@@ -185,6 +190,26 @@ test('stopping FG frees the stream and pacer once, and re-enabling does not relo
   await frame(2);
   assert.deepEqual(interp, { models: 1, streams: 2, pacers: 2, released: 1, pushed: 2 });
   player.stop();
+});
+
+test('rebuilding a stream restarts GPU estimates and ignores samples from retired streams', async () => {
+  const { player, video, cfg, frame, gpuSamples, modeChanges } = fixture();
+  cfg.fg = true;
+  await player.start(video);
+  const old = player.costs.pacer;
+  assert.equal(old.costSample(1, 'mid', 1), true);
+  const initial = modeChanges();
+
+  cfg.res = 720;
+  player.applySettings(new Set(['res']));
+  await frame(2);
+  assert.equal(modeChanges(), initial + 1);
+  assert.equal(old.costSample(2, 'mid', 10), false);
+  const current = player.costs.pacer;
+  assert.equal(current.costSample(3, 'mid', 3), true);
+  player.stop();
+  assert.equal(current.costSample(4, 'pair', 4), false);
+  assert.deepEqual(gpuSamples, [[1, 'mid', 1], [3, 'mid', 3]]);
 });
 
 for (const waitingOn of ['classification', 'cadence stats']) {

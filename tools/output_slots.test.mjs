@@ -21,6 +21,7 @@ function playerForTest(initialOutputs, write = () => true) {
     report: () => ({ outputs: textures.length }),
     addOutput: () => textures.push(null) - 1,
     outputTexture: slot => textures[slot],
+    inputTexture: slot => `source-${slot}`,
   };
   player.costs = {
     generate(_stream, request, slot) {
@@ -67,14 +68,15 @@ test('a late presentation cannot display or release a recycled slot', () => {
   const { player, textures, skipped, presented, show } = playerForTest(20);
   player.generate(100, Array.from({ length: 20 }, (_, i) => request(i + 1, i === 0 ? 120 : 500)));
   player.generate(400, [request(21, 430)]);
+  player.lastShownSource = 3;
   show(1, 410);
   player.generate(411, [request(22, 440)]);
 
-  assert.deepEqual(presented, []);
+  assert.deepEqual(presented, ['source-3']);
   assert.deepEqual(skipped, [22]);
   assert.equal(textures[0], 21);
   show(21, 430);
-  assert.deepEqual(presented, [21]);
+  assert.deepEqual(presented, ['source-3', 21]);
 });
 
 test('a generator fallback frees its slot for the following request in the same batch', () => {
