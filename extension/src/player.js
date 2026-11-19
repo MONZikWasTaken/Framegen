@@ -43,6 +43,7 @@ export class Player {
     this.backend = null;
     this.backendLoading = null;
     this.kernelsReady = null;
+    this.interpolationReady = false;
     this.blocked = null;
     this.sys = { gpu: '-', f16: false, integrated: false, hdrOk: false, hdrOn: false };
     try { this.sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch { /* no media queries */ }
@@ -59,6 +60,7 @@ export class Player {
     this.pacerKey = '';
     this.recording = false;
     this.source = null;
+    this.pictureInput = null;
     this.costs = null;
     this.presenter = null;
     this.upscaler = null;
@@ -105,7 +107,6 @@ export class Player {
         // the engine would fail on the same empty answer with wgpu's backend dump instead of something a viewer can act on
         const adapter = await navigator.gpu.requestAdapter().catch(() => null);
         if (!adapter) throw new Error(NO_ADAPTER_HELP);
-        await tuneStore.load();
         let backend;
         try {
           backend = await loadEngine(ENGINE_URLS);
@@ -127,8 +128,6 @@ export class Player {
           .catch(e => log('device loss handler', e));
         this.backend = backend;
         log('backend', backend.kind, backend.class, backend.name, backend.timestamps ? 'timestamps' : 'no timestamps');
-        // starts on hover, before the click: start() waits for whatever is left
-        this.kernelsReady = backend.precompile().catch(e => log('precompile', e));
         return backend;
       })().finally(() => { this.backendLoading = null; });
     }
@@ -148,8 +147,24 @@ export class Player {
     } catch { /* leave unknown */ }
   }
 
-  preload() {
-    return this.blocked ? Promise.reject(new Error(this.blocked)) : this.ensureBackend();
+  prepareInterpolation(backend) {
+    if (!this.kernelsReady) {
+      this.kernelsReady = Promise.all([backend.loadModel(), tuneStore.loaded ? null : tuneStore.load()])
+        .then(() => backend.precompile().catch(e => log('precompile', e)))
+        .then(() => { if (this.backend === backend) this.interpolationReady = true; })
+        .catch(e => {
+          if (this.backend === backend) this.kernelsReady = null;
+          throw e;
+        });
+    }
+    return this.kernelsReady;
+  }
+
+  async preload() {
+    if (this.blocked) throw new Error(this.blocked);
+    const backend = await this.ensureBackend();
+    if (this.cfg.fg) await this.prepareInterpolation(backend);
+    return backend;
   }
 
   // ---------- the stream and the pacer ----------
@@ -256,6 +271,20 @@ export class Player {
     this.streamKey = '';
   }
 
+  releaseInterpolation() {
+    if (!this.stream && !this.pacer) return;
+    clearTimeout(this.tuneTimer);
+    this.presenter?.invalidate();
+    this.freeStream();
+    this.pacer?.free();
+    this.pacer = null;
+    this.pacerKey = '';
+    this.recording = false;
+    this.costs = null;
+    this.spec = null;
+    this.resetSlots();
+  }
+
   resetSlots() {
     this.prev = -1;
     this.recent = [];
@@ -345,6 +374,28 @@ export class Player {
   }
 
   // ---------- presenting ----------
+  pictureFrame(video) {
+    const [width, height] = this.poolDimsNow();
+    if (this.pictureInput?.width !== width || this.pictureInput?.height !== height) {
+      this.freePictureInput();
+      const { device, adapters } = this.backend;
+      const texture = device.createTexture({ label: 'fc-picture-input', size: [width, height], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+      this.pictureInput = { texture, width, height, source: new adapters.VideoSource(device, { inputTexture: () => texture }) };
+    }
+    const { texture, source } = this.pictureInput;
+    // Capture and presentation are submitted to the same queue in order; nothing holds a picture frame for a later tick.
+    source.write(0, video);
+    return texture;
+  }
+
+  freePictureInput() {
+    if (!this.pictureInput) return;
+    this.presenter?.invalidate();
+    this.pictureInput.texture.destroy();
+    this.pictureInput = null;
+  }
+
   ensurePresenter() {
     if (this.presenter) return;
     this.presenter = new Presenter(this.backend.device, this.overlay.ensure(), log);
@@ -429,19 +480,17 @@ export class Player {
     this.overlay.resetGeometry();
     this.layoutOverlay(null);
     this.stats = this.freshStats();
-    const now = performance.now();
-    this.ensurePacer(now);
-    this.pacer.reset(now);
+    if (!this.cfg.fg) this.releaseInterpolation();
 
     if (this.needsCanvas() && video.videoWidth && video.videoHeight && this.overlay.fitSupported) {
-      if (this.kernelsReady) {
-        const t0 = performance.now();
-        await Promise.all([this.kernelsReady, this.presenter.ready]);
-        if (epoch !== this.epoch || this.video !== video) return;
-        if (this.cfg.debug) log('kernels ready', `${(performance.now() - t0).toFixed(0)} ms after the click`);
+      const fg = this.cfg.fg;
+      await Promise.all([this.presenter.ready, fg ? this.prepareInterpolation(backend) : null]);
+      if (epoch !== this.epoch || this.video !== video) return;
+      if (fg && this.cfg.fg) {
+        this.freePictureInput();
+        this.ensurePacer();
+        this.ensureStream(...this.poolDimsNow());
       }
-      const [w, h] = this.poolDimsNow();
-      this.ensureStream(w, h);
       // a cross-origin video fails on its first read: find out (and reload it with CORS) before anything is shown
       try {
         this.probe(video);
@@ -456,20 +505,23 @@ export class Player {
         } else throw e;
       }
       if (epoch !== this.epoch || this.video !== video) return;
-      if (!this.warmedUp) {
+      if (this.cfg.fg && this.stream && !this.warmedUp) {
+        const stream = this.stream;
         const t0 = performance.now();
-        try { await backend.warmUp(this.stream); } catch (e) { log('warm-up skipped', e); }
-        this.warmedUp = true;
+        try { await backend.warmUp(stream); } catch (e) { if (stream === this.stream) log('warm-up skipped', e); }
         if (epoch !== this.epoch || this.video !== video) return;
-        log('warm-up', `${(performance.now() - t0).toFixed(0)} ms`);
-        backend.rememberKernels();
+        if (stream === this.stream) {
+          this.warmedUp = true;
+          log('warm-up', `${(performance.now() - t0).toFixed(0)} ms`);
+          backend.rememberKernels();
+        }
       }
     }
     this.ensureUpscaler();
     this.running = true;
-    this.pacer.reset(performance.now());
+    this.pacer?.reset(performance.now());
     // the first seconds stall while the browser prepares pipelines: not a GPU limit
-    this.pacer.modeChange(performance.now());
+    this.pacer?.modeChange(performance.now());
     if (!this.needsCanvas()) { this.overlay.passthrough(); this.preparing(false); }
     this.notices.setHud('', this.cfg.debug || this.cfg.showFps);
     if (this.sys.integrated) {
@@ -479,11 +531,15 @@ export class Player {
     this.hooks.onStateChange(true);
     this.armVideoFrames(epoch);
     this.armTicks(epoch);
+    if (!this.cfg.fg && video.paused) this.redrawPaused();
   }
 
   // Reads the current frame into a slot without presenting it: the canvas stays transparent over the playing video until
   // the Pacer's first present, so the kernels' first-use compilation (the warm-up) never shows as a frozen frame.
   probe(video) {
+    if (!this.needsCanvas()) return;
+    if (!this.cfg.fg) { this.pictureFrame(video); return; }
+    if (!this.stream) return;
     const slot = this.stream.nextInput([]);
     if (slot < 0) return;
     this.source.write(slot, video);
@@ -499,9 +555,10 @@ export class Player {
     const wasRunning = this.running;
     this.preparing(false);
     // kernels compiled while running (the classifier, the cadence composite, a tuned conv variant) join the list
-    this.backend?.rememberKernels();
+    if (this.stream) this.backend?.rememberKernels();
     this.running = false;
     this.cancelLoops();
+    this.freePictureInput();
     this.overlay.fadeOut(() => !this.running);
     this.notices.hideAll();
     this.subtitles.sync({ active: false, video: this.video, canvas: this.overlay.canvas, canvasVisible: false });
@@ -540,12 +597,28 @@ export class Player {
     if (!this.needsCanvas()) { this.overlay.passthrough(); return; }
     if (this.busy) return;
     this.busy = true;
+    let stream;
     try {
       const now = performance.now();
       if (!video.videoWidth || !video.videoHeight) return;
+      if (this.cfg.fg && !this.interpolationReady && !this.kernelsReady) {
+        this.prepareInterpolation(this.backend).catch(e => {
+          if (this.running && this.cfg.fg && epoch === this.epoch) this.fail('Framegen error: ' + (e?.message || e), e);
+        });
+      }
+      if (!this.cfg.fg || !this.interpolationReady) {
+        this.present(this.pictureFrame(video), now);
+        this.stats.factor = 1;
+        return;
+      }
+      if (!this.pacer) {
+        this.freePictureInput();
+        this.ensurePacer();
+        this.pacer.modeChange(performance.now());
+      }
       const [w, h] = this.poolDimsNow();
       this.ensureStream(w, h);
-      const stream = this.stream;
+      stream = this.stream;
       const pts = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime * 1000 : now * this.playbackRate();
       const presented = Number(metadata?.presentedFrames);
       let skipped = 0;
@@ -558,16 +631,6 @@ export class Player {
         if (d > 1 && d < 500) this.sourceIntervalMs = this.sourceIntervalMs * 0.9 + d * 0.1;
       }
       this.lastPts = pts;
-
-      if (!this.cfg.fg) {
-        // generation off: the canvas shows the source frame at once (upscale, HDR, sharpening, compare)
-        const slot = stream.nextInput(this.lastShownSource >= 0 ? [this.lastShownSource] : []);
-        if (slot < 0) return;
-        this.source.write(slot, video);
-        this.present(stream.inputTexture(slot), now, { source: slot });
-        this.stats.factor = 1;
-        return;
-      }
 
       const slot = stream.nextInput(this.inUse());
       if (slot < 0) {
@@ -594,7 +657,7 @@ export class Player {
       this.generate(t, flush);
       const p = this.costs.push(stream, slot, pts);
       if (p.statsPending) await this.backend.nudge.wrap(stream.stats());
-      if (stream !== this.stream) return;
+      if (epoch !== this.epoch || stream !== this.stream) return;
       this.prev = slot;
       const history = Math.max(3, Math.ceil(this.pacer.delayMs() / Math.max(1, this.sourceIntervalMs / this.playbackRate())) + 3);
       this.recent.push(slot);
@@ -604,6 +667,7 @@ export class Player {
         while (this.compareRing.length > history) this.compareRing.shift();
       }
     } catch (e) {
+      if (epoch !== this.epoch || (stream && stream !== this.stream)) return;
       if (e?.name === 'OperationError') {
         log('frame skipped (decoder gap)');
       } else if (isCorsError(e)) {
@@ -706,6 +770,7 @@ export class Player {
   // ---------- settings ----------
   applySettings(changed) {
     const has = keys => keys.some(k => changed.has(k));
+    if (changed.has('fg') && !this.cfg.fg) this.releaseInterpolation();
     if (has(STREAM_KEYS)) {
       this.streamKey = '';
       this.poolDims = null;
@@ -719,8 +784,10 @@ export class Player {
     if (changed.has('sr') || changed.has('pictureMode')) this.ensureUpscaler();
     if (has(MODE_KEYS) && this.running) {
       if (this.pacer) this.pacer.reset(performance.now());
-      if (!this.needsCanvas()) this.overlay.passthrough();
-      else this.layoutOverlay(null);
+      if (!this.needsCanvas()) {
+        this.freePictureInput();
+        this.overlay.passthrough();
+      } else this.layoutOverlay(null);
     }
     if (!this.cfg.compare) this.compareRing = [];
     if (changed.has('debug')) this.syncRecording();
@@ -728,19 +795,23 @@ export class Player {
     if (changed.has('showWarnings') && !this.cfg.showWarnings) this.notices.hideWarnings();
     if (changed.has('showWatermark') && !this.cfg.showWatermark) this.notices.watermark.style.display = 'none';
     if (changed.has('subtitleOverlay')) this.layoutOverlay(null);
-    if (has(PRESENT_KEYS)) this.redrawPaused();
+    if (has(MODE_KEYS)) this.redrawPaused();
   }
 
   // A paused video delivers no frames, so a new look would not show until playback resumed.
   redrawPaused() {
     const epoch = this.epoch, presenter = this.presenter;
-    presenter?.ready?.then(() => {
+    return presenter?.ready?.then(() => {
       if (!this.running || epoch !== this.epoch || presenter !== this.presenter) return;
-      if (!this.video?.paused || !this.needsCanvas() || !this.stream || !this.source) return;
+      if (!this.video?.paused || !this.video.videoWidth || !this.video.videoHeight || !this.overlay.fitSupported || !this.needsCanvas()) return;
+      if (!this.cfg.fg) { this.present(this.pictureFrame(this.video), performance.now()); return; }
+      if (!this.stream || !this.source) return;
       const slot = this.stream.nextInput(this.inUse());
       if (slot < 0) return;
       this.source.write(slot, this.video);
       this.present(this.stream.inputTexture(slot), performance.now(), { source: slot });
+    }).catch(e => {
+      if (epoch === this.epoch && this.running && e?.name !== 'OperationError') this.fail('Framegen: could not redraw the paused video', e);
     });
   }
 
@@ -758,6 +829,7 @@ export class Player {
     this.running = false;
     this.cancelLoops();
     clearTimeout(this.tuneTimer);
+    this.freePictureInput();
     this.freeStream();
     try { this.presenter?.destroy(); } catch { /* gone */ }
     try { this.upscaler?.destroy(); } catch { /* gone */ }
@@ -768,6 +840,8 @@ export class Player {
     this.pacerKey = '';
     this.recording = false;
     this.backend = null;
+    this.kernelsReady = null;
+    this.interpolationReady = false;
     this.overlay.hideInstant();
     if (!wasRunning || !video?.isConnected || this.recovering) { this.hooks.onStateChange(false); return; }
     this.recovering = true;
@@ -853,7 +927,8 @@ export class Player {
     const c = this.cfg;
     const r = this.report();
     const video = this.video || this.hooks.candidateVideo();
-    const srNeeded = !this.spec || Upscaler.needed(this.spec.width, this.spec.height, this.overlay.width, this.overlay.height);
+    const frameSize = this.spec || this.pictureInput;
+    const srNeeded = !frameSize || Upscaler.needed(frameSize.width, frameSize.height, this.overlay.width, this.overlay.height);
     const srState = c.sr ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
     const lines = [
       `GPU: ${this.sys.gpu}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
@@ -879,6 +954,7 @@ export class Player {
 
   status() {
     const r = this.report();
+    const frameSize = this.spec || this.pictureInput;
     return {
       running: this.running,
       gpu: this.sys.gpu, integrated: this.sys.integrated, f16: this.sys.f16,
@@ -888,7 +964,7 @@ export class Player {
       drops: this.stats.drops, res: this.cfg.res,
       rateLabel: this.rateLabel(), rateState: this.rateState(r),
       presentationMode: this.needsCanvas() ? 'canvas' : 'native',
-      pool: this.spec ? { width: this.spec.width, height: this.spec.height, video: this.spec.video } : null,
+      pool: frameSize ? { width: frameSize.width, height: frameSize.height, video: !!frameSize.video } : null,
       pacer: r,
     };
   }

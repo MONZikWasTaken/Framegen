@@ -56,7 +56,7 @@ function fixture() {
   player.present = texture => drawn.push(texture);
   player.armVideoFrames = player.armTicks = player.scheduleTune = noop;
   const frame = (mediaTime = 1) => player.onVideoFrame({ mediaTime }, player.epoch);
-  return { player, video, overlay, cfg, interp, textures, drawn, writes, frame };
+  return { player, video, overlay, cfg, backend, interp, textures, drawn, writes, frame };
 }
 
 test('Vivid without FG reuses one source texture and does not load or open the interpolation pipeline', async () => {
@@ -68,23 +68,37 @@ test('Vivid without FG reuses one source texture and does not load or open the i
   assert.deepEqual(interp, { models: 0, streams: 0, pacers: 0, released: 0, pushed: 0 });
   assert.equal(textures.length, 1);
   assert.equal(textures[0].desc.size[0] * textures[0].desc.size[1] * 4, 8_294_400);
+  assert.deepEqual(player.status().pool, { width: 1920, height: 1080, video: false });
   assert.deepEqual(drawn, [textures[0], textures[0]]);
   assert.ok(writes.every(([texture, input]) => texture === textures[0] && input === video));
 });
 
-test('switching FG on starts interpolation, and switching it off releases the stream', async () => {
-  const { player, video, cfg, interp, textures, drawn, frame } = fixture();
+test('Picture Mode stays live while FG prepares, then can switch back and release interpolation', async () => {
+  const { player, video, cfg, backend, interp, textures, drawn, frame } = fixture();
+  const { promise, resolve } = Promise.withResolvers();
+  backend.loadModel = async () => { interp.models++; await promise; };
   await player.start(video);
   await frame();
   cfg.fg = true;
   player.applySettings(new Set(['fg']));
   await frame(2);
+  assert.equal(drawn.at(-1), textures[0]);
+  assert.equal(interp.streams, 0);
+  resolve();
+  await player.kernelsReady;
+  await frame(3);
   assert.deepEqual(interp, { models: 1, streams: 1, pacers: 1, released: 0, pushed: 1 });
   assert.equal(textures[0].destroyed, true);
 
+  const classification = Promise.withResolvers();
+  player.backend.nudge = { wrap: p => p };
+  player.stream.classify = () => classification.promise;
+  const interrupted = frame(4);
   cfg.fg = false;
   player.applySettings(new Set(['fg']));
-  await frame(3);
+  classification.reject(new Error('retired stream'));
+  await interrupted;
+  await frame(5);
   assert.equal(interp.released, 1);
   assert.equal(player.pacer, null);
   assert.equal(drawn.at(-1), textures[1]);
