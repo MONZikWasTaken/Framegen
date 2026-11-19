@@ -212,6 +212,19 @@ test('rebuilding a stream restarts GPU estimates and ignores samples from retire
   assert.deepEqual(gpuSamples, [[1, 'mid', 1], [3, 'mid', 3]]);
 });
 
+test('a browser callback cap is not reported as the physical display refresh rate', () => {
+  const { player, cfg } = fixture();
+  Object.assign(cfg, { factor: 'target', targetFps: 120 });
+  const display = { measured: true, raw_hz: 59.99, display_hz: 60 };
+  const report = { display, plan: { state: 'active', interpolation_allowed: true, clamp: 'display', output_hz: 60 },
+    mid_cost_ms: 1, pair_cost_ms: 1 };
+  player.report = () => report;
+  assert.match(player.rateState(report), /browser callback limit/);
+  assert.equal(player.status().browserCallbackHz, 59.99);
+  display.measured = false;
+  assert.equal(player.status().browserCallbackHz, null);
+});
+
 for (const waitingOn of ['classification', 'cadence stats']) {
   test(`FG can restart with old ${waitingOn} pending without unblocking a busy new stream`, async () => {
     const { player, video, cfg, backend, interp, frame } = fixture();
