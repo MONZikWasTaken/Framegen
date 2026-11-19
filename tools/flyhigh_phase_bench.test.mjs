@@ -12,7 +12,7 @@ test('the phase benchmark changes only the render path at matched model and repa
   assert.deepEqual(rest[0].internal, [848, 480]);
   assert.equal(rest[0].staticProtection, true);
   assert.equal(rest[0].repair, 1);
-  assert.equal(rest[0].nearestSource, false);
+  assert.equal(rest[0].nearestSource, true);
   assert.throws(() => phaseCases(848, 480), /smaller/);
 });
 
