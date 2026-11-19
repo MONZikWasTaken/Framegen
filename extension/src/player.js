@@ -62,6 +62,7 @@ export class Player {
     this.source = null;
     this.pictureInput = null;
     this.costs = null;
+    this.costSink = null;
     this.presenter = null;
     this.upscaler = null;
     this.poolDims = null;
@@ -244,6 +245,7 @@ export class Player {
     const spec = this.buildSpec(width, height);
     const key = JSON.stringify(spec);
     if (this.stream && key === this.streamKey) return false;
+    const replacing = !!this.stream;
     const now = performance.now();
     this.freeStream();
     this.stream = this.backend.openStream(spec);
@@ -256,7 +258,11 @@ export class Player {
     if (this.pacer) {
       this.ensurePacer(now);
       this.pacer.reset(now);
-      this.costs = new this.backend.adapters.CostSampler(this.pacer, this.backend.nudge);
+      if (replacing) this.pacer.modeChange(now);
+      const pacer = this.pacer, stream = this.stream;
+      this.costSink = { costSample: (...sample) =>
+        this.stream === stream && this.pacer === pacer && pacer.costSample(...sample) };
+      this.costs = new this.backend.adapters.CostSampler(this.costSink, this.backend.nudge);
     }
     log('stream', `${width}x${height}`, spec.video ? 'video' : 'realtime', `rung ${spec.res}`, `repair ${spec.repair}`, spec.tune ? 'tuned' : 'untuned', this.backend.class);
     if (!spec.tune) this.scheduleTune(spec);
@@ -264,6 +270,7 @@ export class Player {
   }
 
   freeStream() {
+    this.costSink = null;
     if (!this.stream) return;
     try { this.stream.free(); } catch { /* already freed */ }
     this.stream = null;
@@ -422,7 +429,7 @@ export class Player {
     let tex = texture;
     if (this.wantsUpscale() && this.backend.f16 && this.upscaler?.ready
         && Upscaler.needed(texture.width, texture.height, this.overlay.width, this.overlay.height)) {
-      tex = this.upscaler.process(texture, now, this.pacer) || texture;
+      tex = this.upscaler.process(texture, now, this.costSink) || texture;
     }
     let compare = null;
     if (this.cfg.compare && this.stream) {
@@ -763,6 +770,10 @@ export class Player {
           this.present(this.stream.outputTexture(slot), now);
           this.outputSlots[slot].token = null;
           this.outputSlots[slot].freeAt = 0;
+        } else if (this.lastShownSource >= 0) {
+          this.present(this.stream.inputTexture(this.lastShownSource), now, { source: this.lastShownSource });
+        } else {
+          this.overlay.passthrough();
         }
       } else {
         this.present(this.stream.inputTexture(f.source), now, { source: f.source });
