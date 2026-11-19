@@ -67,7 +67,7 @@ export class Player {
     this.poolDims = null;
     this.prev = -1;
     this.recent = [];
-    this.outputsFreeAt = [];
+    this.outputSlots = [];
     this.compareRing = [];
     this.lastShownSource = -1;
     this.busyEpoch = null;
@@ -288,7 +288,7 @@ export class Player {
   resetSlots() {
     this.prev = -1;
     this.recent = [];
-    this.outputsFreeAt = [];
+    this.outputSlots = [];
     this.compareRing = [];
     this.lastShownSource = -1;
     this.lastPts = null;
@@ -699,15 +699,18 @@ export class Player {
 
   // ---------- generated frames ----------
   acquireOutput(now, dueMs) {
-    const free = this.outputsFreeAt;
+    const slots = this.outputSlots;
     const count = this.stream.report().outputs;
-    while (free.length < count) free.push(0);
-    let slot = free.findIndex(t => t <= now);
+    while (slots.length < count) slots.push({ token: null, freeAt: 0 });
+    let slot = slots.findIndex(output => output.freeAt <= now);
     if (slot < 0) {
-      if (count < MAX_OUTPUTS) { slot = this.stream.addOutput(); free.push(0); this.presenter?.invalidate(); }
-      else { slot = 0; for (let i = 1; i < free.length; i++) if (free[i] < free[slot]) slot = i; }
+      if (count >= MAX_OUTPUTS) return -1;
+      slot = this.stream.addOutput();
+      slots[slot] = { token: null, freeAt: 0 };
+      this.presenter?.invalidate();
     }
-    free[slot] = Math.max(now, dueMs) + OUTPUT_HOLD_MS;
+    slots[slot].token = null;
+    slots[slot].freeAt = Math.max(now, dueMs) + OUTPUT_HOLD_MS;
     return slot;
   }
 
@@ -715,10 +718,21 @@ export class Player {
     if (!requests || !requests.length) return;
     for (const r of requests) {
       const out = this.acquireOutput(now, r.due_ms);
+      if (out < 0) {
+        this.pacer.skipped(r.id);
+        continue;
+      }
       let written = false;
       try { written = this.costs.generate(this.stream, r, out); } catch (e) { log('generate', e); }
-      if (written) this.pacer.generated(now, r.id, out);
-      else { this.pacer.skipped(r.id); this.outputsFreeAt[out] = 0; }
+      const slot = this.outputSlots[out];
+      if (written) {
+        // The Pacer's output ID is an opaque u32. A late tick must name the frame, even after the texture is recycled.
+        slot.token = r.id >>> 0;
+        this.pacer.generated(now, r.id, slot.token);
+      } else {
+        slot.freeAt = 0;
+        this.pacer.skipped(r.id);
+      }
     }
   }
 
@@ -744,8 +758,12 @@ export class Player {
     if (tick.present) {
       const f = tick.present.frame;
       if ('output' in f) {
-        this.present(this.stream.outputTexture(f.output), now);
-        this.outputsFreeAt[f.output] = 0;
+        const slot = this.outputSlots.findIndex(output => output.token === f.output);
+        if (slot >= 0) {
+          this.present(this.stream.outputTexture(slot), now);
+          this.outputSlots[slot].token = null;
+          this.outputSlots[slot].freeAt = 0;
+        }
       } else {
         this.present(this.stream.inputTexture(f.source), now, { source: f.source });
       }
