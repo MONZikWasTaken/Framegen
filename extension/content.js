@@ -1582,9 +1582,10 @@
     dedupSampler = null;
     dedupReads = [];
     dedupReadIdx = 0;
-    capTex = null;
-    downPipe = null;
-    capBgs = new WeakMap();
+    capturePipe = null;
+    captureViews = new WeakMap();
+    captureCanvas = null;
+    captureContext = null;
     sys.hdrOn = false;
 
     try { overlayCtx?.unconfigure(); } catch {}
@@ -1904,45 +1905,47 @@
     return (Math.abs(stablePoolDims[0] - dims[0]) <= tolW
         && Math.abs(stablePoolDims[1] - dims[1]) <= tolH) ? stablePoolDims : dims;
   }
-  // copyExternalImageToTexture copies 1:1. Whenever the source and presentation
-  // backing differ, capture the whole source then downscale once into the pool.
-  let capTex = null, downPipe = null, capBgs = new WeakMap();
+  let capturePipe = null, captureViews = new WeakMap();
+  let captureCanvas = null, captureContext = null;
   function captureFrame(dst, vw, vh) {
     markPresentationTextureWrite(dst);
-    const fw = videoEl.videoWidth, fh = videoEl.videoHeight;
-    if (fw === vw && fh === vh) {
-      device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: dst }, [vw, vh]);
+    if (typeof device.importExternalTexture !== 'function') {
+      if (!captureCanvas || captureCanvas.width !== vw || captureCanvas.height !== vh) {
+        captureCanvas = new OffscreenCanvas(vw, vh);
+        captureContext = captureCanvas.getContext('2d', { alpha: false });
+      }
+      captureContext.drawImage(videoEl, 0, 0, vw, vh);
+      try {
+        device.queue.copyExternalImageToTexture({ source: captureCanvas }, { texture: dst }, [vw, vh]);
+      } catch (e) {
+        captureCanvas = null;
+        captureContext = null;
+        throw e;
+      }
       return;
     }
-    if (!capTex || capTex.width !== fw || capTex.height !== fh) {
-      if (capTex) capTex.destroy();
-      capTex = device.createTexture({ label: 'fccap', size: [fw, fh], format: 'rgba8unorm',
-        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
-          | GPUTextureUsage.RENDER_ATTACHMENT });
-      capBgs = new WeakMap(); // old bind groups reference the destroyed capTex
-    }
-    device.queue.copyExternalImageToTexture({ source: videoEl }, { texture: capTex }, [fw, fh]);
-    if (!downPipe) {
-      const mod = device.createShaderModule({ code: BLIT_VS + `
+    if (!capturePipe) {
+      const mod = device.createShaderModule({ code: BLIT_VS.replace('texture_2d<f32>', 'texture_external') + `
 @fragment fn fs(v: VOut) -> @location(0) vec4<f32> {
-  return textureSampleLevel(tex, samp, v.uv, 0.0);
+  return vec4<f32>(textureSampleBaseClampToEdge(tex, samp, v.uv).rgb, 1.0);
 }` });
-      downPipe = device.createRenderPipeline({ layout: 'auto',
+      capturePipe = device.createRenderPipeline({ layout: 'auto',
         vertex: { module: mod, entryPoint: 'vs' },
         fragment: { module: mod, entryPoint: 'fs', targets: [{ format: 'rgba8unorm' }] } });
     }
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginRenderPass({ colorAttachments: [{ view: dst.createView(),
-      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
-    pass.setPipeline(downPipe);
-    let cbg = capBgs.get(dst); // per-frame createBindGroup was pure garbage-churn at >FHD
-    if (!cbg) {
-      cbg = device.createBindGroup({ layout: downPipe.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: capTex.createView() },
-          { binding: 1, resource: blitSampler }] });
-      capBgs.set(dst, cbg);
+    const external = device.importExternalTexture({ source: videoEl });
+    const bindGroup = device.createBindGroup({ layout: capturePipe.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: external }, { binding: 1, resource: blitSampler }] });
+    let view = captureViews.get(dst);
+    if (!view) {
+      view = dst.createView();
+      captureViews.set(dst, view);
     }
-    pass.setBindGroup(0, cbg);
+    const enc = device.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view,
+      loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
+    pass.setPipeline(capturePipe);
+    pass.setBindGroup(0, bindGroup);
     pass.draw(3);
     pass.end();
     device.queue.submit([enc.finish()]);
@@ -3520,11 +3523,6 @@ fn sampleColor(uv: vec2<f32>) -> vec3<f32> {
       nextDelayMs = Math.min(nextDelayMs, historyBudgetMs);
       ensureFrameTextures(vw, vh, sourcePoolCount);
       delayMs = nextDelayMs;
-      // note on importExternalTexture (evaluated, rejected): interpolation needs the
-      // PREVIOUS frame too, and external textures expire with the video frame - the
-      // copy is unavoidable for history and for presenting source frames. Prep/dedup
-      // reads scale with MODEL resolution, not source, so reading the external
-      // texture instead of the copy saves nothing measurable.
       // NEVER overwrite a texture that is still queued for presentation or needed
       // as an interpolation input - reuse of live textures = timeline soup
       let guard = frameTex.length;
