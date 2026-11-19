@@ -355,7 +355,7 @@ export class Player {
     const s = Math.min(1, 1920 / fw, 1080 / fh);
     const sw = Math.round(fw * s), sh = Math.round(fh * s);
     const ow = this.overlay.width, oh = this.overlay.height;
-    if (this.cfg.sr && this.backend.f16 && Upscaler.needed(sw, sh, ow, oh)) return [sw, sh];
+    if (this.wantsUpscale() && this.backend.f16 && Upscaler.needed(sw, sh, ow, oh)) return [sw, sh];
     if (ow && oh) return [ow, oh];
     return [sw, sh];
   }
@@ -407,8 +407,12 @@ export class Player {
     this.sys.hdrOn = this.presenter.configure({ hdr: this.cfg.hdr && this.sys.hdrOk, sharpness: this.cfg.sharpness, pictureMode: this.cfg.pictureMode });
   }
 
+  wantsUpscale() {
+    return this.cfg.sr || this.cfg.pictureMode === 'detail';
+  }
+
   ensureUpscaler() {
-    if (!(this.cfg.sr || this.cfg.pictureMode === 'detail') || !this.backend?.f16) return;
+    if (!this.wantsUpscale() || !this.backend?.f16) return;
     if (!this.upscaler) this.upscaler = new Upscaler(this.backend.device, SR_URLS, { nudge: this.backend.nudge, log });
     this.upscaler.load().catch(e => log('SR', e));
   }
@@ -416,7 +420,7 @@ export class Player {
   present(texture, now, { source = -1 } = {}) {
     if (!this.presenter || !this.overlay.fitSupported) return;
     let tex = texture;
-    if ((this.cfg.sr || this.cfg.pictureMode === 'detail') && this.backend.f16 && this.upscaler?.ready
+    if (this.wantsUpscale() && this.backend.f16 && this.upscaler?.ready
         && Upscaler.needed(texture.width, texture.height, this.overlay.width, this.overlay.height)) {
       tex = this.upscaler.process(texture, now, this.pacer) || texture;
     }
@@ -929,7 +933,7 @@ export class Player {
     const video = this.video || this.hooks.candidateVideo();
     const frameSize = this.spec || this.pictureInput;
     const srNeeded = !frameSize || Upscaler.needed(frameSize.width, frameSize.height, this.overlay.width, this.overlay.height);
-    const srState = c.sr ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
+    const srState = this.wantsUpscale() ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
     const lines = [
       `GPU: ${this.sys.gpu}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
       `engine: ${this.backend ? this.backend.class : (this.blocked ? 'unavailable (' + this.blocked + ')' : 'not loaded')}`,
