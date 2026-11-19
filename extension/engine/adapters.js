@@ -69,37 +69,32 @@ function draw(device, pipe, bindGroup, view) {
   device.queue.submit([enc.finish()]);
 }
 
-/** Writes a <video>'s current frame into a stream's input slot: copyExternalImageToTexture where the browser takes a
- * video source and the frame has the slot's size, an importExternalTexture render pass into the slot otherwise (Firefox
- * rejects video sources; a frame of another size is scaled by the pass, the copy is 1:1 only). A browser with neither
- * (Firefox before external textures) gets the frame through a 2D canvas, which costs a CPU copy per frame; `path`
- * names the one in use: 'copy', 'external' or 'canvas'. */
+/** Renders the current <video> frame into a persistent RGBA slot, scaling to fit the slot. Prefer sampling an
+ * external texture: direct video copies can misalign chroma on Chromium's hardware-decoded frames.
+ * Browsers without external textures use a 2D canvas. */
 export class VideoSource {
   constructor(device, stream) {
-    this.device = device; this.stream = stream; this.copyWorks = !FIREFOX; this.pipe = null; this.sampler = null; this.views = new Map();
+    this.device = device; this.stream = stream; this.pipe = null; this.sampler = null; this.views = new Map();
     this.external = typeof device.importExternalTexture === 'function'; this.canvas = null; this.ctx = null;
-    this.path = this.copyWorks ? 'copy' : this.external ? 'external' : 'canvas';
+    this.path = this.external ? 'external' : 'canvas';
   }
   write(slot, video) {
     const tex = this.stream.inputTexture(slot);
-    if (this.copyWorks && video.videoWidth === tex.width && video.videoHeight === tex.height) {
-      try { this.stream.pushVideo(slot, video); return; } catch (e) {
-        if (!(e instanceof TypeError)) throw e;
-        console.warn('copyExternalImageToTexture rejected the video, using importExternalTexture', e);
-        this.copyWorks = false;
-      }
-    }
     if (!this.external) {
       if (!this.canvas || this.canvas.width !== tex.width || this.canvas.height !== tex.height) {
         this.canvas = new OffscreenCanvas(tex.width, tex.height);
         this.ctx = this.canvas.getContext('2d', { alpha: false });
       }
       this.ctx.drawImage(video, 0, 0, tex.width, tex.height);
-      this.device.queue.copyExternalImageToTexture({ source: this.canvas }, { texture: tex }, [tex.width, tex.height]);
-      this.path = 'canvas';
+      try {
+        this.device.queue.copyExternalImageToTexture({ source: this.canvas }, { texture: tex }, [tex.width, tex.height]);
+      } catch (e) {
+        // A CORS retry must start with an origin-clean canvas.
+        this.canvas = null; this.ctx = null;
+        throw e;
+      }
       return;
     }
-    this.path = 'external';
     const d = this.device;
     if (!this.pipe) {
       this.sampler = d.createSampler({ magFilter: 'linear', minFilter: 'linear' });
