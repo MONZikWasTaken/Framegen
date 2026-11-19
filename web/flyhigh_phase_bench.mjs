@@ -13,11 +13,10 @@ export function phaseCases(width, height) {
   if (!common.fastRender || common.internal.every((n, i) => Math.ceil(n / 32) === Math.ceil([width, height][i] / 32))) {
     throw new Error('The padded network resolution must be smaller than the frame');
   }
-  const matched = { ...common, nearestSource: false };
   return [
-    ['fast-linear', matched],
-    ['direct-exact', { ...matched, linearT: false }],
-    ['full-buffer-exact', { ...matched, fastRender: false, linearT: false }],
+    ['fast-linear', common],
+    ['direct-exact', { ...common, linearT: false }],
+    ['full-buffer-exact', { ...common, fastRender: false, linearT: false }],
   ];
 }
 
