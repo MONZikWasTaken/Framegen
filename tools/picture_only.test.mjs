@@ -15,6 +15,7 @@ function fixture() {
     ensure: noop, show: noop, resetGeometry: noop, fadeOut: noop, position: noop, passthrough: noop,
   };
   const interp = { models: 0, streams: 0, pacers: 0, released: 0, pushed: 0 };
+  let pacersFreed = 0;
   const fgTexture = {};
   const backend = {
     device: {
@@ -42,7 +43,8 @@ function fixture() {
     },
     createPacer() {
       interp.pacers++;
-      return { reset: noop, modeChange: noop, setOptions: noop, sourceFrame: () => [], delayMs: () => 0, free: noop };
+      return { reset: noop, modeChange: noop, setOptions: noop, sourceFrame: () => [], delayMs: () => 0,
+        free() { pacersFreed++; } };
     },
     warmUp: async () => {}, rememberKernels: noop,
   };
@@ -56,7 +58,7 @@ function fixture() {
   player.present = texture => drawn.push(texture);
   player.armVideoFrames = player.armTicks = player.scheduleTune = noop;
   const frame = (mediaTime = 1) => player.onVideoFrame({ mediaTime }, player.epoch);
-  return { player, video, overlay, cfg, backend, interp, textures, drawn, writes, frame };
+  return { player, video, overlay, cfg, backend, interp, textures, drawn, writes, frame, pacersFreed: () => pacersFreed };
 }
 
 test('Vivid without FG reuses one source texture and does not load or open the interpolation pipeline', async () => {
@@ -121,3 +123,60 @@ test('a paused video redraws its Picture Mode, and a resize and stop release the
   player.stop();
   assert.equal(textures[1].destroyed, true);
 });
+
+test('stopping FG frees the stream and pacer once, and re-enabling does not reload the model', async () => {
+  const { player, video, cfg, interp, frame, pacersFreed } = fixture();
+  cfg.fg = true;
+  await player.start(video);
+  await frame();
+
+  player.stop();
+  player.stop();
+  assert.equal(interp.released, 1);
+  assert.equal(pacersFreed(), 1);
+  assert.equal(player.status().pool, null);
+  assert.equal(player.source, null);
+
+  await player.start(video);
+  await frame(2);
+  assert.deepEqual(interp, { models: 1, streams: 2, pacers: 2, released: 1, pushed: 2 });
+  player.stop();
+});
+
+for (const waitingOn of ['classification', 'cadence stats']) {
+  test(`FG can restart with old ${waitingOn} pending without unblocking a busy new stream`, async () => {
+    const { player, video, cfg, backend, interp, frame } = fixture();
+    cfg.fg = true;
+    backend.nudge = { wrap: p => p };
+    await player.start(video);
+    await frame(1);
+
+    const oldReadback = Promise.withResolvers();
+    if (waitingOn === 'classification') {
+      player.stream.classify = () => oldReadback.promise;
+    } else {
+      player.stream.classify = async () => ({ kind: 'motion' });
+      player.stream.stats = () => oldReadback.promise;
+      player.costs.push = () => ({ statsPending: true });
+    }
+    const oldFrame = frame(2);
+    await Promise.resolve();
+    player.stop();
+    await player.start(video);
+    await frame(3);
+    assert.equal(interp.pushed, 2);
+
+    const next = Promise.withResolvers();
+    let classifyCalls = 0;
+    player.stream.classify = () => { classifyCalls++; return next.promise; };
+    const newFrame = frame(4);
+    oldReadback.resolve({ kind: 'motion' });
+    await oldFrame;
+    const skippedFrame = frame(5);
+    next.resolve({ kind: 'motion' });
+    await Promise.all([newFrame, skippedFrame]);
+    assert.equal(classifyCalls, 1);
+    assert.equal(interp.pushed, 3);
+    player.stop();
+  });
+}
