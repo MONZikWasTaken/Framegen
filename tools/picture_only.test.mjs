@@ -16,11 +16,11 @@ function fixture() {
   };
   const interp = { models: 0, streams: 0, pacers: 0, released: 0, pushed: 0 };
   let pacersFreed = 0;
-  const fgTexture = {};
   const backend = {
     device: {
       createTexture(desc) {
-        const texture = { desc, destroyed: false, destroy() { this.destroyed = true; } };
+        const [width, height] = desc.size;
+        const texture = { desc, width, height, destroyed: false, destroy() { this.destroyed = true; } };
         textures.push(texture);
         return texture;
       },
@@ -37,9 +37,11 @@ function fixture() {
     async loadModel() { interp.models++; },
     precompile: async () => {},
     sessionOptions: () => ({}), tuneKey: () => 'fake',
-    openStream() {
+    openStream({ width, height }) {
       interp.streams++;
-      return { nextInput: () => 0, inputTexture: () => fgTexture, free() { interp.released++; } };
+      const fgTexture = { width, height };
+      return { nextInput: () => 0, inputTexture: () => fgTexture, classify: async () => ({ kind: 'motion' }),
+        free() { interp.released++; } };
     },
     createPacer() {
       interp.pacers++;
@@ -74,6 +76,48 @@ test('Vivid without FG reuses one source texture and does not load or open the i
   assert.deepEqual(drawn, [textures[0], textures[0]]);
   assert.ok(writes.every(([texture, input]) => texture === textures[0] && input === video));
 });
+
+for (const fg of [false, true]) {
+  test(`Detail Boost feeds TinySR the original 720p frames at 1080p (FG ${fg ? 'on' : 'off'})`, async () => {
+    const { player, video, overlay, cfg, backend, interp, drawn, frame } = fixture();
+    Object.assign(video, { videoWidth: 1280, videoHeight: 720 });
+    Object.assign(cfg, { fg, pictureMode: 'vivid', sr: false });
+    backend.f16 = true;
+    backend.nudge = { wrap: p => p };
+    player.hooks.splitX = () => 0.5;
+    overlay.reveal = () => {};
+    const srInputs = [], upscaled = { width: 2560, height: 1440 };
+    player.upscaler = {
+      ready: true,
+      load: async () => {},
+      process(texture) { srInputs.push([texture.width, texture.height]); return upscaled; },
+    };
+    const mockPresenter = player.ensurePresenter;
+    player.ensurePresenter = () => {
+      mockPresenter();
+      player.presenter.present = texture => { drawn.push(texture); return true; };
+    };
+    player.present = Player.prototype.present.bind(player);
+    await player.start(video);
+    await frame(1);
+    assert.equal(drawn.at(-1).width, 1920);
+
+    cfg.pictureMode = 'detail';
+    player.applySettings(new Set(['pictureMode']));
+    await frame(2);
+    assert.deepEqual(srInputs, [[1280, 720]]);
+    assert.equal(drawn.at(-1), upscaled);
+    assert.match(player.statusLines().find(line => line.startsWith('FG:')), /upscale: on x2/);
+    assert.equal(interp.streams, fg ? 2 : 0);
+
+    cfg.pictureMode = 'vivid';
+    player.applySettings(new Set(['pictureMode']));
+    await frame(3);
+    assert.equal(srInputs.length, 1);
+    assert.equal(drawn.at(-1).width, 1920);
+    player.stop();
+  });
+}
 
 test('Picture Mode stays live while FG prepares, then can switch back and release interpolation', async () => {
   const { player, video, cfg, backend, interp, textures, drawn, frame } = fixture();
