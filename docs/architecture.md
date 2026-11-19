@@ -11,7 +11,7 @@ Per source frame (`requestVideoFrameCallback`), in `src/player.js`:
 1. the pool size for this frame (the canvas backing, capped at 1920 x 1080; the native size when the upscaler needs
    small input), dead-banded so player chrome does not rebuild the stream every tick;
 2. `stream.nextInput(inUse)`: a slot the stream no longer reads and the host no longer shows; the frame goes in through
-   the adapters' `VideoSource` (a copy at equal size, an `importExternalTexture` pass otherwise and in Firefox);
+   the adapters' `VideoSource` (an `importExternalTexture` pass, or a 2D canvas on browsers without external textures);
 3. `stream.classify(previous, slot)`: motion, cut or hold (the held-frame thresholds are on in Anime mode);
 4. `pacer.sourceFrame(now, { id, ptsMs, kind, motion, skipped })`: the requests it returns are the previous pair's mids
    that must go out before the pair changes; they are generated at once;
