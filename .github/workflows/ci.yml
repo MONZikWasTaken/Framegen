@@ -29,6 +29,10 @@ jobs:
         shell: pwsh
         run: |
           ./tools/build_extension.ps1
+          Expand-Archive framegen-firefox.zip "$env:RUNNER_TEMP/framegen-firefox"
+          $firefox = Get-Content "$env:RUNNER_TEMP/framegen-firefox/manifest.json" -Raw | ConvertFrom-Json
+          $required = $firefox.browser_specific_settings.gecko.data_collection_permissions.required
+          if (($required -join ',') -cne 'none') { throw 'Firefox package must declare no data collection.' }
           git diff --exit-code -- extension/rt extension/assets
 
       - uses: dtolnay/rust-toolchain@stable

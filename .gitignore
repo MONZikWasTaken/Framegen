@@ -34,6 +34,7 @@ extension/_metadata/
 
 framegen-extension.zip
 framegen-webstore.zip
+framegen-chrome.zip
 framegen-firefox.zip
 
 docs/media/*.mp4

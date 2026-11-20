@@ -41,10 +41,12 @@ on every display tick. A generated frame costs about a millisecond on a mid-rang
 
 **[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)**.
 
-Manual install: download `framegen-extension.zip` from the
-[latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest), extract it, open `chrome://extensions`,
-enable **Developer mode**, click **Load unpacked** and select the extracted folder. Firefox: `framegen-firefox.zip`
-from the same release, loaded through `about:debugging` until it is listed on AMO.
+Download the archive for your browser from the [latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest).
+
+- **Chrome and Edge** — extract `framegen-chrome.zip` to a folder. Open `chrome://extensions` or `edge://extensions`,
+  enable **Developer mode**, click **Load unpacked**, and select the folder containing `manifest.json`.
+- **Firefox** — open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on**, and select
+  `framegen-firefox.zip`.
 
 Requirements: **Chrome or Edge 121+** (Windows, macOS with Apple Silicon, Linux) or **Firefox 141+ on Windows**, and
 a GPU with WebGPU support. GPUs without `shader-f16` run the engine's f32 kernels, slower but the same picture.
@@ -115,8 +117,8 @@ policy that Chrome also applies to extensions' WebAssembly. Framegen cannot run 
 
 ```pwsh
 node --test tools/*.test.mjs
-pwsh tools/build_extension.ps1                      # validates every payload, writes the three release zips
-pwsh tools/build_extension.ps1 -EngineRepo <path>   # also refreshes extension/engine from an engine checkout
+pwsh tools/build_extension.ps1                      # validates every payload, writes Chrome and Firefox ZIPs
+pwsh tools/build_extension.ps1 -EngineRepo <path>   # also refreshes FlyHigh's browser module and model
 ```
 
 `extension/` is directly loadable (Load unpacked). [docs/architecture.md](docs/architecture.md) explains how the host
