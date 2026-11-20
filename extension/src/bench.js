@@ -37,7 +37,7 @@ export function installBenchBridge({ token, settings, player, version, biggestVi
         }
         case 'prepare': {
           if (player.isRunning()) throw new Error('prepare requires a stopped product path');
-          const backend = await player.ensureBackend();
+          const backend = await player.preload();
           return { engine: backend.class, gpu: backend.name, timestamps: backend.timestamps };
         }
         case 'start': {
