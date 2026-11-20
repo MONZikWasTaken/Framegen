@@ -1,7 +1,6 @@
 [CmdletBinding()]
 param(
-    # A checkout of the FlyHigh engine: its browser module (examples/web/pkg, built by tools/build_web.sh), the adapters and the
-    # model files are copied into extension/engine before validation.
+    # A checkout of the FlyHigh engine with its built browser module and model files.
     [string] $EngineRepo
 )
 
@@ -9,7 +8,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # Assemble the extension. The tracked extension/ tree is directly loadable; this script validates every bundled
-# payload and creates the release archives for Chrome, the Web Store and Firefox.
+# payload and creates separate Chrome and Firefox release archives.
 $root = (Resolve-Path (Split-Path $PSScriptRoot -Parent)).Path
 $extensionRoot = Join-Path $root 'extension'
 $engineRoot = Join-Path $extensionRoot 'engine'
@@ -42,7 +41,7 @@ if ($EngineRepo) {
     $copies = @(
         @{ From = 'examples/web/pkg/flyhigh_web.js'; To = 'flyhigh_web.js' },
         @{ From = 'examples/web/pkg/flyhigh_web_bg.wasm'; To = 'flyhigh_web_bg.wasm' },
-        @{ From = 'crates/flyhigh-web/js/adapters.js'; To = 'adapters.js' },
+        # Keep Framegen's VideoSource path, which avoids Chromium's hardware-decoded chroma copy bug.
         @{ From = 'models/graph.json'; To = 'graph.json' },
         @{ From = 'models/flyhighfg.json'; To = 'flyhighfg.json' },
         @{ From = 'models/flyhighfg.bin'; To = 'flyhighfg.bin' },
@@ -185,20 +184,16 @@ if (!$stage.StartsWith($tempBase, [System.StringComparison]::OrdinalIgnoreCase))
 }
 
 try {
-    $stageDir = Join-Path $stage 'framegen-extension'
+    $stageDir = Join-Path $stage 'framegen-chrome'
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
     Get-ChildItem -LiteralPath $extensionRoot | Where-Object { $_.Name -notlike '_*' } |
         ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stageDir $_.Name) -Recurse -Force
         }
 
-    $zip = Join-Path $root 'framegen-extension.zip'
-    Compress-Archive -Path $stageDir -DestinationPath $zip -Force
-    Write-Host ("zip: {0} ({1:N1} MB)" -f $zip, ((Get-Item -LiteralPath $zip).Length / 1MB))
-
-    $storeZip = Join-Path $root 'framegen-webstore.zip'
-    Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $storeZip -Force
-    Write-Host ("store zip: {0} ({1:N1} MB)" -f $storeZip, ((Get-Item -LiteralPath $storeZip).Length / 1MB))
+    $chromeZip = Join-Path $root 'framegen-chrome.zip'
+    New-ForwardSlashZip -SourceDir $stageDir -ZipPath $chromeZip
+    Write-Host ("chrome zip: {0} ({1:N1} MB)" -f $chromeZip, ((Get-Item -LiteralPath $chromeZip).Length / 1MB))
 
     # Firefox build: the same tree with Gecko manifest keys: an event-page background (no MV3 service worker there),
     # the add-on id AMO signs, no Chrome-only version_name.
@@ -209,7 +204,11 @@ try {
     $firefoxManifest.background = [pscustomobject]@{ scripts = @('background.js') }
     $firefoxManifest.PSObject.Properties.Remove('version_name')
     $firefoxManifest | Add-Member -Force -NotePropertyName browser_specific_settings -NotePropertyValue (
-        [pscustomobject]@{ gecko = [pscustomobject]@{ id = 'framegen@flyhigh.dev'; strict_min_version = '141.0' } })
+        [pscustomobject]@{ gecko = [pscustomobject]@{
+            id = 'framegen@flyhigh.dev'
+            strict_min_version = '141.0'
+            data_collection_permissions = [pscustomobject]@{ required = @('none') }
+        } })
     [System.IO.File]::WriteAllText($firefoxManifestPath, ($firefoxManifest | ConvertTo-Json -Depth 20),
         (New-Object System.Text.UTF8Encoding $false))
     $firefoxZip = Join-Path $root 'framegen-firefox.zip'
