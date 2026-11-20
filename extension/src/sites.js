@@ -3,7 +3,7 @@
 
 // Sites whose own DOM controls are known to render above the overlay: no second control bar there. Everywhere else
 // (jut.su-style players put their bar below the canvas) ours are the only usable controls.
-export const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv)$/.test(location.hostname);
+export const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv|kick\.com)$/.test(location.hostname);
 
 // Vertical feeds: every scroll is an SPA navigation to the next clip, and the enable carries over to it.
 export const inFeed = () => /youtube\.com\/shorts|tiktok\.com/.test(location.href);
