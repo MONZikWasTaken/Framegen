@@ -12,7 +12,13 @@ neural network running on your GPU. No servers, no accounts, nothing leaves your
 [![Built on FlyHigh](https://img.shields.io/badge/built%20on-FlyHigh%20engine-7c5cff)](https://github.com/getflyhigh/flyhigh-engine)
 [![Ko-fi](https://img.shields.io/badge/support-ko--fi-ff5e5b)](https://ko-fi.com/monzikxd)
 
-<img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framegen x4 interpolation, side by side">
+<a href="https://github.com/MONZikWasTaken/Framegen/releases/download/v1.0.0/framegen-live-demo.mp4">
+  <img src="docs/media/hero.gif" width="880" alt="15 fps source vs Framegen x4 interpolation, side by side">
+</a>
+
+**[Watch the original 50-second comparison video](https://github.com/MONZikWasTaken/Framegen/releases/download/v1.0.0/framegen-live-demo.mp4)**
+
+*Legacy Framegen demo showing the compare slider on YouTube. Footage: Sintel © Blender Foundation (CC BY).*
 
 </div>
 
@@ -57,7 +63,7 @@ a GPU with WebGPU support. GPUs without `shader-f16` run the engine's f32 kernel
 | **Quality** | The size the network runs at. `Balanced` is the model's native scale; higher costs more GPU time and rarely looks better |
 | **Anime mode** | Held-frame detection and the aggressive periodic-structure repair; keep on for anime |
 | **Anime cadence smoothing** | Experimental, off by default. Drawings on twos slide instead of stepping; every frame becomes a generated in-between, so big steps look softer; one source frame of lookahead |
-| **Picture mode** | A color and detail look on top of the video: Cinema, Cinema Home, Noir, Vivid, Sports, Detail Boost. `Original` changes nothing |
+| **[Picture mode](#picture-modes)** | A color and detail look on top of the video: Cinema, Cinema Home, Noir, Vivid, Sports, Detail Boost. `Original` changes nothing |
 | **Upscale** | 2x neural upscaling of every presented frame when the player is larger than the video |
 | **Static protection** | Pixels that did not change over the last frames (burnt-in subtitles, a logo) are taken from the source |
 | **Compare** | The split slider |
@@ -66,6 +72,28 @@ Profiles on the full settings page keep any number of setups; existing settings 
 
 **Good first test:** anything shot at 24 fps: a film scene with a slow pan, an anime opening. On a 60 Hz screen you
 see 24 to 60; on a 144 to 240 Hz screen, considerably more.
+
+## Picture modes
+
+Compare the pink petals, green background, and dark wing lines across seven modes. The sample grades and sharpening
+are intentionally stronger where needed so the differences show at thumbnail size. Framegen's in-player presets
+are unchanged. Click any tile to see it full size.
+
+| Original | Cinema | Cinema Home |
+| :---: | :---: | :---: |
+| [![Original monarch butterfly on a pink zinnia](docs/media/picture-modes/original.webp)](docs/media/picture-modes/original.webp) | [![Cinema warms the wing and softens the flower colors](docs/media/picture-modes/cinema.webp)](docs/media/picture-modes/cinema.webp) | [![Cinema Home brightens the background and lifts wing shadows](docs/media/picture-modes/cinema-home.webp)](docs/media/picture-modes/cinema-home.webp) |
+| Unchanged reference | Warmer, more subdued color | Warmer and brighter midtones |
+| **Noir** | **Vivid** | **Sports** |
+| [![Noir butterfly and zinnia in black and white](docs/media/picture-modes/noir.webp)](docs/media/picture-modes/noir.webp) | [![Vivid brings out the orange wing and pink petals](docs/media/picture-modes/vivid.webp)](docs/media/picture-modes/vivid.webp) | [![Sports brightens colors and sharpens the wing and petals](docs/media/picture-modes/sports.webp)](docs/media/picture-modes/sports.webp) |
+| Black and white with lifted shadows | Stronger saturation and contrast | Brighter color and crisper edges |
+| **Detail Boost** | **Original close-up** | **Detail Boost close-up** |
+| [![Detail Boost sharpens the wing without changing the color grade](docs/media/picture-modes/detail.webp)](docs/media/picture-modes/detail.webp) | [![Original: magnified wing veins and scales](docs/media/picture-modes/original-closeup.webp)](docs/media/picture-modes/original-closeup.webp) | [![Detail Boost: the same wing crop with more defined veins and scales](docs/media/picture-modes/detail-closeup.webp)](docs/media/picture-modes/detail-closeup.webp) |
+
+The last two tiles show the same wing crop at 2× magnification to make the sharpening visible. Neural upscaling
+is not shown here.
+
+Photo: [Monarch butterfly on a zinnia](https://commons.wikimedia.org/wiki/File:Monarch_Butterfly_(20210717-FPAC-PJK-2022).jpg)
+by Preston Keres, USDA/FPAC (public domain). Cropped to a square and graded with Framegen.
 
 ## FAQ
 
