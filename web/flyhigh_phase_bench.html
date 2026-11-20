@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>FlyHigh phase comparison</title>
+<h1>FlyHigh phase comparison</h1>
+<p>Choose a captured 1920×1080, 120 fps clip decoded to packed RGBA8. Every fourth frame is kept.
+The quarter, half and three-quarter outputs are scored against the captured frames withheld from FlyHigh.</p>
+<label>Clip <input type="file" id="clip"></label>
+<label>Path <select id="path">
+  <option value="all">Compare all paths</option>
+  <option value="fast-linear">Fast linear</option>
+  <option value="direct-exact">Direct exact phase</option>
+  <option value="full-buffer-exact">Full-buffer exact phase</option>
+</select></label>
+<label><input type="checkbox" id="caption"> Burn in a static test caption</label>
+<button id="run" type="button">Run comparison</button>
+<pre id="report" aria-live="polite"></pre>
+<div id="preview"></div>
+<script type="module">
+  import { comparePhases } from './flyhigh_phase_bench.mjs';
+  const el = id => document.getElementById(id);
+  el('run').onclick = async () => {
+    const file = el('clip').files[0];
+    if (!file) { el('report').textContent = 'Choose a clip first.'; return; }
+    el('run').disabled = true;
+    el('preview').replaceChildren();
+    el('report').textContent = 'Running…';
+    try {
+      const result = await comparePhases(file, {
+        path: el('path').value, caption: el('caption').checked, crop: [672, 324, 576, 432],
+        onPreview(t, frame, images) {
+          const row = document.createElement('section');
+          const title = document.createElement('h2');
+          title.textContent = `Phase ${t} · frame ${frame}`;
+          row.append(title);
+          for (const [name, image] of images) {
+            const figure = document.createElement('figure'), canvas = document.createElement('canvas');
+            const label = document.createElement('figcaption');
+            figure.style.display = 'inline-block';
+            label.textContent = name;
+            Object.assign(canvas, { width: image.width, height: image.height });
+            canvas.style.width = 'min(22vw, 100%)';
+            canvas.getContext('2d').putImageData(image, 0, 0);
+            figure.append(canvas, label);
+            row.append(figure);
+          }
+          el('preview').append(row);
+        },
+      });
+      el('report').textContent = JSON.stringify(result, null, 2);
+    } catch (e) { el('report').textContent = String(e); }
+    finally { el('run').disabled = false; }
+  };
+</script>

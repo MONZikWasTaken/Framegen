@@ -9,6 +9,18 @@ const formatTime = (s) => {
   return (h ? h + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0');
 };
 
+// What the bar shows of the video's timeline. A live stream reports an infinite duration: it has no total to print
+// and no position to seek to, so it reads LIVE and `total` stays 0.
+export function timeline(duration, currentTime) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return {
+    total,
+    current: formatTime(currentTime),
+    end: duration === Infinity ? 'LIVE' : formatTime(total),
+    progress: total ? currentTime / total * 100 : 0,
+  };
+}
+
 const rangeFill = (el, p, color) => {
   el.style.background = `linear-gradient(to right, ${color} ${p}%, rgba(255,255,255,.22) ${p}%)`;
 };
@@ -27,7 +39,7 @@ export class ControlBar {
     this.els = null;
     this.height = 0;
     this.seeking = false;
-    this.last = { play: '', mute: '', vol: -1, cur: '', dur: '', seek: '', fill: -1 };
+    this.last = { play: '', mute: '', vol: -1, cur: '', dur: '', seek: '', fill: -1, seekable: true };
     this.fullscreenByUs = false;
     this.savedStyle = '';
     document.addEventListener('fullscreenchange', () => this.onFullscreenChange());
@@ -61,7 +73,8 @@ export class ControlBar {
     q('#fcSeek').addEventListener('pointerup', () => { this.seeking = false; });
     q('#fcSeek').oninput = (e) => {
       const v = this.video();
-      if (v && v.duration) v.currentTime = e.target.value / 1000 * v.duration;
+      const total = v ? timeline(v.duration, v.currentTime).total : 0;
+      if (total) v.currentTime = e.target.value / 1000 * total;
     };
     q('#fcFull').onclick = () => { if (gFull()) this.toggleFullscreen(); };
     bar.addEventListener('mousemove', () => this.onReveal(2000), { passive: true });
@@ -143,12 +156,12 @@ export class ControlBar {
     if (muteIcon !== last.mute) { last.mute = muteIcon; e.mute.innerHTML = svgIcon(muteIcon); }
     const vol = Math.round((v.muted ? 0 : v.volume) * 100);
     if (vol !== last.vol) { last.vol = vol; e.vol.value = String(vol); rangeFill(e.vol, vol, '#fff'); }
-    const d = v.duration || 0, c = v.currentTime || 0;
-    const cur = formatTime(c), dur = formatTime(d);
+    const { total, current: cur, end: dur, progress: p } = timeline(v.duration, v.currentTime || 0);
     if (cur !== last.cur) { last.cur = cur; e.cur.textContent = cur; }
     if (dur !== last.dur) { last.dur = dur; e.dur.textContent = dur; }
-    const p = d ? c / d * 100 : 0;
-    if (!this.seeking && d) {
+    const seekable = total > 0;
+    if (seekable !== last.seekable) { last.seekable = seekable; e.seek.disabled = !seekable; }
+    if (!this.seeking && seekable) {
       const sv = String(Math.round(p * 10));
       if (sv !== last.seek) { last.seek = sv; e.seek.value = sv; }
     }

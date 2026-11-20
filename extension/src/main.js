@@ -9,7 +9,7 @@ import { Subtitles } from './ui/subtitles.js';
 import { ControlBar, CompareSplit } from './ui/bar.js';
 import { Controls, pointInsideRect } from './ui/controls.js';
 import { svgIcon } from './ui/icons.js';
-import { SITE_CONTROLS_OK, inFeed, keepTwitchControlsAboveOverlay, biggestVideo } from './sites.js';
+import { usesSiteControls, inFeed, keepTwitchControlsAboveOverlay, biggestVideo } from './sites.js';
 import { installBenchBridge, benchToken } from './bench.js';
 import { watchKickDvr } from './kick-dvr.js';
 
@@ -49,7 +49,7 @@ export function boot() {
     const cfg = settings.cfg;
     const video = player.video;
     if (!controls) return;
-    if (cfg.hoverReveal && (video.controls || !SITE_CONTROLS_OK)) {
+    if (cfg.hoverReveal && (video.controls || !usesSiteControls(video))) {
       bar.layout(rect, now < controls.revealUntil, now);
     } else {
       bar.hide();
