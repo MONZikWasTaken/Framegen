@@ -5,6 +5,15 @@
 // (jut.su-style players put their bar below the canvas) ours are the only usable controls.
 export const SITE_CONTROLS_OK = /(^|\.)(youtube\.com|youtu\.be|vimeo\.com|twitch\.tv)$/.test(location.hostname);
 
+// The main Niconico watch player keeps its own controls above the overlay.
+export function usesSiteControls(video) {
+  return SITE_CONTROLS_OK || (
+    location.hostname === 'www.nicovideo.jp' &&
+    location.pathname.startsWith('/watch/') &&
+    video.matches('[data-name="stage"] [data-name="content"] > video[data-name="video-content"]')
+  );
+}
+
 // Vertical feeds: every scroll is an SPA navigation to the next clip, and the enable carries over to it.
 export const inFeed = () => /youtube\.com\/shorts|tiktok\.com/.test(location.href);
 
