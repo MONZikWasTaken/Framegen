@@ -89,15 +89,15 @@ const CSS = `
   .fc-panel[data-view="picture"] .fc-version,
   .fc-panel[data-view="picture"] .fc-icon-link{display:none!important}
   .fc-looks{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:2px 0 4px;padding:0}
-  .fc-look{display:flex;align-items:center;gap:9px;min-width:0;height:44px;margin:0;padding:0 10px 0 6px;
-    border:1px solid #2b2e32;border-radius:7px;background:#17191c;color:#d8dadd;font:500 12px/1.2 system-ui;
+  .fc-panel #fcLooks .fc-look{display:flex;align-items:center;gap:9px;min-width:0;height:44px;margin:0;padding:0 10px 0 6px;
+    border:1px solid #2b2e32!important;border-radius:7px;background:#17191c!important;color:#d8dadd;font:500 12px/1.2 system-ui;
     text-align:left;cursor:pointer;outline:0;transition:background-color .12s ease,border-color .12s ease}
-  .fc-look:hover{background:#1e2124;border-color:#44484e;color:#f4f5f5}
+  .fc-panel #fcLooks .fc-look:hover{background:#1e2124!important;border-color:#44484e!important;color:#f4f5f5}
   .fc-look:focus-visible{outline:2px solid var(--fc-green);outline-offset:1px}
-  .fc-look[aria-checked="true"]{border-color:var(--fc-green);background:#14211c;color:#fff}
+  .fc-panel #fcLooks .fc-look[aria-checked="true"]{border-color:var(--fc-green)!important;background:#14211c!important;color:#fff}
   .fc-look:first-child{grid-column:1 / -1}
-  .fc-look-swatch{width:32px;height:32px;flex:none;border-radius:5px;
-    background:linear-gradient(135deg,#27357f 0%,#b4405e 48%,#efb84c 100%)}
+  .fc-panel #fcLooks .fc-look-swatch{display:block!important;width:32px;height:32px;flex:none;border-radius:5px;
+    background:linear-gradient(135deg,#27357f 0%,#b4405e 48%,#efb84c 100%)!important}
   .fc-look-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .fc-seg{display:grid;grid-auto-flow:column;grid-auto-columns:1fr;width:196px;height:31px;flex:none;padding:2px;
     box-sizing:border-box;border:1px solid #34373b;border-radius:var(--fc-rail-radius);background:#181a1d}
