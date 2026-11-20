@@ -11,6 +11,7 @@ import { Controls, pointInsideRect } from './ui/controls.js';
 import { svgIcon } from './ui/icons.js';
 import { usesSiteControls, inFeed, keepTwitchControlsAboveOverlay, biggestVideo } from './sites.js';
 import { installBenchBridge, benchToken } from './bench.js';
+import { watchKickDvr } from './kick-dvr.js';
 
 export const VERSION = chrome.runtime.getManifest().version;
 
@@ -20,6 +21,7 @@ export function boot() {
   const overlay = new Overlay({ log });
   const notices = new Notices();
   const subtitles = new Subtitles();
+  if (window.top === window && /(^|\.)kick\.com$/.test(location.hostname)) watchKickDvr({ log });
   let controls = null;
   let bar = null;
   let split = null;
