@@ -6,6 +6,7 @@
 const NEAR_START_S = 5;       // where a rebuilt source starts when the player lost the position
 const MIN_POSITION_S = 30;    // below this there is nothing worth restoring
 const MAX_GROWTH_S = 900;     // a live recording grows while it is rebuilt; another video does not match
+const RESTORE_WINDOW_MS = 10_000;
 
 /** The position to put back once a rebuilt source plays, or null. `before` is the state when the source was torn
  * down, `after` the state of the new one: { url, duration, position }. */
@@ -37,18 +38,26 @@ function toast(text) {
 
 export function watchKickDvr({ log = () => {} } = {}) {
   let last = null;      // the playing recording: { video, url, duration, position }
-  let pending = null;   // `last` at the moment its source was torn down
+  let pending = null;   // `last` at the moment its source was torn down, with an expiry
   const main = v => v instanceof HTMLVideoElement && v.offsetWidth > 100;
+  const snapshot = video => ({ video, url: location.href, duration: video.duration, position: video.currentTime });
+  const discardStale = video => {
+    if (pending && (pending.video !== video || pending.url !== location.href || performance.now() >= pending.expires)) {
+      pending = null;
+    }
+  };
   const note = e => {
     const v = e.target;
-    if (pending || !main(v)) return;
-    last = Number.isFinite(v.duration) && v.duration > 0
-      ? { video: v, url: location.href, duration: v.duration, position: v.currentTime } : null;
+    if (!main(v)) return;
+    discardStale(v);
+    if (!pending) last = Number.isFinite(v.duration) && v.duration > 0 ? snapshot(v) : null;
   };
   const settle = e => {
     const v = e.target;
-    if (!pending || v !== pending.video || v.readyState < 1) return;
-    const to = positionToRestore(pending, { url: location.href, duration: v.duration, position: v.currentTime });
+    if (!main(v)) return;
+    discardStale(v);
+    if (!pending || v.readyState < 1) return;
+    const to = positionToRestore(pending, snapshot(v));
     pending = null;
     if (to === null) return;
     v.currentTime = to;
@@ -56,6 +65,10 @@ export function watchKickDvr({ log = () => {} } = {}) {
     toast(`Kick restarted the stream from the beginning: back at ${clock(to)}`);
   };
   for (const type of ['timeupdate', 'seeking']) document.addEventListener(type, note, true);
-  document.addEventListener('emptied', e => { if (last && e.target === last.video) pending = last; last = null; }, true);
+  document.addEventListener('emptied', e => {
+    if (e.target !== last?.video) return;
+    if (last.url === location.href) pending = { ...last, expires: performance.now() + RESTORE_WINDOW_MS };
+    last = null;
+  }, true);
   for (const type of ['seeked', 'playing']) document.addEventListener(type, settle, true);
 }
