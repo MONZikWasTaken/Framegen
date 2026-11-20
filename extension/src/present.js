@@ -1,7 +1,8 @@
 // The overlay canvas's present path: a frame texture (a source slot, an output slot or an upscaled frame) onto the
 // canvas, SDR or HDR (inverse tone mapping on an fp16 canvas in extended tone-mapping mode: highlights expand past SDR
 // white, the idea of RTX Video HDR; the browser only ever hands us tonemapped SDR), with the optional sharpening and the
-// compare split (the delayed source frame on the left of the divider).
+// compare split (the delayed source frame on the left of the divider, drawn as the video has it: no sharpening, no
+// picture mode, no HDR expansion, so the divider compares everything that is on with the original).
 import { pictureMode, pictureGradeWGSL } from './picture-modes.js';
 
 const BLIT_VS = `
@@ -52,8 +53,10 @@ export class Presenter {
     this.ctx = canvas.getContext('webgpu');
     this.sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     this.pipe = null;
+    this.sourcePipe = null;
     this.hdr = false;
     this.bindGroups = new Map();
+    this.sourceBindGroups = new Map();
     this.presents = 0;
   }
 
@@ -68,29 +71,39 @@ export class Presenter {
       hdrOn = false;
       this.ctx.configure({ device: this.device, format: 'rgba8unorm', alphaMode: 'opaque' });
     }
-    const module = this.device.createShaderModule({ code: BLIT_VS + fragment(sharpness, hdrOn, mode) });
     // compiled off the thread that composites the page: a synchronous pipeline on a site whose shader cache is cold
     // held the video for about 0.2 s at the first present
+    const pipeline = (fs) => {
+      const module = this.device.createShaderModule({ code: BLIT_VS + fs });
+      return this.device.createRenderPipelineAsync({ layout: 'auto',
+        vertex: { module, entryPoint: 'vs' },
+        fragment: { module, entryPoint: 'fs', targets: [{ format: hdrOn ? 'rgba16float' : 'rgba8unorm' }] } });
+    };
     this.pipe = null;
-    this.bindGroups.clear();
+    this.sourcePipe = null;
+    this.invalidate();
     const gen = (this.gen || 0) + 1;
     this.gen = gen;
-    this.ready = this.device.createRenderPipelineAsync({ layout: 'auto',
-      vertex: { module, entryPoint: 'vs' },
-      fragment: { module, entryPoint: 'fs', targets: [{ format: hdrOn ? 'rgba16float' : 'rgba8unorm' }] } })
-      .then(pipe => { if (this.gen === gen) { this.pipe = pipe; this.bindGroups.clear(); } })
+    this.ready = Promise.all([pipeline(fragment(sharpness, hdrOn, mode)), pipeline(fragment(0, false, 'original'))])
+      .then(([pipe, sourcePipe]) => {
+        if (this.gen !== gen) return;
+        this.pipe = pipe;
+        this.sourcePipe = sourcePipe;
+        this.invalidate();
+      })
       .catch(e => this.log('present pipeline', e));
     this.hdr = hdrOn;
     return hdrOn;
   }
 
-  bindGroup(texture) {
-    let bg = this.bindGroups.get(texture);
+  // Bind groups belong to the pipeline whose layout made them, so each pipeline keeps its own cache.
+  bindGroup(pipe, cache, texture) {
+    let bg = cache.get(texture);
     if (!bg) {
-      if (this.bindGroups.size > 48) this.bindGroups.clear();
-      bg = this.device.createBindGroup({ layout: this.pipe.getBindGroupLayout(0),
+      if (cache.size > 48) cache.clear();
+      bg = this.device.createBindGroup({ layout: pipe.getBindGroupLayout(0),
         entries: [{ binding: 0, resource: texture.createView() }, { binding: 1, resource: this.sampler }] });
-      this.bindGroups.set(texture, bg);
+      cache.set(texture, bg);
     }
     return bg;
   }
@@ -103,11 +116,12 @@ export class Presenter {
       view: this.ctx.getCurrentTexture().createView(),
       loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }] });
     pass.setPipeline(this.pipe);
-    pass.setBindGroup(0, this.bindGroup(texture));
+    pass.setBindGroup(0, this.bindGroup(this.pipe, this.bindGroups, texture));
     pass.draw(3);
-    if (compare && compare !== texture && width && height) {
+    if (compare && width && height) {
       pass.setScissorRect(0, 0, Math.max(1, Math.round(splitX * width)), height);
-      pass.setBindGroup(0, this.bindGroup(compare));
+      pass.setPipeline(this.sourcePipe);
+      pass.setBindGroup(0, this.bindGroup(this.sourcePipe, this.sourceBindGroups, compare));
       pass.draw(3);
     }
     pass.end();
@@ -117,10 +131,13 @@ export class Presenter {
   }
 
   // The slot textures changed (a new stream): the cached bind groups point at destroyed textures.
-  invalidate() { this.bindGroups.clear(); }
+  invalidate() {
+    this.bindGroups.clear();
+    this.sourceBindGroups.clear();
+  }
 
   destroy() {
-    this.bindGroups.clear();
+    this.invalidate();
     try { this.ctx.unconfigure(); } catch { /* never configured */ }
   }
 }

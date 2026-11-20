@@ -5,6 +5,21 @@ globalThis.chrome = { runtime: { getURL: path => path } };
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, COPY_DST: 2, RENDER_ATTACHMENT: 4 };
 const { Player } = await import('../extension/src/player.js');
 
+test('compare uses the source texture in Picture Mode without an interpolation stream', () => {
+  const texture = { width: 1920, height: 1080 };
+  const overlay = { ...texture, fitSupported: true };
+  const hooks = { splitX: () => 0.5 };
+  const settings = { cfg: { fg: false, compare: true, pictureMode: 'noir' } };
+  const player = new Player({ settings, overlay, hooks });
+  player.presenter = { present(output, { compare }) {
+    assert.equal(output, texture);
+    assert.equal(compare, texture);
+    return false;
+  } };
+  assert.equal(player.stream, null);
+  player.present(texture, 0);
+});
+
 function fixture() {
   const noop = () => {};
   const textures = [], drawn = [], writes = [];
