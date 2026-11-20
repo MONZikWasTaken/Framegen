@@ -43,6 +43,7 @@ export class Player {
     this.backend = null;
     this.backendLoading = null;
     this.kernelsReady = null;
+    this.interpolationReady = false;
     this.blocked = null;
     this.sys = { gpu: '-', f16: false, integrated: false, hdrOk: false, hdrOn: false };
     try { this.sys.hdrOk = !!(window.matchMedia && matchMedia('(dynamic-range: high)').matches); } catch { /* no media queries */ }
@@ -59,16 +60,18 @@ export class Player {
     this.pacerKey = '';
     this.recording = false;
     this.source = null;
+    this.pictureInput = null;
     this.costs = null;
+    this.costSink = null;
     this.presenter = null;
     this.upscaler = null;
     this.poolDims = null;
     this.prev = -1;
     this.recent = [];
-    this.outputsFreeAt = [];
+    this.outputSlots = [];
     this.compareRing = [];
     this.lastShownSource = -1;
-    this.busy = false;
+    this.busyEpoch = null;
     this.lastPts = null;
     this.lastPresentedFrames = null;
     this.sourceIntervalMs = 42;
@@ -105,7 +108,6 @@ export class Player {
         // the engine would fail on the same empty answer with wgpu's backend dump instead of something a viewer can act on
         const adapter = await navigator.gpu.requestAdapter().catch(() => null);
         if (!adapter) throw new Error(NO_ADAPTER_HELP);
-        await tuneStore.load();
         let backend;
         try {
           backend = await loadEngine(ENGINE_URLS);
@@ -127,8 +129,6 @@ export class Player {
           .catch(e => log('device loss handler', e));
         this.backend = backend;
         log('backend', backend.kind, backend.class, backend.name, backend.timestamps ? 'timestamps' : 'no timestamps');
-        // starts on hover, before the click: start() waits for whatever is left
-        this.kernelsReady = backend.precompile().catch(e => log('precompile', e));
         return backend;
       })().finally(() => { this.backendLoading = null; });
     }
@@ -148,8 +148,24 @@ export class Player {
     } catch { /* leave unknown */ }
   }
 
-  preload() {
-    return this.blocked ? Promise.reject(new Error(this.blocked)) : this.ensureBackend();
+  prepareInterpolation(backend) {
+    if (!this.kernelsReady) {
+      this.kernelsReady = Promise.all([backend.loadModel(), tuneStore.loaded ? null : tuneStore.load()])
+        .then(() => backend.precompile().catch(e => log('precompile', e)))
+        .then(() => { if (this.backend === backend) this.interpolationReady = true; })
+        .catch(e => {
+          if (this.backend === backend) this.kernelsReady = null;
+          throw e;
+        });
+    }
+    return this.kernelsReady;
+  }
+
+  async preload() {
+    if (this.blocked) throw new Error(this.blocked);
+    const backend = await this.ensureBackend();
+    if (this.cfg.fg) await this.prepareInterpolation(backend);
+    return backend;
   }
 
   // ---------- the stream and the pacer ----------
@@ -229,6 +245,7 @@ export class Player {
     const spec = this.buildSpec(width, height);
     const key = JSON.stringify(spec);
     if (this.stream && key === this.streamKey) return false;
+    const replacing = !!this.stream;
     const now = performance.now();
     this.freeStream();
     this.stream = this.backend.openStream(spec);
@@ -241,7 +258,11 @@ export class Player {
     if (this.pacer) {
       this.ensurePacer(now);
       this.pacer.reset(now);
-      this.costs = new this.backend.adapters.CostSampler(this.pacer, this.backend.nudge);
+      if (replacing) this.pacer.modeChange(now);
+      const pacer = this.pacer, stream = this.stream;
+      this.costSink = { costSample: (...sample) =>
+        this.stream === stream && this.pacer === pacer && pacer.costSample(...sample) };
+      this.costs = new this.backend.adapters.CostSampler(this.costSink, this.backend.nudge);
     }
     log('stream', `${width}x${height}`, spec.video ? 'video' : 'realtime', `rung ${spec.res}`, `repair ${spec.repair}`, spec.tune ? 'tuned' : 'untuned', this.backend.class);
     if (!spec.tune) this.scheduleTune(spec);
@@ -249,6 +270,7 @@ export class Player {
   }
 
   freeStream() {
+    this.costSink = null;
     if (!this.stream) return;
     try { this.stream.free(); } catch { /* already freed */ }
     this.stream = null;
@@ -256,10 +278,24 @@ export class Player {
     this.streamKey = '';
   }
 
+  releaseInterpolation() {
+    if (!this.stream && !this.pacer) return;
+    clearTimeout(this.tuneTimer);
+    this.presenter?.invalidate();
+    this.freeStream();
+    this.pacer?.free();
+    this.pacer = null;
+    this.pacerKey = '';
+    this.recording = false;
+    this.costs = null;
+    this.spec = null;
+    this.resetSlots();
+  }
+
   resetSlots() {
     this.prev = -1;
     this.recent = [];
-    this.outputsFreeAt = [];
+    this.outputSlots = [];
     this.compareRing = [];
     this.lastShownSource = -1;
     this.lastPts = null;
@@ -326,7 +362,7 @@ export class Player {
     const s = Math.min(1, 1920 / fw, 1080 / fh);
     const sw = Math.round(fw * s), sh = Math.round(fh * s);
     const ow = this.overlay.width, oh = this.overlay.height;
-    if (this.cfg.sr && this.backend.f16 && Upscaler.needed(sw, sh, ow, oh)) return [sw, sh];
+    if (this.wantsUpscale() && this.backend.f16 && Upscaler.needed(sw, sh, ow, oh)) return [sw, sh];
     if (ow && oh) return [ow, oh];
     return [sw, sh];
   }
@@ -345,6 +381,28 @@ export class Player {
   }
 
   // ---------- presenting ----------
+  pictureFrame(video) {
+    const [width, height] = this.poolDimsNow();
+    if (this.pictureInput?.width !== width || this.pictureInput?.height !== height) {
+      this.freePictureInput();
+      const { device, adapters } = this.backend;
+      const texture = device.createTexture({ label: 'fc-picture-input', size: [width, height], format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+      this.pictureInput = { texture, width, height, source: new adapters.VideoSource(device, { inputTexture: () => texture }) };
+    }
+    const { texture, source } = this.pictureInput;
+    // Capture and presentation are submitted to the same queue in order; nothing holds a picture frame for a later tick.
+    source.write(0, video);
+    return texture;
+  }
+
+  freePictureInput() {
+    if (!this.pictureInput) return;
+    this.presenter?.invalidate();
+    this.pictureInput.texture.destroy();
+    this.pictureInput = null;
+  }
+
   ensurePresenter() {
     if (this.presenter) return;
     this.presenter = new Presenter(this.backend.device, this.overlay.ensure(), log);
@@ -356,8 +414,12 @@ export class Player {
     this.sys.hdrOn = this.presenter.configure({ hdr: this.cfg.hdr && this.sys.hdrOk, sharpness: this.cfg.sharpness, pictureMode: this.cfg.pictureMode });
   }
 
+  wantsUpscale() {
+    return this.cfg.sr || this.cfg.pictureMode === 'detail';
+  }
+
   ensureUpscaler() {
-    if (!(this.cfg.sr || this.cfg.pictureMode === 'detail') || !this.backend?.f16) return;
+    if (!this.wantsUpscale() || !this.backend?.f16) return;
     if (!this.upscaler) this.upscaler = new Upscaler(this.backend.device, SR_URLS, { nudge: this.backend.nudge, log });
     this.upscaler.load().catch(e => log('SR', e));
   }
@@ -365,9 +427,9 @@ export class Player {
   present(texture, now, { source = -1 } = {}) {
     if (!this.presenter || !this.overlay.fitSupported) return;
     let tex = texture;
-    if ((this.cfg.sr || this.cfg.pictureMode === 'detail') && this.backend.f16 && this.upscaler?.ready
+    if (this.wantsUpscale() && this.backend.f16 && this.upscaler?.ready
         && Upscaler.needed(texture.width, texture.height, this.overlay.width, this.overlay.height)) {
-      tex = this.upscaler.process(texture, now, this.pacer) || texture;
+      tex = this.upscaler.process(texture, now, this.costSink) || texture;
     }
     let compare = null;
     if (this.cfg.compare && this.stream) {
@@ -434,19 +496,17 @@ export class Player {
     this.overlay.resetGeometry();
     this.layoutOverlay(null);
     this.stats = this.freshStats();
-    const now = performance.now();
-    this.ensurePacer(now);
-    this.pacer.reset(now);
+    if (!this.cfg.fg) this.releaseInterpolation();
 
     if (this.needsCanvas() && video.videoWidth && video.videoHeight && this.overlay.fitSupported) {
-      if (this.kernelsReady) {
-        const t0 = performance.now();
-        await Promise.all([this.kernelsReady, this.presenter.ready]);
-        if (epoch !== this.epoch || this.video !== video) return;
-        if (this.cfg.debug) log('kernels ready', `${(performance.now() - t0).toFixed(0)} ms after the click`);
+      const fg = this.cfg.fg;
+      await Promise.all([this.presenter.ready, fg ? this.prepareInterpolation(backend) : null]);
+      if (epoch !== this.epoch || this.video !== video) return;
+      if (fg && this.cfg.fg) {
+        this.freePictureInput();
+        this.ensurePacer();
+        this.ensureStream(...this.poolDimsNow());
       }
-      const [w, h] = this.poolDimsNow();
-      this.ensureStream(w, h);
       // a cross-origin video fails on its first read: find out (and reload it with CORS) before anything is shown
       try {
         this.probe(video);
@@ -461,20 +521,23 @@ export class Player {
         } else throw e;
       }
       if (epoch !== this.epoch || this.video !== video) return;
-      if (!this.warmedUp) {
+      if (this.cfg.fg && this.stream && !this.warmedUp) {
+        const stream = this.stream;
         const t0 = performance.now();
-        try { await backend.warmUp(this.stream); } catch (e) { log('warm-up skipped', e); }
-        this.warmedUp = true;
+        try { await backend.warmUp(stream); } catch (e) { if (stream === this.stream) log('warm-up skipped', e); }
         if (epoch !== this.epoch || this.video !== video) return;
-        log('warm-up', `${(performance.now() - t0).toFixed(0)} ms`);
-        backend.rememberKernels();
+        if (stream === this.stream) {
+          this.warmedUp = true;
+          log('warm-up', `${(performance.now() - t0).toFixed(0)} ms`);
+          backend.rememberKernels();
+        }
       }
     }
     this.ensureUpscaler();
     this.running = true;
-    this.pacer.reset(performance.now());
+    this.pacer?.reset(performance.now());
     // the first seconds stall while the browser prepares pipelines: not a GPU limit
-    this.pacer.modeChange(performance.now());
+    this.pacer?.modeChange(performance.now());
     if (!this.needsCanvas()) { this.overlay.passthrough(); this.preparing(false); }
     this.notices.setHud('', this.cfg.debug || this.cfg.showFps);
     if (this.sys.integrated) {
@@ -484,11 +547,15 @@ export class Player {
     this.hooks.onStateChange(true);
     this.armVideoFrames(epoch);
     this.armTicks(epoch);
+    if (!this.cfg.fg && video.paused) this.redrawPaused();
   }
 
   // Reads the current frame into a slot without presenting it: the canvas stays transparent over the playing video until
   // the Pacer's first present, so the kernels' first-use compilation (the warm-up) never shows as a frozen frame.
   probe(video) {
+    if (!this.needsCanvas()) return;
+    if (!this.cfg.fg) { this.pictureFrame(video); return; }
+    if (!this.stream) return;
     const slot = this.stream.nextInput([]);
     if (slot < 0) return;
     this.source.write(slot, video);
@@ -504,14 +571,15 @@ export class Player {
     const wasRunning = this.running;
     this.preparing(false);
     // kernels compiled while running (the classifier, the cadence composite, a tuned conv variant) join the list
-    this.backend?.rememberKernels();
+    if (this.stream) this.backend?.rememberKernels();
     this.running = false;
     this.cancelLoops();
+    this.busyEpoch = null;
+    this.releaseInterpolation();
+    this.freePictureInput();
     this.overlay.fadeOut(() => !this.running);
     this.notices.hideAll();
     this.subtitles.sync({ active: false, video: this.video, canvas: this.overlay.canvas, canvasVisible: false });
-    this.compareRing = [];
-    if (this.pacer) this.pacer.reset(performance.now());
     if (wasRunning) this.hooks.onStateChange(false);
   }
 
@@ -543,14 +611,30 @@ export class Player {
     if (video.videoWidth !== this.overlay.sourceWidth || video.videoHeight !== this.overlay.sourceHeight) this.layoutOverlay(null);
     if (!this.overlay.fitSupported) return;
     if (!this.needsCanvas()) { this.overlay.passthrough(); return; }
-    if (this.busy) return;
-    this.busy = true;
+    if (this.busyEpoch !== null) return;
+    this.busyEpoch = epoch;
+    let stream;
     try {
       const now = performance.now();
       if (!video.videoWidth || !video.videoHeight) return;
+      if (this.cfg.fg && !this.interpolationReady && !this.kernelsReady) {
+        this.prepareInterpolation(this.backend).catch(e => {
+          if (this.running && this.cfg.fg && epoch === this.epoch) this.fail('Framegen error: ' + (e?.message || e), e);
+        });
+      }
+      if (!this.cfg.fg || !this.interpolationReady) {
+        this.present(this.pictureFrame(video), now);
+        this.stats.factor = 1;
+        return;
+      }
+      if (!this.pacer) {
+        this.freePictureInput();
+        this.ensurePacer();
+        this.pacer.modeChange(performance.now());
+      }
       const [w, h] = this.poolDimsNow();
       this.ensureStream(w, h);
-      const stream = this.stream;
+      stream = this.stream;
       const pts = Number.isFinite(metadata?.mediaTime) ? metadata.mediaTime * 1000 : now * this.playbackRate();
       const presented = Number(metadata?.presentedFrames);
       let skipped = 0;
@@ -563,16 +647,6 @@ export class Player {
         if (d > 1 && d < 500) this.sourceIntervalMs = this.sourceIntervalMs * 0.9 + d * 0.1;
       }
       this.lastPts = pts;
-
-      if (!this.cfg.fg) {
-        // generation off: the canvas shows the source frame at once (upscale, HDR, sharpening, compare)
-        const slot = stream.nextInput(this.lastShownSource >= 0 ? [this.lastShownSource] : []);
-        if (slot < 0) return;
-        this.source.write(slot, video);
-        this.present(stream.inputTexture(slot), now, { source: slot });
-        this.stats.factor = 1;
-        return;
-      }
 
       const slot = stream.nextInput(this.inUse());
       if (slot < 0) {
@@ -599,7 +673,7 @@ export class Player {
       this.generate(t, flush);
       const p = this.costs.push(stream, slot, pts);
       if (p.statsPending) await this.backend.nudge.wrap(stream.stats());
-      if (stream !== this.stream) return;
+      if (epoch !== this.epoch || stream !== this.stream) return;
       this.prev = slot;
       const history = Math.max(3, Math.ceil(this.pacer.delayMs() / Math.max(1, this.sourceIntervalMs / this.playbackRate())) + 3);
       this.recent.push(slot);
@@ -609,6 +683,7 @@ export class Player {
         while (this.compareRing.length > history) this.compareRing.shift();
       }
     } catch (e) {
+      if (epoch !== this.epoch || (stream && stream !== this.stream)) return;
       if (e?.name === 'OperationError') {
         log('frame skipped (decoder gap)');
       } else if (isCorsError(e)) {
@@ -617,7 +692,7 @@ export class Player {
         this.fail('Framegen error: ' + (e?.message || e), e);
       }
     } finally {
-      this.busy = false;
+      if (this.busyEpoch === epoch) this.busyEpoch = null;
     }
   }
 
@@ -636,15 +711,18 @@ export class Player {
 
   // ---------- generated frames ----------
   acquireOutput(now, dueMs) {
-    const free = this.outputsFreeAt;
+    const slots = this.outputSlots;
     const count = this.stream.report().outputs;
-    while (free.length < count) free.push(0);
-    let slot = free.findIndex(t => t <= now);
+    while (slots.length < count) slots.push({ token: null, freeAt: 0 });
+    let slot = slots.findIndex(output => output.freeAt <= now);
     if (slot < 0) {
-      if (count < MAX_OUTPUTS) { slot = this.stream.addOutput(); free.push(0); this.presenter?.invalidate(); }
-      else { slot = 0; for (let i = 1; i < free.length; i++) if (free[i] < free[slot]) slot = i; }
+      if (count >= MAX_OUTPUTS) return -1;
+      slot = this.stream.addOutput();
+      slots[slot] = { token: null, freeAt: 0 };
+      this.presenter?.invalidate();
     }
-    free[slot] = Math.max(now, dueMs) + OUTPUT_HOLD_MS;
+    slots[slot].token = null;
+    slots[slot].freeAt = Math.max(now, dueMs) + OUTPUT_HOLD_MS;
     return slot;
   }
 
@@ -652,10 +730,21 @@ export class Player {
     if (!requests || !requests.length) return;
     for (const r of requests) {
       const out = this.acquireOutput(now, r.due_ms);
+      if (out < 0) {
+        this.pacer.skipped(r.id);
+        continue;
+      }
       let written = false;
       try { written = this.costs.generate(this.stream, r, out); } catch (e) { log('generate', e); }
-      if (written) this.pacer.generated(now, r.id, out);
-      else { this.pacer.skipped(r.id); this.outputsFreeAt[out] = 0; }
+      const slot = this.outputSlots[out];
+      if (written) {
+        // The Pacer's output ID is an opaque u32. A late tick must name the frame, even after the texture is recycled.
+        slot.token = r.id >>> 0;
+        this.pacer.generated(now, r.id, slot.token);
+      } else {
+        slot.freeAt = 0;
+        this.pacer.skipped(r.id);
+      }
     }
   }
 
@@ -681,8 +770,16 @@ export class Player {
     if (tick.present) {
       const f = tick.present.frame;
       if ('output' in f) {
-        this.present(this.stream.outputTexture(f.output), now);
-        this.outputsFreeAt[f.output] = 0;
+        const slot = this.outputSlots.findIndex(output => output.token === f.output);
+        if (slot >= 0) {
+          this.present(this.stream.outputTexture(slot), now);
+          this.outputSlots[slot].token = null;
+          this.outputSlots[slot].freeAt = 0;
+        } else if (this.lastShownSource >= 0) {
+          this.present(this.stream.inputTexture(this.lastShownSource), now, { source: this.lastShownSource });
+        } else {
+          this.overlay.passthrough();
+        }
       } else {
         this.present(this.stream.inputTexture(f.source), now, { source: f.source });
       }
@@ -711,6 +808,7 @@ export class Player {
   // ---------- settings ----------
   applySettings(changed) {
     const has = keys => keys.some(k => changed.has(k));
+    if (changed.has('fg') && !this.cfg.fg) this.releaseInterpolation();
     if (has(STREAM_KEYS)) {
       this.streamKey = '';
       this.poolDims = null;
@@ -724,8 +822,10 @@ export class Player {
     if (changed.has('sr') || changed.has('pictureMode')) this.ensureUpscaler();
     if (has(MODE_KEYS) && this.running) {
       if (this.pacer) this.pacer.reset(performance.now());
-      if (!this.needsCanvas()) this.overlay.passthrough();
-      else this.layoutOverlay(null);
+      if (!this.needsCanvas()) {
+        this.freePictureInput();
+        this.overlay.passthrough();
+      } else this.layoutOverlay(null);
     }
     if (!this.cfg.compare) this.compareRing = [];
     if (changed.has('debug')) this.syncRecording();
@@ -733,19 +833,23 @@ export class Player {
     if (changed.has('showWarnings') && !this.cfg.showWarnings) this.notices.hideWarnings();
     if (changed.has('showWatermark') && !this.cfg.showWatermark) this.notices.watermark.style.display = 'none';
     if (changed.has('subtitleOverlay')) this.layoutOverlay(null);
-    if (has(PRESENT_KEYS)) this.redrawPaused();
+    if (has(MODE_KEYS)) this.redrawPaused();
   }
 
   // A paused video delivers no frames, so a new look would not show until playback resumed.
   redrawPaused() {
     const epoch = this.epoch, presenter = this.presenter;
-    presenter?.ready?.then(() => {
+    return presenter?.ready?.then(() => {
       if (!this.running || epoch !== this.epoch || presenter !== this.presenter) return;
-      if (!this.video?.paused || !this.needsCanvas() || !this.stream || !this.source) return;
+      if (!this.video?.paused || !this.video.videoWidth || !this.video.videoHeight || !this.overlay.fitSupported || !this.needsCanvas()) return;
+      if (!this.cfg.fg) { this.present(this.pictureFrame(this.video), performance.now()); return; }
+      if (!this.stream || !this.source) return;
       const slot = this.stream.nextInput(this.inUse());
       if (slot < 0) return;
       this.source.write(slot, this.video);
       this.present(this.stream.inputTexture(slot), performance.now(), { source: slot });
+    }).catch(e => {
+      if (epoch === this.epoch && this.running && e?.name !== 'OperationError') this.fail('Framegen: could not redraw the paused video', e);
     });
   }
 
@@ -763,6 +867,7 @@ export class Player {
     this.running = false;
     this.cancelLoops();
     clearTimeout(this.tuneTimer);
+    this.freePictureInput();
     this.freeStream();
     try { this.presenter?.destroy(); } catch { /* gone */ }
     try { this.upscaler?.destroy(); } catch { /* gone */ }
@@ -773,6 +878,8 @@ export class Player {
     this.pacerKey = '';
     this.recording = false;
     this.backend = null;
+    this.kernelsReady = null;
+    this.interpolationReady = false;
     this.overlay.hideInstant();
     if (!wasRunning || !video?.isConnected || this.recovering) { this.hooks.onStateChange(false); return; }
     this.recovering = true;
@@ -814,6 +921,7 @@ export class Player {
     const hz = plan.output_hz ? ` (~${Number(plan.output_hz.toFixed(2))} FPS)` : '';
     if (plan.state === 'measuring') return `${label} · measuring`;
     if (!plan.interpolation_allowed) return `${label} · ${plan.warning || plan.state.replace(/_/g, ' ')}`;
+    if (plan.clamp === 'display') return `${label}${hz} · browser callback limit`;
     if (plan.clamp) return `${label}${hz} · ${plan.clamp.replace(/_/g, ' ')}`;
     return `${label}${hz}`;
   }
@@ -847,7 +955,7 @@ export class Player {
     return [
       `${v.videoWidth}x${v.videoHeight}@${srcHz} → ${fps}fps ×${this.stats.factor} (${this.rateLabel()})`,
       `pair ${r.pair_cost_ms.toFixed(1)} + mid ${mid.toFixed(1)}ms@${this.cfg.res}p · present ${r.present_cost_ms.toFixed(1)}`,
-      `buf ${r.delay_ms.toFixed(0)} · display ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
+      `buf ${r.delay_ms.toFixed(0)} · rAF ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
       `drop ${this.stats.drops} (${r.pressure.toFixed(1)}) · penalty ${r.penalty}+${r.strain_penalty}`,
       `cut ${r.counters.cuts} hold ${r.counters.holds} · motion ${r.motion_avg.toFixed(0)} · queue ${r.queued}`,
       `${this.backend.class} · pool ${this.spec?.width}x${this.spec?.height}${this.spec?.video ? ' video' : ''}`,
@@ -858,8 +966,9 @@ export class Player {
     const c = this.cfg;
     const r = this.report();
     const video = this.video || this.hooks.candidateVideo();
-    const srNeeded = !this.spec || Upscaler.needed(this.spec.width, this.spec.height, this.overlay.width, this.overlay.height);
-    const srState = c.sr ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
+    const frameSize = this.spec || this.pictureInput;
+    const srNeeded = !frameSize || Upscaler.needed(frameSize.width, frameSize.height, this.overlay.width, this.overlay.height);
+    const srState = this.wantsUpscale() ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
     const lines = [
       `GPU: ${this.sys.gpu}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
       `engine: ${this.backend ? this.backend.class : (this.blocked ? 'unavailable (' + this.blocked + ')' : 'not loaded')}`,
@@ -874,7 +983,7 @@ export class Player {
       const pool = this.spec ? this.spec.width * this.spec.height * 4 * (this.stream?.report().inputs + this.stream?.report().outputs) / 1048576 : 0;
       lines.push(
         `out: ${this.stats.fpsWin.length}fps · factor ×${this.stats.factor}`,
-        `display: ${r.display.display_hz}Hz · source: ${r.source_hz ? r.source_hz.toFixed(2) : '?'}fps`,
+        `browser callbacks: ${r.display.measured ? r.display.display_hz + 'Hz' : 'measuring'} · source: ${r.source_hz ? r.source_hz.toFixed(2) : '?'}fps`,
         `pair: ${r.pair_cost_ms.toFixed(1)}ms · mid: ${r.mid_cost_ms.toFixed(1)}ms @ ${c.res}p · present: ${r.present_cost_ms.toFixed(1)}ms`,
         `delay: ${r.delay_ms.toFixed(0)}ms · drops: ${this.stats.drops} · queue: ${r.queued}`,
         `VRAM pool: ~${pool.toFixed(0)}MB${this.spec?.video ? ' · video mode (lookahead)' : ''}`);
@@ -884,6 +993,7 @@ export class Player {
 
   status() {
     const r = this.report();
+    const frameSize = this.spec || this.pictureInput;
     return {
       running: this.running,
       gpu: this.sys.gpu, integrated: this.sys.integrated, f16: this.sys.f16,
@@ -892,8 +1002,9 @@ export class Player {
       midMs: r ? +r.mid_cost_ms.toFixed(1) : 0, pairMs: r ? +r.pair_cost_ms.toFixed(1) : 0,
       drops: this.stats.drops, res: this.cfg.res,
       rateLabel: this.rateLabel(), rateState: this.rateState(r),
+      browserCallbackHz: r?.display?.measured ? r.display.raw_hz : null,
       presentationMode: this.needsCanvas() ? 'canvas' : 'native',
-      pool: this.spec ? { width: this.spec.width, height: this.spec.height, video: this.spec.video } : null,
+      pool: frameSize ? { width: frameSize.width, height: frameSize.height, video: !!frameSize.video } : null,
       pacer: r,
     };
   }

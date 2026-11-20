@@ -80,11 +80,8 @@ export async function loadEngine(urls) {
     blocked.wasmBlocked = true;
     throw blocked;
   }
-  const [weights, manifest, graph] = await Promise.all([
-    fetchOk(urls.weights, 'arrayBuffer'), fetchOk(urls.manifest, 'text'), fetchOk(urls.graph, 'text')]);
   const engine = await mod.FhEngine.create({});
-  const model = engine.loadModel(graph, manifest, new Uint8Array(weights));
-  return new EngineBackend(mod, adapters, engine, model, await adapterName());
+  return new EngineBackend(mod, adapters, engine, urls, await adapterName());
 }
 
 // The engine reports wgpu's adapter name, which in a browser is the WebGPU implementation; the adapter's own info
@@ -98,21 +95,37 @@ async function adapterName() {
 }
 
 export class EngineBackend {
-  constructor(mod, adapters, engine, model, gpuName) {
+  constructor(mod, adapters, engine, urls, gpuName) {
     this.kind = 'engine';
     this.freed = false;
     this.mod = mod;
     this.adapters = adapters;
     this.engine = engine;
-    this.model = model;
+    this.urls = urls;
+    this.model = null;
+    this.modelLoading = null;
     this.device = engine.device();
     this.info = engine.info();
-    this.modelInfo = model.info();
     this.name = gpuName || this.info.name || 'unknown GPU';
     this.class = this.info.class;
     this.f16 = this.info.class !== 'portable-f32';
     this.timestamps = !!this.info.timestamps;
     this.nudge = new adapters.ReadbackNudge(this.device);
+  }
+
+  loadModel() {
+    if (this.model) return Promise.resolve(this.model);
+    if (!this.modelLoading) {
+      const urls = this.urls;
+      this.modelLoading = Promise.all([
+        fetchOk(urls.weights, 'arrayBuffer'), fetchOk(urls.manifest, 'text'), fetchOk(urls.graph, 'text'),
+      ]).then(([weights, manifest, graph]) => {
+        if (this.freed) throw new Error('Framegen GPU backend was replaced');
+        this.model = this.engine.loadModel(graph, manifest, new Uint8Array(weights));
+        return this.model;
+      }).finally(() => { this.modelLoading = null; });
+    }
+    return this.modelLoading;
   }
 
   sessionOptions(spec) {
@@ -204,7 +217,8 @@ export class EngineBackend {
 
   free() {
     this.freed = true;
-    try { this.model.free(); } catch { /* already freed */ }
+    try { this.model?.free(); } catch { /* already freed */ }
+    this.model = null;
     try { this.engine.free(); } catch { /* already freed */ }
   }
 }
