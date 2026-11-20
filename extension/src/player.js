@@ -432,11 +432,11 @@ export class Player {
       tex = this.upscaler.process(texture, now, this.costSink) || texture;
     }
     let compare = null;
-    if (this.cfg.compare && this.stream) {
+    if (this.cfg.compare) {
       if (!this.cfg.fg) {
         // generation off: the frame on screen is the source frame itself, so there is nothing to delay
         compare = texture;
-      } else {
+      } else if (this.stream) {
         const ring = this.compareRing;
         while (ring.length > 1 && ring[1].at <= now) ring.shift();
         if (ring.length && ring[0].at <= now) compare = this.stream.inputTexture(ring[0].slot);
