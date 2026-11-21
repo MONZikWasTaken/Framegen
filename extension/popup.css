@@ -70,6 +70,7 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
   border: solid var(--text-2);
   border-width: 0 1px 1px 0;
   transform: rotate(45deg);
+  transition: transform .12s ease;
 }
 .help details[open] > summary::after { transform: rotate(225deg); }
 .help :is(p, ol) { margin: 0 0 7px; color: var(--text-2); font-size: 12px; }
@@ -84,10 +85,9 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
   gap: 8px;
   padding: 3px 7px;
 }
+.popup-language .select-field { --select-chevron-inset: 8px; }
 .popup-language select {
   height: 30px;
-  width: 100%;
-  min-width: 0;
   padding-inline: 8px 26px;
   background-position: right 8px center;
   font-size: 12px;
@@ -106,3 +106,7 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .footer a { color: inherit; text-decoration: none; }
 .footer a:hover { color: var(--text); text-decoration: underline; }
 .license { margin-inline-start: auto; font-size: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .help summary::after { transition: none; }
+}
