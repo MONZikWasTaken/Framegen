@@ -20,7 +20,7 @@ function modules(dir) {
 test('every relative import in src resolves to a file', () => {
   for (const file of modules(join(extension, 'src'))) {
     const text = readFileSync(file, 'utf8');
-    for (const match of text.matchAll(/from '(\.[^']+)'/g)) {
+    for (const match of text.matchAll(/(?:from\s+|import\()'(\.[^']+)'/g)) {
       assert.ok(existsSync(join(dirname(file), match[1])), `${file} imports a missing ${match[1]}`);
     }
   }

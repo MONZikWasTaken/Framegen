@@ -2,7 +2,7 @@ import { EngineBackend, loadEngine } from '../extension/src/engine.js';
 
 const root = new URL('../extension/engine/', import.meta.url);
 const urls = Object.fromEntries([
-  ['module', 'flyhigh_web.js'], ['adapters', 'adapters.js'], ['graph', 'graph.json'],
+  ['graph', 'graph.json'],
   ['manifest', 'flyhighfg.json'], ['weights', 'flyhighfg.bin'],
 ].map(([key, file]) => [key, new URL(file, root).href]));
 

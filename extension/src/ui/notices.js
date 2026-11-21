@@ -125,7 +125,7 @@ export class Notices {
   }
 
   // The centred play/pause splash: fades out while scaling up.
-  flash(symbol, rect) {
+  flash(icon, rect) {
     if (!this.flashEl) {
       this.flashEl = document.createElement('div');
       this.flashEl.style.cssText = `position:fixed; z-index:${Z_TOP - 1}; pointer-events:none;`
@@ -135,7 +135,7 @@ export class Notices {
       (this.hud.parentElement || document.body).appendChild(this.flashEl);
     }
     const el = this.flashEl;
-    el.innerHTML = symbol;
+    el.replaceChildren(icon);
     el.style.left = (rect.left + rect.width / 2 - 36) + 'px';
     el.style.top = (rect.top + rect.height / 2 - 36) + 'px';
     el.style.transition = 'none';

@@ -1,5 +1,6 @@
 import { Profiles } from './src/profiles.js';
 import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
+import { bindLanguageSelect, getLanguage, initLanguage, onLanguageChange, t, translate } from './src/i18n.js';
 
 (function framegenOptions() {
   'use strict';
@@ -25,14 +26,15 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
   let externalChangeNotice = false;
   let lastMessage = '';
   let profileStoreReadOnly = false;
-  let profileStoreError = '';
+  let profileStoreStatus = '';
+  let unsupportedSchema;
 
-  function enterProfileStoreReadOnly(error, status = 'Profile storage is read-only') {
+  function enterProfileStoreReadOnly(error, status = 'profile_read_only') {
     profileStoreReadOnly = true;
-    profileStoreError = error?.message || 'Profiles are read-only';
-    $('runtimeStatus').textContent = status;
-    $('editState').textContent = profileStoreError;
-    for (const id of STORE_MUTATION_CONTROLS) $(id).disabled = true;
+    profileStoreStatus = status;
+    unsupportedSchema = error instanceof Profiles.UnsupportedProfileStoreVersionError ? error.schemaVersion : undefined;
+    console.warn('Framegen profile storage:', error);
+    renderStatus();
     for (const id of ['profileDialog', 'deleteDialog']) {
       const dialog = $(id);
       if (dialog.open) dialog.close();
@@ -41,7 +43,8 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
 
   function leaveProfileStoreReadOnly() {
     profileStoreReadOnly = false;
-    profileStoreError = '';
+    profileStoreStatus = '';
+    unsupportedSchema = undefined;
     for (const id of STORE_MUTATION_CONTROLS) $(id).disabled = false;
   }
 
@@ -90,7 +93,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
   function updateFpsLimitPresentation() {
     const input = $('fpsLimit');
     const value = fpsLimitFromSlider();
-    const label = value === null ? 'Unlimited' : `${value} FPS`;
+    const label = value === null ? t('unlimited') : t('fps_value', { rate: value });
     const ratio = Number(input.value) / Math.max(1, FPS_LIMIT_PRESETS.length - 1);
     input.style.setProperty('--fill', `${ratio * 100}%`);
     input.setAttribute('aria-valuetext', label);
@@ -125,9 +128,12 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
 
   function validateVisibleRateControl() {
     if (draftSettings.factor !== 'target') return true;
-    if ($('targetFps').checkValidity()) return true;
-    $('targetFps').reportValidity();
-    lastMessage = 'Enter a Custom FPS from 2 to 1000';
+    const input = $('targetFps');
+    input.setCustomValidity('');
+    if (input.checkValidity()) return true;
+    lastMessage = 'custom_fps_range';
+    input.setCustomValidity(t(lastMessage));
+    input.reportValidity();
     renderStatus();
     return false;
   }
@@ -223,12 +229,12 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
   function renderProfileSelect() {
     const current = document.createElement('option');
     current.value = '';
-    current.textContent = 'Current settings';
+    current.textContent = t('current_settings');
     const children = [current];
     const profiles = Profiles.profileList(store);
     if (profiles.length > 0) {
       const group = document.createElement('optgroup');
-      group.label = 'My profiles';
+      group.label = t('my_profiles');
       for (const profile of profiles) {
         const option = document.createElement('option');
         option.value = profile.id;
@@ -241,10 +247,20 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     $('profileSelect').value = selectedProfileId || '';
   }
 
+  function renderRuntimeStatus(key, values, emphasized) {
+    const strong = document.createElement('strong');
+    strong.textContent = values[emphasized];
+    const parts = t(key).split(new RegExp(`(\\{${emphasized}\\})`, 'g'));
+    $('runtimeStatus').replaceChildren(...parts.map((part, index) => index % 2 ? strong.cloneNode(true) : (
+      part.replaceAll('{name}', () => values.name)
+    )));
+  }
+
   function renderStatus() {
     if (profileStoreReadOnly) {
-      $('runtimeStatus').textContent = 'Profile storage is read-only';
-      $('editState').textContent = profileStoreError || 'Profiles are read-only';
+      $('runtimeStatus').textContent = t(profileStoreStatus);
+      $('editState').textContent = unsupportedSchema === undefined
+        ? t('profile_read_only') : t('profile_schema_unsupported', { version: unsupportedSchema });
       for (const id of STORE_MUTATION_CONTROLS) $(id).disabled = true;
       return;
     }
@@ -253,12 +269,10 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     const lastAppliedMatches = lastApplied
       && Profiles.settingsEqual(lastApplied.settings, runtimeSettings);
 
-    if (lastAppliedMatches) {
-      $('runtimeStatus').innerHTML = `Current: <strong>${escapeHtml(lastApplied.name)}</strong>`;
-    } else if (lastApplied) {
-      $('runtimeStatus').innerHTML = `<strong>Current settings</strong> · changed after ${escapeHtml(lastApplied.name)}`;
+    if (lastApplied && !lastAppliedMatches) {
+      renderRuntimeStatus('current_after', { current: t('current_settings'), name: lastApplied.name }, 'current');
     } else {
-      $('runtimeStatus').innerHTML = 'Current: <strong>Custom settings</strong>';
+      renderRuntimeStatus('current_profile', { name: lastApplied?.name || t('custom_settings') }, 'name');
     }
 
     const hasDraftEdits = !Profiles.settingsEqual(draftSettings, draftOrigin);
@@ -271,32 +285,25 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
       : pendingRuntimeChange;
 
     if (externalChangeNotice) {
-      $('editState').textContent = 'Changed in another tab';
+      $('editState').textContent = t('changed_another_tab');
     } else if (lastMessage) {
-      $('editState').textContent = lastMessage;
+      $('editState').textContent = t(lastMessage);
     } else if (hasDraftEdits || selectedModified) {
-      $('editState').textContent = 'Unsaved preview';
+      $('editState').textContent = t('unsaved_preview');
     } else if (selected && pendingApply) {
-      $('editState').textContent = `Previewing ${selected.name}`;
+      $('editState').textContent = t('previewing', { name: selected.name });
     } else {
-      $('editState').textContent = 'Up to date';
+      $('editState').textContent = t('up_to_date');
     }
 
     $('resetDraft').disabled = !externalChangeNotice && !hasDraftEdits;
     $('applySettings').disabled = !pendingApply;
     $('saveProfile').hidden = !selected;
     $('saveProfile').disabled = !selected || !selectedModified;
-    $('saveProfile').textContent = 'Save profile';
     for (const id of ['renameProfile', 'deleteProfile', 'duplicateProfile']) {
       $(id).disabled = !selected;
       $(id).hidden = !selected;
     }
-  }
-
-  function escapeHtml(value) {
-    const span = document.createElement('span');
-    span.textContent = String(value);
-    return span.innerHTML;
   }
 
   function renderAll({ write = false } = {}) {
@@ -341,12 +348,22 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
         : settingsCopy(draftSettings);
       draftSource = selected ? 'profile' : 'current';
       externalChangeNotice = false;
-      lastMessage = 'Settings applied';
+      lastMessage = 'settings_applied';
       renderAll();
     } catch {
-      lastMessage = 'Could not apply settings';
+      lastMessage = 'apply_failed';
       renderStatus();
     }
+  }
+
+  function updateProfileDialogLabels() {
+    const { title, action } = {
+      new: { title: 'new_profile', action: 'create' },
+      duplicate: { title: 'duplicate_profile', action: 'create_copy' },
+      rename: { title: 'rename_profile', action: 'rename' },
+    }[dialogMode];
+    $('profileDialogTitle').textContent = t(title);
+    $('confirmProfile').textContent = t(action);
   }
 
   function openProfileDialog(mode) {
@@ -354,15 +371,13 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     if ((mode === 'new' || mode === 'duplicate') && !validateVisibleRateControl()) return;
     const selected = currentProfile();
     dialogMode = mode;
-    const titles = {
-      new: ['New profile', 'Create', 'Custom profile'],
-      duplicate: ['Duplicate profile', 'Create copy', selected ? `${selected.name} copy` : 'Profile copy'],
-      rename: ['Rename profile', 'Rename', selected?.name || 'Custom profile'],
+    const names = {
+      new: t('custom_profile'),
+      duplicate: selected ? t('profile_copy_named', { name: selected.name }) : t('profile_copy'),
+      rename: selected?.name || t('custom_profile'),
     };
-    const [title, action, value] = titles[mode];
-    $('profileDialogTitle').textContent = title;
-    $('confirmProfile').textContent = action;
-    $('profileName').value = value.slice(0, 48);
+    updateProfileDialogLabels();
+    $('profileName').value = names[mode].slice(0, 48);
     $('profileName').setCustomValidity('');
     $('profileDialog').showModal();
     $('profileName').select();
@@ -373,7 +388,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     if (profileStoreReadOnly) return;
     const name = Profiles.normalizeName($('profileName').value, '');
     if (!name) {
-      $('profileName').setCustomValidity('Enter a profile name.');
+      $('profileName').setCustomValidity(t('enter_profile_name'));
       $('profileName').reportValidity();
       return;
     }
@@ -401,12 +416,13 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
         draftSource = 'profile';
       }
       $('profileDialog').close();
-      lastMessage = dialogMode === 'rename' ? 'Profile renamed' : 'Profile saved';
+      lastMessage = dialogMode === 'rename' ? 'profile_renamed' : 'profile_saved';
       externalChangeNotice = false;
       renderAll({ write: true });
       $('profileSelect').focus();
     } catch (error) {
-      $('profileName').setCustomValidity(error?.message || 'Could not save this profile.');
+      console.warn('Framegen profile save:', error);
+      $('profileName').setCustomValidity(t('profile_save_failed'));
       $('profileName').reportValidity();
     }
   }
@@ -428,10 +444,10 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
       draftOrigin = settingsCopy(draftSettings);
       draftSource = 'profile';
       externalChangeNotice = false;
-      lastMessage = 'Profile saved';
+      lastMessage = 'profile_saved';
       renderAll();
     } catch {
-      lastMessage = 'Could not save profile';
+      lastMessage = 'profile_save_failed';
       renderStatus();
     }
   }
@@ -440,7 +456,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     if (profileStoreReadOnly) return;
     const selected = currentProfile();
     if (!selected) return;
-    $('deleteDialogCopy').textContent = `“${selected.name}” will be removed. Current video settings will stay unchanged.`;
+    $('deleteDialogCopy').textContent = t('delete_profile_named', { name: selected.name });
     $('deleteDialog').showModal();
     $('cancelDelete').focus();
   }
@@ -456,11 +472,11 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
       loadCurrentDraft();
       $('deleteDialog').close();
       externalChangeNotice = false;
-      lastMessage = 'Profile deleted';
+      lastMessage = 'profile_deleted';
       renderAll({ write: true });
       $('profileSelect').focus();
     } catch {
-      lastMessage = 'Could not delete profile';
+      lastMessage = 'profile_delete_failed';
       renderStatus();
     }
   }
@@ -475,12 +491,12 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
 
   function storageChanged(changes, areaName) {
     if (areaName !== 'local') return;
-    let settingsChanged = false;
     const storeChanged = Profiles.STORE_KEY in changes;
+    const settingsChanged = Profiles.SETTINGS_KEYS.some(key => key in changes);
+    if (!storeChanged && !settingsChanged) return;
     for (const [key, change] of Object.entries(changes)) {
       if (typeof change.newValue === 'undefined') delete storageSnapshot[key];
       else storageSnapshot[key] = change.newValue;
-      if (Profiles.SETTINGS_KEYS.includes(key)) settingsChanged = true;
     }
 
     const hadLocalEdits = !Profiles.settingsEqual(draftSettings, draftOrigin);
@@ -496,7 +512,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
         if (loaded.needsWrite) {
           const migratedStore = loaded.store;
           chrome.storage.local.set({ [Profiles.STORE_KEY]: migratedStore })
-            .catch(error => enterProfileStoreReadOnly(error, 'Could not update profiles'));
+            .catch(error => enterProfileStoreReadOnly(error, 'profile_update_failed'));
         }
       } catch (error) {
         enterProfileStoreReadOnly(error);
@@ -537,6 +553,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
   function bindEvents() {
     $('fpsLimit').addEventListener('input', updateFpsLimitPresentation);
     $('settingsForm').addEventListener('input', () => {
+      $('targetFps').setCustomValidity('');
       readForm();
       externalChangeNotice = false;
       lastMessage = '';
@@ -551,6 +568,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     $('resetDraft').addEventListener('click', resetDraft);
     $('applySettings').addEventListener('click', applyDraft);
     $('profileDialogForm').addEventListener('submit', submitProfileDialog);
+    $('profileName').addEventListener('input', event => event.target.setCustomValidity(''));
     $('confirmDelete').addEventListener('click', deleteSelectedProfile);
     for (const closeButton of document.querySelectorAll('[data-close-dialog]')) {
       closeButton.addEventListener('click', () => closeButton.closest('dialog').close());
@@ -558,8 +576,30 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     chrome.storage.onChanged.addListener(storageChanged);
   }
 
+  function localize() {
+    document.documentElement.lang = getLanguage().replaceAll('_', '-');
+    translate(document);
+    for (const group of document.querySelectorAll('[data-choice]')) {
+      const options = $(group.dataset.choice).options;
+      for (const [index, button] of [...group.children].entries()) {
+        (button.querySelector('.look-name') || button).textContent = options[index].textContent;
+      }
+    }
+    if (draftSettings) updateFpsLimitPresentation();
+    if ($('profileDialog').open) updateProfileDialogLabels();
+    if ($('deleteDialog').open) {
+      $('deleteDialogCopy').textContent = t('delete_profile_named', { name: currentProfile()?.name || '' });
+    }
+    if (store || profileStoreReadOnly) renderStatus();
+    if (store) renderProfileSelect();
+  }
+
   async function initialize() {
     $('version').textContent = 'v' + chrome.runtime.getManifest().version;
+    await initLanguage();
+    bindLanguageSelect($('interfaceLanguage'), $('languageError'));
+    localize();
+    onLanguageChange(localize);
     try {
       storageSnapshot = await chrome.storage.local.get(null);
       runtimeSettings = Profiles.pickFlatSettings(storageSnapshot);
@@ -574,7 +614,7 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
       renderAll();
       if (loaded.needsWrite) await persistStore();
     } catch (error) {
-      enterProfileStoreReadOnly(error, 'Settings unavailable');
+      enterProfileStoreReadOnly(error, 'settings_unavailable');
     }
   }
 

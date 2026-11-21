@@ -138,7 +138,7 @@ foreach ($stem in @('rt_sr')) {
 # Every module the content script imports must be a web-accessible file.
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $extensionRoot 'manifest.json') | ConvertFrom-Json
 $accessible = @($manifest.web_accessible_resources | ForEach-Object { $_.resources })
-foreach ($prefix in @('src/*', 'engine/*', 'rt/*', 'assets/*')) {
+foreach ($prefix in @('src/*', 'engine/*', 'rt/*', 'assets/*', '_locales/*')) {
     if ($prefix -notin $accessible) { throw "manifest.json web_accessible_resources lacks $prefix" }
 }
 foreach ($module in Get-ChildItem -LiteralPath $sourceRoot -Recurse -Filter '*.js') {
@@ -186,7 +186,7 @@ if (!$stage.StartsWith($tempBase, [System.StringComparison]::OrdinalIgnoreCase))
 try {
     $stageDir = Join-Path $stage 'framegen-chrome'
     New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
-    Get-ChildItem -LiteralPath $extensionRoot | Where-Object { $_.Name -notlike '_*' } |
+    Get-ChildItem -LiteralPath $extensionRoot | Where-Object { $_.Name -notlike '_*' -or $_.Name -eq '_locales' } |
         ForEach-Object {
             Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stageDir $_.Name) -Recurse -Force
         }
@@ -206,7 +206,7 @@ try {
     $firefoxManifest | Add-Member -Force -NotePropertyName browser_specific_settings -NotePropertyValue (
         [pscustomobject]@{ gecko = [pscustomobject]@{
             id = 'framegen@flyhigh.dev'
-            strict_min_version = '141.0'
+            strict_min_version = '142.0'
             data_collection_permissions = [pscustomobject]@{ required = @('none') }
         } })
     [System.IO.File]::WriteAllText($firefoxManifestPath, ($firefoxManifest | ConvertTo-Json -Depth 20),

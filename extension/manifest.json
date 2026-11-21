@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Framegen - Frame Interpolation",
-  "version": "2.1.0",
-  "version_name": "2.1.0",
+  "name": "__MSG_extension_name__",
+  "default_locale": "en",
+  "version": "2.1.1",
+  "version_name": "2.1.1",
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
@@ -27,7 +28,7 @@
   "declarative_net_request": {
     "rule_resources": [{ "id": "cors_media", "enabled": true, "path": "rules.json" }]
   },
-  "description": "Real-time 2x+ frame interpolation with custom target FPS for any <video>. Runs locally on your GPU with WebGPU.",
+  "description": "__MSG_extension_description__",
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -38,7 +39,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["src/*", "engine/*", "rt/*", "assets/*"],
+      "resources": ["src/*", "engine/*", "rt/*", "assets/*", "_locales/*"],
       "matches": ["<all_urls>"]
     }
   ],

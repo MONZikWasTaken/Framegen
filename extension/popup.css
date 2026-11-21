@@ -1,0 +1,112 @@
+:root {
+  --warning: #e7b773;
+}
+
+body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 320px; /* Chrome uses the content width to size the toolbar popup. */
+  height: 280px;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 12.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+button { font: inherit; cursor: pointer; }
+:is(.text-button, a, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+#status, .help { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+
+.header, .brand, .view-button > span, .full-settings, .footer {
+  display: flex;
+  align-items: center;
+}
+.header { justify-content: space-between; gap: 12px; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+.brand { gap: 7px; }
+.brand img { display: block; border-radius: 4px; }
+.brand h1 { margin: 0; font-size: 13px; font-weight: 650; }
+.version { color: var(--text-2); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.view-button {
+  height: 25px;
+  padding-inline: 6px;
+  font-size: 11.5px;
+}
+.view-button > span { gap: 4px; }
+
+.player-status { padding: 11px 13px; overflow-wrap: anywhere; }
+.player-status h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; font-weight: 600; }
+.player-status h2::before { content: ""; flex: 0 0 5px; height: 5px; border-radius: 50%; background: #767d86; }
+.player-status[data-state="warning"] h2::before { background: var(--warning); }
+.state-hint { margin: 3px 0 0 12px; color: var(--text-2); font-size: 12px; }
+
+.details { display: grid; gap: 3px; margin: 0; font-size: 12px; line-height: 1.4; }
+.player-status h2:not([hidden]) ~ .details { margin-top: 6px; }
+.details > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; }
+.details dt { color: var(--text-2); }
+.details dd { margin: 0; text-align: end; }
+.gpu-notice { margin: 0 13px 10px; padding: 0 0 0 8px; border-inline-start: 2px solid var(--warning); color: var(--warning); font-size: 12px; }
+.gpu-notice p { margin: 0; }
+.text-button { padding: 1px 0 0; border: 0; background: transparent; color: inherit; text-decoration: underline; }
+
+.help { padding-inline: 13px; }
+.help details + details { border-top: 1px solid var(--line); }
+.help summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 0;
+  font-weight: 550;
+  list-style: none;
+  cursor: pointer;
+}
+.help summary::-webkit-details-marker { display: none; }
+.help summary::after {
+  content: "";
+  flex: 0 0 5px;
+  height: 5px;
+  margin: 0 2px;
+  border: solid var(--text-2);
+  border-width: 0 1px 1px 0;
+  transform: rotate(45deg);
+  transition: transform .12s ease;
+}
+.help details[open] > summary::after { transform: rotate(225deg); }
+.help :is(p, ol) { margin: 0 0 7px; color: var(--text-2); font-size: 12px; }
+.help ol { padding-inline-start: 16px; }
+.help b { color: var(--text); }
+
+.actions { padding: 4px 6px; border-block: 1px solid var(--line); }
+.popup-language {
+  display: grid;
+  align-items: center;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 7px;
+}
+.popup-language .select-field { --select-chevron-inset: 8px; }
+.popup-language select {
+  height: 30px;
+  padding-inline: 8px 26px;
+  background-position: right 8px center;
+  font-size: 12px;
+}
+.language-error { margin: 3px 7px; color: var(--warning); font-size: 12px; }
+.full-settings {
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 31px;
+  padding-inline: 7px;
+  text-align: start;
+}
+.full-settings svg { flex: none; }
+.footer { flex-wrap: wrap; gap: 5px 13px; padding: 6px 13px 8px; font-size: 11px; color: var(--text-2); }
+.footer a { color: inherit; text-decoration: none; }
+.footer a:hover { color: var(--text); text-decoration: underline; }
+.license { margin-inline-start: auto; font-size: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .help summary::after { transition: none; }
+}

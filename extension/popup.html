@@ -1,111 +1,102 @@
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
-<meta charset="utf-8">
-<style>
-  :root { color-scheme: dark; }
-  body { width: 320px; margin: 0; background: #0d0e10; color: #eceeef;
-         font: 12.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; user-select: none; }
-  .wrap { padding: 14px 14px 10px; }
-  .title { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 15px; font-weight: 650; }
-  .dot { width: 8px; height: 8px; border-radius: 50%; background: #4a4e55; }
-  .dot.on { background: #19c37d; box-shadow: 0 0 0 3px rgba(25,195,125,.18); }
-  .ver { color: #70767e; font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
-  #state { margin-left: auto; padding: 2px 8px; border-radius: 20px; background: #1a1c1f; color: #a3a8af;
-           font-size: 11px; font-weight: 600; }
-  #state.on { background: #14211c; color: #6fdcae; }
-  .tabs { display: flex; gap: 2px; margin-bottom: 10px; padding: 3px; background: #141618;
-          border: 1px solid #24272b; border-radius: 8px; }
-  .tabs button { flex: 1; padding: 5px 0; border: 0; border-radius: 5px; background: none; color: #a3a8af;
-                 font: 550 12px system-ui; cursor: pointer; transition: background-color .12s, color .12s; }
-  .tabs button:hover { color: #eceeef; }
-  .tabs button.act { background: #2a2e33; color: #fff; }
-  .card { padding: 10px 12px; background: #141618; border: 1px solid #24272b; border-radius: 8px; }
-  .card + .card { margin-top: 8px; }
-  .card:empty { display: none; }
-  #stat { font: 11.5px/1.7 ui-monospace, "Cascadia Mono", Consolas, monospace; color: #c9cdd2; white-space: pre-wrap; }
-  #sys { font-size: 12px; line-height: 1.6; color: #a3a8af; white-space: pre-wrap; }
-  #sys.warn { color: #f0c674; border-color: #5a4a1f; }
-  .hint { margin: 10px 2px 0; color: #70767e; font-size: 11.5px; }
-  .full-settings { width: 100%; height: 34px; display: flex; align-items: center; justify-content: space-between;
-                   margin: 10px 0 0; padding: 0 12px; border: 1px solid #34383d; border-radius: 7px;
-                   background: #212428; color: #eceeef; font: 550 12.5px system-ui; cursor: pointer;
-                   transition: background-color .12s, border-color .12s; }
-  .full-settings:hover { background: #2a2e33; border-color: #50555c; }
-  .full-settings:focus-visible, .tabs button:focus-visible, .foot a:focus-visible { outline: 2px solid #19c37d; outline-offset: 2px; }
-  .full-settings svg { flex: 0 0 auto; color: #a3a8af; }
-  #help h4 { margin: 12px 0 3px; color: #eceeef; font-size: 12.5px; font-weight: 600; }
-  #help h4:first-child { margin-top: 2px; }
-  #help p, #help ol { margin: 0 0 4px; color: #a3a8af; font-size: 12px; line-height: 1.55; }
-  #help ol { padding-left: 18px; }
-  #help b { color: #d5d8dc; font-weight: 600; }
-  .foot { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; padding-top: 9px;
-          border-top: 1px solid #24272b; }
-  .foot a { display: flex; align-items: center; gap: 6px; color: #a3a8af; font-size: 12px; text-decoration: none;
-            border-radius: 4px; }
-  .foot a:hover { color: #eceeef; }
-  .foot .v { color: #70767e; font-size: 11px; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Framegen</title>
+  <link rel="stylesheet" href="ui.css">
+  <link rel="stylesheet" href="popup.css">
+  <script type="module" src="popup.js"></script>
 </head>
 <body>
-<div class="wrap">
-  <div class="title"><span class="dot" id="dot"></span>Framegen <span class="ver" id="ver"></span><span id="state">Off</span></div>
-  <div class="tabs">
-    <button id="tabStatus" class="act">Status</button>
-    <button id="tabHelp">Help</button>
-  </div>
+  <header class="header">
+    <div class="brand">
+      <img src="icons/icon32.png" width="20" height="20" alt="">
+      <h1>Framegen</h1>
+      <span id="ver" class="version"></span>
+    </div>
+    <button id="tabHelp" class="button button-quiet view-button" type="button" aria-controls="help" aria-expanded="false">
+      <span id="openHelp" data-i18n="help">Help</span>
+      <span id="closeHelp" hidden>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="m11 5-7 7 7 7M4 12h16"/>
+        </svg>
+        <span data-i18n="status">Status</span>
+      </span>
+    </button>
+  </header>
 
-  <div id="status">
-    <div id="stat" class="card"></div>
-    <div id="sys" class="card"></div>
-    <div class="hint">Hover a video: the Framegen buttons appear on its left edge.</div>
-  </div>
+  <main>
+    <div id="status">
+      <section id="playerStatus" class="player-status" data-state="idle" data-i18n-aria-label="status">
+        <h2 id="state" aria-live="polite">Checking this tab…</h2>
+        <p id="stateHint" class="state-hint" hidden></p>
 
-  <div id="help" style="display:none">
-    <h4>"No GPU adapter" / does not start</h4>
-    <p>WebGPU is switched off in the browser. In Chrome:</p>
-    <ol>
-      <li>Open <b>chrome://settings/system</b></li>
-      <li>Enable "Use graphics acceleration when available"</li>
-      <li>Fully restart the browser</li>
-    </ol>
-    <p>Still nothing? Update the GPU driver from NVIDIA/AMD/Intel - old drivers
-       get blocklisted.</p>
-    <h4>Two GPUs (laptop)</h4>
-    <p>Browsers on Windows often land on the integrated GPU - fps barely improves.</p>
-    <ol>
-      <li>Windows Settings → System → Display → Graphics</li>
-      <li>Add the browser → High performance</li>
-      <li>Fully restart it</li>
-    </ol>
-    <p>Check: the GPU line on the Status tab should show the discrete card.</p>
-    <h4>Requirements</h4>
-    <p>Desktop Chrome or Edge 121+, or Firefox 141+ on Windows, and a GPU from
-       roughly 2016 or newer. Safari and phones - no.</p>
-    <h4>How to use</h4>
-    <p>Hover any video: the FG (on/off), picture and settings buttons appear on its left edge.
-       Compare, an original/processed split view, is in the full settings.</p>
-    <h4>What does not work</h4>
-    <p>Netflix, Crunchyroll and other DRM sites - the browser never hands us their
-       pixels, a platform limitation. On some sites the video may reload for a couple
-       of seconds the first time you enable FG (CORS) - that is normal.</p>
-  </div>
+        <dl id="details" class="details" hidden>
+          <div><dt data-i18n="popup_gpu_label">Graphics card</dt><dd id="gpu"></dd></div>
+          <div><dt>WebGPU</dt><dd data-i18n="popup_webgpu_available">Available</dd></div>
+        </dl>
+      </section>
+      <div id="gpuNotice" class="gpu-notice" hidden>
+        <p data-i18n="popup_integrated">Integrated GPU in use.</p>
+        <button id="showGpuHelp" class="text-button" type="button" data-i18n="popup_switch_gpu">How to switch GPUs</button>
+      </div>
+    </div>
 
-  <button id="fullSettings" class="full-settings" type="button">
-    <span>Open settings</span>
-    <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
-      <path fill="currentColor" d="M3 2h4v2H4v8h8V9h2v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm6 0h5v5h-2V5.4L7.7 9.7 6.3 8.3 10.6 4H9V2Z"/>
-    </svg>
-  </button>
+    <section id="help" class="help" data-i18n-aria-label="help" hidden>
+      <details name="help-topic" open>
+        <summary data-i18n="how_to_use">How to use</summary>
+        <p data-i18n="how_to_use_hint"></p>
+      </details>
+      <details name="help-topic">
+        <summary data-i18n="no_adapter_title">GPU adapter and startup issues</summary>
+        <p data-i18n="webgpu_help_intro"></p>
+        <ol>
+          <li><span data-i18n="open">Open</span> <b>chrome://settings/system</b></li>
+          <li data-i18n="chrome_acceleration"></li>
+          <li data-i18n="restart_browser"></li>
+        </ol>
+        <p data-i18n="driver_update"></p>
+      </details>
+      <details name="help-topic" id="gpuHelp">
+        <summary data-i18n="laptop_gpus">Two GPUs (laptop)</summary>
+        <p data-i18n="laptop_gpus_hint"></p>
+        <ol>
+          <li data-i18n="windows_graphics"></li>
+          <li data-i18n="windows_high_performance"></li>
+          <li data-i18n="restart_it"></li>
+        </ol>
+        <p data-i18n="check_gpu"></p>
+      </details>
+      <details name="help-topic">
+        <summary data-i18n="requirements">Requirements</summary>
+        <p data-i18n="requirements_hint"></p>
+      </details>
+      <details name="help-topic">
+        <summary data-i18n="limitations">Limitations</summary>
+        <p data-i18n="limitations_hint"></p>
+      </details>
+    </section>
 
-  <div class="foot">
-    <a href="https://github.com/MONZikWasTaken/Framegen" target="_blank">
-      <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
-      GitHub</a>
-    <a href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">FlyHigh engine</a>
-    <span class="v">Open source · MIT</span>
-  </div>
-</div>
-<script src="popup.js"></script>
+    <div class="actions">
+      <div class="popup-language">
+        <label for="interfaceLanguage" data-i18n="language">Interface language</label>
+        <span class="select-field"><select id="interfaceLanguage"></select></span>
+      </div>
+      <p id="languageError" class="language-error" role="status" hidden></p>
+      <button id="fullSettings" class="button button-quiet full-settings" type="button">
+        <span data-i18n="advanced_settings">Advanced settings</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 17 17 7M7.5 7H17v9.5"/>
+        </svg>
+      </button>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <a href="https://github.com/MONZikWasTaken/Framegen" target="_blank" rel="noopener noreferrer">GitHub</a>
+    <a href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer" data-i18n="flyhigh_engine_link">FlyHigh engine</a>
+    <span class="license">MIT</span>
+  </footer>
 </body>
 </html>

@@ -1,0 +1,719 @@
+{
+  "extension_name": {
+    "message": "Framegen - Frame Interpolation"
+  },
+  "extension_description": {
+    "message": "Real-time 2x+ frame interpolation with custom target FPS for any <video>. Runs locally on your GPU with WebGPU."
+  },
+  "framegen_settings": {
+    "message": "Framegen settings"
+  },
+  "settings": {
+    "message": "Settings"
+  },
+  "loading_settings": {
+    "message": "Loading settings…"
+  },
+  "powered_by": {
+    "message": "Powered by"
+  },
+  "flyhigh_engine": {
+    "message": "FlyHigh engine"
+  },
+  "flyhigh_engine_link": {
+    "message": "FlyHigh engine"
+  },
+  "open_github": {
+    "message": "Open Framegen on GitHub"
+  },
+  "sections": {
+    "message": "Sections"
+  },
+  "generation": {
+    "message": "Frame generation"
+  },
+  "motion": {
+    "message": "Motion"
+  },
+  "picture": {
+    "message": "Picture"
+  },
+  "player": {
+    "message": "Player"
+  },
+  "diagnostics": {
+    "message": "Diagnostics"
+  },
+  "language": {
+    "message": "Interface language"
+  },
+  "language_auto": {
+    "message": "Automatic ({language})"
+  },
+  "language_hint": {
+    "message": "Uses the browser language by default."
+  },
+  "language_save_failed": {
+    "message": "Could not save the language preference."
+  },
+  "profile": {
+    "message": "Profile"
+  },
+  "profile_actions": {
+    "message": "Profile actions"
+  },
+  "duplicate": {
+    "message": "Duplicate"
+  },
+  "rename": {
+    "message": "Rename"
+  },
+  "delete": {
+    "message": "Delete"
+  },
+  "new_profile": {
+    "message": "New profile"
+  },
+  "generation_desc": {
+    "message": "How many frames are generated and how they are paced."
+  },
+  "generation_hint": {
+    "message": "Generate in-between frames while a video plays."
+  },
+  "output_rate": {
+    "message": "Output rate"
+  },
+  "output_hint": {
+    "message": "Auto picks the smoothest rate your display and GPU can hold."
+  },
+  "auto_recommended": {
+    "message": "Auto · recommended"
+  },
+  "match_display": {
+    "message": "Match display"
+  },
+  "custom_fps": {
+    "message": "Custom FPS"
+  },
+  "factor_source": {
+    "message": "{factor}× source"
+  },
+  "custom_hint": {
+    "message": "2–1000. Stays at least 2× the source and within what the display and GPU allow."
+  },
+  "fps_limit": {
+    "message": "FPS limit"
+  },
+  "fps_limit_hint": {
+    "message": "A ceiling for Auto. It may run lower to stay smooth."
+  },
+  "unlimited": {
+    "message": "Unlimited"
+  },
+  "full_refresh": {
+    "message": "Full refresh rate"
+  },
+  "full_refresh_hint": {
+    "message": "Use the display's measured refresh rate instead of 97% of it."
+  },
+  "limit_display": {
+    "message": "Limit to display refresh rate"
+  },
+  "limit_display_hint": {
+    "message": "Never generate more frames than the screen can show. Off: generate as many as the GPU allows; the counter then reports generated frames."
+  },
+  "motion_auto": {
+    "message": "Motion-adaptive Auto"
+  },
+  "motion_auto_hint": {
+    "message": "Auto generates fewer frames on fast scenes, where artifacts would show. Off: always the highest rate the GPU allows."
+  },
+  "quality": {
+    "message": "Quality"
+  },
+  "quality_hint": {
+    "message": "The size the network runs at. Balanced is its native scale; higher costs more GPU time and rarely looks better."
+  },
+  "low_power": {
+    "message": "Low power"
+  },
+  "efficient": {
+    "message": "Efficient"
+  },
+  "balanced": {
+    "message": "Balanced"
+  },
+  "high": {
+    "message": "High"
+  },
+  "ultra": {
+    "message": "Ultra"
+  },
+  "motion_desc": {
+    "message": "How generated frames handle animation, patterns and on-screen text."
+  },
+  "animation": {
+    "message": "Animation mode"
+  },
+  "animation_hint": {
+    "message": "For drawn content: frames the animation repeats are not blended into the next drawing."
+  },
+  "cadence": {
+    "message": "Anime cadence smoothing"
+  },
+  "experimental": {
+    "message": "Experimental"
+  },
+  "cadence_hint": {
+    "message": "With Animation mode. Spreads animation drawn on twos and threes evenly over the frames each drawing is held for, so motion slides instead of stepping. Every shown frame is then generated; can look soft or wrong on fast action."
+  },
+  "pattern_repair": {
+    "message": "Repeating-pattern repair"
+  },
+  "pattern_hint": {
+    "message": "Re-checks motion on fences, railings and window grids, which can double during pans. Stronger with Animation mode. Small GPU cost."
+  },
+  "subtitle_guard": {
+    "message": "Subtitle protection"
+  },
+  "subtitle_guard_hint": {
+    "message": "Burnt-in subtitles, logos and HUDs are taken from the source frames instead of moving with the picture behind them."
+  },
+  "sharper_edges": {
+    "message": "Sharper edges"
+  },
+  "sharper_edges_hint": {
+    "message": "Bicubic sampling for generated frames: crisper edges, hair and texture. About 0.2 ms per generated frame."
+  },
+  "picture_desc": {
+    "message": "Looks and image processing applied to what you see."
+  },
+  "picture_mode": {
+    "message": "Picture mode"
+  },
+  "picture_mode_hint": {
+    "message": "A color and detail look on top of the video. Detail Boost sharpens and adds the 2× upscale where it applies."
+  },
+  "look_original": {
+    "message": "Original"
+  },
+  "look_cinema": {
+    "message": "Cinema"
+  },
+  "look_cinema_home": {
+    "message": "Cinema Home"
+  },
+  "look_noir": {
+    "message": "Noir"
+  },
+  "look_vivid": {
+    "message": "Vivid"
+  },
+  "look_sports": {
+    "message": "Sports"
+  },
+  "look_detail": {
+    "message": "Detail Boost"
+  },
+  "sharpness": {
+    "message": "Sharpness"
+  },
+  "sharpness_hint": {
+    "message": "Edge enhancement. High can create halos."
+  },
+  "off": {
+    "message": "Off"
+  },
+  "low": {
+    "message": "Low"
+  },
+  "medium": {
+    "message": "Medium"
+  },
+  "sharpness_high": {
+    "message": "High"
+  },
+  "upscale": {
+    "message": "Upscale"
+  },
+  "upscale_hint": {
+    "message": "2× neural upscaling when the player is larger than the video."
+  },
+  "hdr_hint": {
+    "message": "Brighter highlights on an HDR display."
+  },
+  "player_desc": {
+    "message": "What Framegen shows over the video."
+  },
+  "hover_controls": {
+    "message": "Hover controls"
+  },
+  "hover_hint": {
+    "message": "Show the Framegen buttons when the pointer is over a video."
+  },
+  "fps_counter": {
+    "message": "FPS counter"
+  },
+  "fps_counter_hint": {
+    "message": "Output frame rate and render time in the corner."
+  },
+  "watermark": {
+    "message": "Watermark"
+  },
+  "watermark_hint": {
+    "message": "The Framegen label while generation is on."
+  },
+  "warnings": {
+    "message": "Warnings"
+  },
+  "warnings_hint": {
+    "message": "Performance notices. Errors are always shown."
+  },
+  "subtitle_overlay": {
+    "message": "Subtitle overlay"
+  },
+  "subtitle_overlay_hint": {
+    "message": "Keep the player's subtitles above generated frames."
+  },
+  "diagnostics_desc": {
+    "message": "Tools for checking what Framegen does."
+  },
+  "compare": {
+    "message": "Compare"
+  },
+  "compare_hint": {
+    "message": "Split view: the original on the left, the processed picture on the right."
+  },
+  "debug": {
+    "message": "Debug overlay"
+  },
+  "debug_hint": {
+    "message": "A border around the processed area and detailed runtime numbers."
+  },
+  "up_to_date": {
+    "message": "Up to date"
+  },
+  "reset": {
+    "message": "Reset"
+  },
+  "save_profile": {
+    "message": "Save profile"
+  },
+  "apply": {
+    "message": "Apply"
+  },
+  "profile_name": {
+    "message": "Profile name"
+  },
+  "cancel": {
+    "message": "Cancel"
+  },
+  "create": {
+    "message": "Create"
+  },
+  "delete_profile_question": {
+    "message": "Delete profile?"
+  },
+  "delete_profile_generic": {
+    "message": "This profile will be removed. Current video settings will stay unchanged."
+  },
+  "status": {
+    "message": "Status"
+  },
+  "help": {
+    "message": "Help"
+  },
+  "no_adapter_title": {
+    "message": "GPU adapter and startup issues"
+  },
+  "webgpu_help_intro": {
+    "message": "WebGPU is switched off in the browser. In Chrome:"
+  },
+  "open": {
+    "message": "Open"
+  },
+  "chrome_acceleration": {
+    "message": "Enable \"Use graphics acceleration when available\""
+  },
+  "restart_browser": {
+    "message": "Fully restart the browser"
+  },
+  "driver_update": {
+    "message": "Still nothing? Update the GPU driver from NVIDIA/AMD/Intel - old drivers get blocklisted."
+  },
+  "laptop_gpus": {
+    "message": "Two GPUs (laptop)"
+  },
+  "laptop_gpus_hint": {
+    "message": "Browsers on Windows often land on the integrated GPU - fps barely improves."
+  },
+  "windows_graphics": {
+    "message": "Windows Settings → System → Display → Graphics"
+  },
+  "windows_high_performance": {
+    "message": "Add the browser → High performance"
+  },
+  "restart_it": {
+    "message": "Fully restart it"
+  },
+  "check_gpu": {
+    "message": "Check: the GPU line on the Status tab should show the discrete card."
+  },
+  "requirements": {
+    "message": "Requirements"
+  },
+  "requirements_hint": {
+    "message": "Desktop Chrome or Edge 121+, or Firefox 142+ on Windows, and a GPU from roughly 2016 or newer. Safari and phones - no."
+  },
+  "how_to_use": {
+    "message": "How to use"
+  },
+  "how_to_use_hint": {
+    "message": "Hover any video: the FG (on/off), picture and settings buttons appear on its left edge. Compare, an original/processed split view, is in the full settings."
+  },
+  "limitations": {
+    "message": "What does not work"
+  },
+  "limitations_hint": {
+    "message": "Netflix, Crunchyroll and other DRM sites - the browser never hands us their pixels, a platform limitation. On some sites the video may reload for a couple of seconds the first time you enable FG (CORS) - that is normal."
+  },
+  "upscale_short_hint": {
+    "message": "2× neural resolution boost"
+  },
+  "hdr_short_hint": {
+    "message": "Brighter highlights on HDR displays"
+  },
+  "profile_short_hint": {
+    "message": "Apply a saved setup"
+  },
+  "loading_profiles": {
+    "message": "Loading profiles…"
+  },
+  "generation_short_hint": {
+    "message": "Create smoother motion"
+  },
+  "output_short_hint": {
+    "message": "How playback is paced"
+  },
+  "auto_limit_short_hint": {
+    "message": "Common rates · Auto may run lower"
+  },
+  "quality_short_hint": {
+    "message": "Detail against GPU load"
+  },
+  "fps_counter_short_hint": {
+    "message": "Show frame rate and render time"
+  },
+  "watermark_short_hint": {
+    "message": "Show the Framegen label on video"
+  },
+  "warnings_short_hint": {
+    "message": "Show non-critical notices over video"
+  },
+  "advanced_settings": {
+    "message": "Advanced settings"
+  },
+  "compare_original": {
+    "message": "orig."
+  },
+  "profile_read_only": {
+    "message": "Profile storage is read-only"
+  },
+  "profile_schema_unsupported": {
+    "message": "This version of Framegen does not support profile format {version}."
+  },
+  "fps_value": {
+    "message": "{rate} FPS"
+  },
+  "custom_fps_range": {
+    "message": "Enter a Custom FPS from 2 to 1000"
+  },
+  "current_settings": {
+    "message": "Current settings"
+  },
+  "my_profiles": {
+    "message": "My profiles"
+  },
+  "current_profile": {
+    "message": "Current: {name}"
+  },
+  "custom_settings": {
+    "message": "Custom settings"
+  },
+  "current_after": {
+    "message": "{current} · changed after {name}"
+  },
+  "changed_another_tab": {
+    "message": "Changed in another tab"
+  },
+  "unsaved_preview": {
+    "message": "Unsaved preview"
+  },
+  "previewing": {
+    "message": "Previewing {name}"
+  },
+  "settings_applied": {
+    "message": "Settings applied"
+  },
+  "apply_failed": {
+    "message": "Could not apply settings"
+  },
+  "custom_profile": {
+    "message": "Custom profile"
+  },
+  "duplicate_profile": {
+    "message": "Duplicate profile"
+  },
+  "create_copy": {
+    "message": "Create copy"
+  },
+  "profile_copy_named": {
+    "message": "{name} copy"
+  },
+  "profile_copy": {
+    "message": "Profile copy"
+  },
+  "rename_profile": {
+    "message": "Rename profile"
+  },
+  "enter_profile_name": {
+    "message": "Enter a profile name."
+  },
+  "profile_renamed": {
+    "message": "Profile renamed"
+  },
+  "profile_saved": {
+    "message": "Profile saved"
+  },
+  "profile_save_failed": {
+    "message": "Could not save profile"
+  },
+  "delete_profile_named": {
+    "message": "“{name}” will be removed. Current video settings will stay unchanged."
+  },
+  "profile_deleted": {
+    "message": "Profile deleted"
+  },
+  "profile_delete_failed": {
+    "message": "Could not delete profile"
+  },
+  "profile_update_failed": {
+    "message": "Could not update profiles"
+  },
+  "settings_unavailable": {
+    "message": "Settings unavailable"
+  },
+  "popup_checking": {
+    "message": "Checking this tab…"
+  },
+  "popup_tab_unavailable": {
+    "message": "This tab couldn’t be checked"
+  },
+  "popup_blocked": {
+    "message": "Framegen is blocked on this site"
+  },
+  "popup_gpu_label": {
+    "message": "Graphics card"
+  },
+  "popup_webgpu_available": {
+    "message": "Available"
+  },
+  "popup_gpu_name_unavailable": {
+    "message": "Detected (name unavailable)"
+  },
+  "popup_gpu_missing": {
+    "message": "No WebGPU adapter found"
+  },
+  "popup_gpu_missing_hint": {
+    "message": "Check that graphics acceleration is enabled in your browser."
+  },
+  "popup_integrated": {
+    "message": "The browser is using the integrated GPU."
+  },
+  "popup_switch_gpu": {
+    "message": "How to switch GPUs"
+  },
+  "toggle_framegen": {
+    "message": "Toggle Framegen"
+  },
+  "open_framegen_settings": {
+    "message": "Open Framegen settings"
+  },
+  "open_picture_settings": {
+    "message": "Open picture settings"
+  },
+  "framegen_picture": {
+    "message": "Framegen picture"
+  },
+  "target_short_hint": {
+    "message": "Exact target · minimum 2× source"
+  },
+  "profiles_unavailable": {
+    "message": "Profiles unavailable"
+  },
+  "choose_option": {
+    "message": "Choose an option"
+  },
+  "reload_updated": {
+    "message": "Reload the page: Framegen was updated"
+  },
+  "settings_from_toolbar": {
+    "message": "Open settings from the toolbar icon"
+  },
+  "no_video": {
+    "message": "Framegen: no video found"
+  },
+  "framegen_error": {
+    "message": "Framegen error: {detail}"
+  },
+  "blocked_wasm": {
+    "message": "This site's security policy forbids WebAssembly for extensions, so Framegen cannot run here"
+  },
+  "gpu_help": {
+    "message": "WebGPU is off. Enable \"Use graphics acceleration\" in the browser settings, restart the browser and update the GPU driver. Very old GPUs are not supported."
+  },
+  "no_adapter_help": {
+    "message": "The browser gives WebGPU no GPU right now. Restart the browser (after a driver reset, for example when a game crashed, it stays off until then); if it persists, check that WebGPU is hardware accelerated on chrome://gpu and update the GPU driver."
+  },
+  "unknown_gpu": {
+    "message": "unknown GPU"
+  },
+  "cors_reload": {
+    "message": "Framegen: the video lacks CORS, reloading it"
+  },
+  "integrated_advice": {
+    "message": "The browser is using the integrated GPU ({gpu}). In Windows Settings → Display → Graphics, choose High performance for the browser, then restart it."
+  },
+  "cors_unreadable": {
+    "message": "Framegen: the video is not readable (CORS)"
+  },
+  "redraw_failed": {
+    "message": "Framegen: could not redraw the paused video"
+  },
+  "gpu_recovering": {
+    "message": "Framegen: GPU reset detected, recovering"
+  },
+  "gpu_restored": {
+    "message": "GPU connection restored"
+  },
+  "gpu_recovery_failed": {
+    "message": "Framegen: GPU recovery failed, reload this page"
+  },
+  "auto": {
+    "message": "Auto"
+  },
+  "auto_limit": {
+    "message": "Auto · max {rate} FPS"
+  },
+  "custom_rate": {
+    "message": "Custom {rate} FPS"
+  },
+  "measuring": {
+    "message": "measuring"
+  },
+  "rate_approx": {
+    "message": " (~{rate} FPS)"
+  },
+  "state_invalid_target": {
+    "message": "Target FPS must be a positive number"
+  },
+  "state_no_two_x_display": {
+    "message": "Display refresh rate is below the minimum needed for frame generation"
+  },
+  "state_no_two_x_gpu": {
+    "message": "GPU cannot sustain the minimum FPS at this quality"
+  },
+  "state_probing_gpu": {
+    "message": "testing GPU performance"
+  },
+  "clamp_display": {
+    "message": "browser callback limit"
+  },
+  "clamp_gpu": {
+    "message": "GPU limit"
+  },
+  "clamp_runtime": {
+    "message": "scheduler limit"
+  },
+  "clamp_minimum": {
+    "message": "minimum output rate"
+  },
+  "clamp_gpu_probe": {
+    "message": "testing GPU performance"
+  },
+  "warning_gpu_clamp": {
+    "message": "{requested} FPS capped to {output} FPS at this quality"
+  },
+  "warning_old_firefox": {
+    "message": "This Firefox version is too old for smooth frame generation: update Firefox"
+  },
+  "warning_drops": {
+    "message": "Frames are dropping: lower the output rate or the quality, or switch to Auto"
+  },
+  "warning_auto_gpu": {
+    "message": "The GPU cannot keep up even at 2x: lower the quality"
+  },
+  "warning_fixed_gpu": {
+    "message": "The GPU sustains {actual}× at this quality, not {requested}×"
+  },
+  "hud_fps_rate": {
+    "message": "FG {fps}fps · {rate} · {mid}ms"
+  },
+  "live": {
+    "message": "LIVE"
+  },
+  "play": {
+    "message": "Play"
+  },
+  "pause": {
+    "message": "Pause"
+  },
+  "mute": {
+    "message": "Mute"
+  },
+  "unmute": {
+    "message": "Unmute"
+  },
+  "seek": {
+    "message": "Playback position"
+  },
+  "volume": {
+    "message": "Volume"
+  },
+  "fullscreen": {
+    "message": "Fullscreen"
+  },
+  "kick_rewind": {
+    "message": "Kick restarted the stream from the beginning: back at {time}"
+  },
+  "factor_2": {
+    "message": "2× source"
+  },
+  "factor_3": {
+    "message": "3× source"
+  },
+  "factor_4": {
+    "message": "4× source"
+  },
+  "factor_5": {
+    "message": "5× source"
+  },
+  "factor_6": {
+    "message": "6× source"
+  },
+  "quality_low_power": {
+    "message": "Low power · 288p"
+  },
+  "quality_efficient": {
+    "message": "Efficient · 360p"
+  },
+  "quality_balanced": {
+    "message": "Balanced · 480p"
+  },
+  "quality_high": {
+    "message": "High · 720p"
+  },
+  "quality_ultra": {
+    "message": "Ultra · 1080p"
+  }
+}

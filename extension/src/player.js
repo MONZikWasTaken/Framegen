@@ -7,22 +7,35 @@ import { loadEngine, tuneStore, SIZES } from './engine.js';
 import { makeReadable, isCorsError } from './capture.js';
 import { Presenter } from './present.js';
 import { Upscaler } from './upscale.js';
+import { t, tEnglish } from './i18n.js';
 
 const url = p => chrome.runtime.getURL(p);
 const ENGINE_URLS = {
-  module: url('engine/flyhigh_web.js'), adapters: url('engine/adapters.js'),
   graph: url('engine/graph.json'), manifest: url('engine/flyhighfg.json'), weights: url('engine/flyhighfg.bin'),
 };
-const SR_URLS = { module: url('rt/sr.js'), weights: url('assets/rt_sr.bin'), manifest: url('assets/rt_sr.json') };
-const BLOCKED_MESSAGE = "This site's security policy forbids WebAssembly for extensions, so Framegen cannot run here";
-const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in the browser settings, restart the browser and update the GPU driver. Very old GPUs are not supported.';
-const NO_ADAPTER_HELP = 'The browser gives WebGPU no GPU right now. Restart the browser (after a driver reset, for example when a game crashed, it stays off until then); if it persists, check that WebGPU is hardware accelerated on chrome://gpu and update the GPU driver.';
+const SR_URLS = { weights: url('assets/rt_sr.bin'), manifest: url('assets/rt_sr.json') };
 const MAX_INPUTS = 24, MAX_OUTPUTS = 20;
 // an output not named by a present within this time after its due was dropped or superseded: the slot is free again
 const OUTPUT_HOLD_MS = 250;
 const UI_INTERVAL_MS = 1000 / 15;
 const HUD_INTERVAL_MS = 400;
 const TUNE_IDLE_POLL_MS = 3000, TUNE_FORCE_AFTER_MS = 120000;
+const rateNumber = value => Number(value.toFixed(2));
+
+function planWarning(plan, message = t) {
+  switch (plan.state) {
+    case 'no_two_x_gpu': return message('state_no_two_x_gpu');
+    case 'no_two_x_display': return message('state_no_two_x_display');
+    case 'invalid_target': return message('state_invalid_target');
+    case 'probing_gpu': return message('state_probing_gpu');
+  }
+  if (plan.clamp === 'gpu' && plan.requested_hz != null && plan.output_hz != null) {
+    return message('warning_gpu_clamp', {
+      requested: rateNumber(plan.requested_hz), output: rateNumber(plan.output_hz),
+    });
+  }
+  return plan.warning;
+}
 
 export const STREAM_KEYS = ['res', 'anime', 'periodicRepair', 'cadenceSmoothing', 'guard', 'renderCubic', 'sr'];
 export const PACER_KEYS = ['factor', 'targetFps', 'fpsLimit', 'limitToDisplay', 'fillDisplay', 'motionAdaptive', 'anime', 'cadenceSmoothing', 'periodicRepair'];
@@ -104,10 +117,10 @@ export class Player {
     if (!this.backendLoading) {
       this.backendLoading = (async () => {
         await this.settings.ready;
-        if (!navigator.gpu) throw new Error(GPU_HELP);
+        if (!navigator.gpu) throw new Error(t('gpu_help'));
         // the engine would fail on the same empty answer with wgpu's backend dump instead of something a viewer can act on
         const adapter = await navigator.gpu.requestAdapter().catch(() => null);
-        if (!adapter) throw new Error(NO_ADAPTER_HELP);
+        if (!adapter) throw new Error(t('no_adapter_help'));
         let backend;
         try {
           backend = await loadEngine(ENGINE_URLS);
@@ -115,9 +128,9 @@ export class Player {
           if (e?.wasmBlocked) {
             // Chrome applies the page's CSP to the content script's world when WebAssembly compiles: without
             // 'wasm-unsafe-eval' or 'unsafe-eval' in its script-src nothing in the extension can run the engine here
-            this.blocked = BLOCKED_MESSAGE;
-            log(this.blocked, e.message);
-            throw new Error(this.blocked);
+            this.blocked = true;
+            log(t('blocked_wasm'), e.message);
+            throw new Error(t('blocked_wasm'));
           }
           throw e;
         }
@@ -137,15 +150,18 @@ export class Player {
 
   // Adapter info for the popup before any device exists: no device, no weights.
   async probeAdapter() {
-    if (this.backend || this.sys.gpu !== '-' || !navigator.gpu) return;
+    if (this.backend || this.sys.gpu !== '-') return true;
+    if (!navigator.gpu) return false;
     try {
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) return;
+      if (this.backend) return true;
+      if (!adapter) return false;
       const info = adapter.info || {};
-      this.sys.gpu = info.description || [info.vendor, info.architecture].filter(Boolean).join(' ') || 'unknown GPU';
+      this.sys.gpu = info.description || [info.vendor, info.architecture].filter(Boolean).join(' ');
       this.sys.f16 = adapter.features.has('shader-f16');
       this.sys.integrated = isIntegrated(this.sys.gpu);
-    } catch { /* leave unknown */ }
+      return true;
+    } catch { return !!this.backend; }
   }
 
   prepareInterpolation(backend) {
@@ -162,7 +178,7 @@ export class Player {
   }
 
   async preload() {
-    if (this.blocked) throw new Error(this.blocked);
+    if (this.blocked) throw new Error(t('blocked_wasm'));
     const backend = await this.ensureBackend();
     if (this.cfg.fg) await this.prepareInterpolation(backend);
     return backend;
@@ -512,7 +528,7 @@ export class Player {
         this.probe(video);
       } catch (e) {
         if (isCorsError(e)) {
-          this.notices.showCritical('Framegen: the video lacks CORS, reloading it');
+          this.notices.showCritical(t('cors_reload'));
           await makeReadable(video, log);
           if (epoch !== this.epoch || this.video !== video) return;
           try { this.probe(video); } catch (e2) { log('probe skipped', e2.name || e2); }
@@ -541,8 +557,7 @@ export class Player {
     if (!this.needsCanvas()) { this.overlay.passthrough(); this.preparing(false); }
     this.notices.setHud('', this.cfg.debug || this.cfg.showFps);
     if (this.sys.integrated) {
-      this.notices.advise(`Chrome is running on the integrated GPU (${this.sys.gpu}). For full speed: `
-        + 'Windows Settings → Display → Graphics → Chrome → High performance, then restart Chrome.', 14000);
+      this.notices.advise(t('integrated_advice', { gpu: this.sys.gpu || t('unknown_gpu') }), 14000);
     }
     this.hooks.onStateChange(true);
     this.armVideoFrames(epoch);
@@ -619,7 +634,7 @@ export class Player {
       if (!video.videoWidth || !video.videoHeight) return;
       if (this.cfg.fg && !this.interpolationReady && !this.kernelsReady) {
         this.prepareInterpolation(this.backend).catch(e => {
-          if (this.running && this.cfg.fg && epoch === this.epoch) this.fail('Framegen error: ' + (e?.message || e), e);
+          if (this.running && this.cfg.fg && epoch === this.epoch) this.fail(t('framegen_error', { detail: e?.message || e }), e);
         });
       }
       if (!this.cfg.fg || !this.interpolationReady) {
@@ -687,9 +702,9 @@ export class Player {
       if (e?.name === 'OperationError') {
         log('frame skipped (decoder gap)');
       } else if (isCorsError(e)) {
-        this.fail('Framegen: the video is not readable (CORS)', e);
+        this.fail(t('cors_unreadable'), e);
       } else {
-        this.fail('Framegen error: ' + (e?.message || e), e);
+        this.fail(t('framegen_error', { detail: e?.message || e }), e);
       }
     } finally {
       if (this.busyEpoch === epoch) this.busyEpoch = null;
@@ -849,7 +864,7 @@ export class Player {
       this.source.write(slot, this.video);
       this.present(this.stream.inputTexture(slot), performance.now(), { source: slot });
     }).catch(e => {
-      if (epoch === this.epoch && this.running && e?.name !== 'OperationError') this.fail('Framegen: could not redraw the paused video', e);
+      if (epoch === this.epoch && this.running && e?.name !== 'OperationError') this.fail(t('redraw_failed'), e);
     });
   }
 
@@ -883,18 +898,18 @@ export class Player {
     this.overlay.hideInstant();
     if (!wasRunning || !video?.isConnected || this.recovering) { this.hooks.onStateChange(false); return; }
     this.recovering = true;
-    this.notices.showCritical('Framegen: GPU reset detected, recovering');
+    this.notices.showCritical(t('gpu_recovering'));
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await this.ensureBackend();
           await this.start(video);
-          if (this.running) { this.notices.advise('GPU connection restored', 3500); return; }
+          if (this.running) { this.notices.advise(t('gpu_restored'), 3500); return; }
         } catch (e) {
           log('recovery attempt failed', e);
         }
       }
-      this.notices.showCritical('Framegen: GPU recovery failed, reload this page');
+      this.notices.showCritical(t('gpu_recovery_failed'));
       this.hooks.onStateChange(false);
     } finally {
       this.recovering = false;
@@ -906,23 +921,22 @@ export class Player {
     try { return this.pacer ? this.pacer.report() : null; } catch { return null; }
   }
 
-  rateLabel() {
+  rateLabel(message = t) {
     const c = this.cfg;
-    if (c.factor === 'auto') return c.fpsLimit !== null ? `Auto · max ${Number(c.fpsLimit.toFixed(2))} FPS` : 'Auto';
-    if (c.factor === 'hz') return 'Match display';
-    if (c.factor === 'target') return `Custom ${Number(c.targetFps.toFixed(2))} FPS`;
-    return `${c.factor}× source`;
+    if (c.factor === 'auto') return c.fpsLimit !== null ? message('auto_limit', { rate: rateNumber(c.fpsLimit) }) : message('auto');
+    if (c.factor === 'hz') return message('match_display');
+    if (c.factor === 'target') return message('custom_rate', { rate: rateNumber(c.targetFps) });
+    return message('factor_source', { factor: c.factor });
   }
 
-  rateState(r) {
-    const label = this.rateLabel();
+  rateState(r, message = t) {
+    const label = this.rateLabel(message);
     const plan = r?.plan;
     if (!plan || plan.state === 'factor') return label;
-    const hz = plan.output_hz ? ` (~${Number(plan.output_hz.toFixed(2))} FPS)` : '';
-    if (plan.state === 'measuring') return `${label} · measuring`;
-    if (!plan.interpolation_allowed) return `${label} · ${plan.warning || plan.state.replace(/_/g, ' ')}`;
-    if (plan.clamp === 'display') return `${label}${hz} · browser callback limit`;
-    if (plan.clamp) return `${label}${hz} · ${plan.clamp.replace(/_/g, ' ')}`;
+    const hz = plan.output_hz ? message('rate_approx', { rate: rateNumber(plan.output_hz) }) : '';
+    if (plan.state === 'measuring') return `${label} · ${message('measuring')}`;
+    if (!plan.interpolation_allowed) return `${label} · ${planWarning(plan, message) || plan.state.replaceAll('_', ' ')}`;
+    if (plan.clamp) return `${label}${hz} · ${message(`clamp_${plan.clamp}`)}`;
     return `${label}${hz}`;
   }
 
@@ -931,16 +945,18 @@ export class Player {
   warningText(r) {
     const c = this.cfg;
     if (!c.fg || !r) return null;
-    if (this.source?.path === 'canvas') return 'This Firefox version is too old for smooth frame generation: update Firefox';
+    if (this.source?.path === 'canvas') return t('warning_old_firefox');
     const presents = Math.max(1, this.stats.fpsWin.length);
     const dropping = (this.stats.dropWin.length / 2) / presents > 0.12;
     const fixed = typeof c.factor === 'number';
-    if (fixed && dropping) return 'Frames are dropping: lower the output rate or the quality, or switch to Auto';
+    if (fixed && dropping) return t('warning_drops');
     const plan = r.plan;
-    if (c.factor === 'auto' && plan?.state === 'no_two_x_gpu') return 'The GPU cannot keep up even at 2x: lower the quality';
+    if (c.factor === 'auto' && plan?.state === 'no_two_x_gpu') return t('warning_auto_gpu');
     if (plan?.warning && !['measuring', 'factor'].includes(plan.state)
-        && !['display', 'minimum', 'runtime'].includes(plan.clamp)) return plan.warning;
-    if (fixed && this.stats.factor > 1 && this.stats.factor < c.factor) return `The GPU sustains ${this.stats.factor}× at this quality, not ${c.factor}×`;
+        && !['display', 'minimum', 'runtime'].includes(plan.clamp)) return planWarning(plan);
+    if (fixed && this.stats.factor > 1 && this.stats.factor < c.factor) {
+      return t('warning_fixed_gpu', { actual: this.stats.factor, requested: c.factor });
+    }
     return null;
   }
 
@@ -949,11 +965,11 @@ export class Player {
     const fps = this.stats.fpsWin.length;
     const v = this.video;
     const mid = r ? r.mid_cost_ms : 0;
-    if (!this.cfg.debug) return `FG ${fps}fps · ${this.rateLabel()} · ${mid.toFixed(0)}ms`;
+    if (!this.cfg.debug) return t('hud_fps_rate', { fps, rate: this.rateLabel(), mid: mid.toFixed(0) });
     if (!r) return `FG ${fps}fps`;
     const srcHz = r.source_hz ? r.source_hz.toFixed(0) : '?';
     return [
-      `${v.videoWidth}x${v.videoHeight}@${srcHz} → ${fps}fps ×${this.stats.factor} (${this.rateLabel()})`,
+      `${v.videoWidth}x${v.videoHeight}@${srcHz} → ${fps}fps ×${this.stats.factor} (${this.rateLabel(tEnglish)})`,
       `pair ${r.pair_cost_ms.toFixed(1)} + mid ${mid.toFixed(1)}ms@${this.cfg.res}p · present ${r.present_cost_ms.toFixed(1)}`,
       `buf ${r.delay_ms.toFixed(0)} · rAF ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
       `drop ${this.stats.drops} (${r.pressure.toFixed(1)}) · penalty ${r.penalty}+${r.strain_penalty}`,
@@ -968,14 +984,22 @@ export class Player {
     const video = this.video || this.hooks.candidateVideo();
     const frameSize = this.spec || this.pictureInput;
     const srNeeded = !frameSize || Upscaler.needed(frameSize.width, frameSize.height, this.overlay.width, this.overlay.height);
-    const srState = this.wantsUpscale() ? (!this.backend?.f16 && this.backend ? 'unavailable (no f16)' : !this.upscaler?.ready ? 'loading' : srNeeded ? 'on x2' : 'ready, not needed at this size') : 'off';
+    let srState = 'off';
+    if (this.wantsUpscale()) {
+      if (this.backend && !this.backend.f16) srState = 'unavailable (no f16)';
+      else if (!this.upscaler?.ready) srState = 'loading';
+      else srState = srNeeded ? 'on x2' : 'ready, not needed at this size';
+    }
+    const engine = this.backend?.class || (this.blocked
+      ? `unavailable (${tEnglish('blocked_wasm')})` : 'not loaded');
+    const hdr = !this.sys.hdrOk ? 'display not HDR' : c.hdr ? (this.sys.hdrOn ? 'on' : 'failed, SDR') : 'off';
     const lines = [
-      `GPU: ${this.sys.gpu}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
-      `engine: ${this.backend ? this.backend.class : (this.blocked ? 'unavailable (' + this.blocked + ')' : 'not loaded')}`,
+      `GPU: ${this.sys.gpu || 'unknown GPU'}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
+      `engine: ${engine}`,
       `FG: ${c.fg ? 'on' : 'OFF'} · upscale: ${srState}`,
       `source: ${video?.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : 'unknown'}`,
-      `output rate: ${this.rateState(r)}`,
-      `HDR: ${!this.sys.hdrOk ? 'display not HDR' : (c.hdr ? (this.sys.hdrOn ? 'on' : 'failed, SDR') : 'off')}`,
+      `output rate: ${this.rateState(r, tEnglish)}`,
+      `HDR: ${hdr}`,
       `sharpness: ${c.sharpness === 0 ? 'off' : c.sharpness}`,
       `status: ${this.running ? 'running' : 'stopped'}`,
     ];
@@ -997,7 +1021,7 @@ export class Player {
     return {
       running: this.running,
       gpu: this.sys.gpu, integrated: this.sys.integrated, f16: this.sys.f16,
-      engine: this.backend ? this.backend.class : null, blocked: this.blocked,
+      engine: this.backend ? this.backend.class : null, blocked: this.blocked ? t('blocked_wasm') : null,
       fps: this.stats.fpsWin.length, factor: this.stats.factor,
       midMs: r ? +r.mid_cost_ms.toFixed(1) : 0, pairMs: r ? +r.pair_cost_ms.toFixed(1) : 0,
       drops: this.stats.drops, res: this.cfg.res,

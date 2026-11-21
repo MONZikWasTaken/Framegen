@@ -2,6 +2,7 @@
 // (and on its own quality switches), and for a rewound live stream it then plays the recording from 0: the viewer
 // lands hours back, at the start of the stream. The player never does this to a recording on purpose, so when a
 // rebuilt source of the same recording starts at 0, the position from before the rebuild is put back.
+import { t } from './i18n.js';
 
 const NEAR_START_S = 5;       // where a rebuilt source starts when the player lost the position
 const MIN_POSITION_S = 30;    // below this there is nothing worth restoring
@@ -62,7 +63,7 @@ export function watchKickDvr({ log = () => {} } = {}) {
     if (to === null) return;
     v.currentTime = to;
     log('kick: the player restarted the recording at 0, back to', to.toFixed(1));
-    toast(`Kick restarted the stream from the beginning: back at ${clock(to)}`);
+    toast(t('kick_rewind', { time: clock(to) }));
   };
   for (const type of ['timeupdate', 'seeking']) document.addEventListener(type, note, true);
   document.addEventListener('emptied', e => {
