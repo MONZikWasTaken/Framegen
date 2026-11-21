@@ -12,7 +12,10 @@
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: 320px;
+  height: 280px;
   max-width: 100vw;
   margin: 0;
   background: var(--bg);
@@ -21,6 +24,9 @@ body {
 }
 button { font: inherit; cursor: pointer; }
 :is(button, a, summary):focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+
+main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+#status, .help { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 
 .header, .brand, .view-button > span, .full-settings, .footer {
   display: flex;
@@ -49,7 +55,7 @@ button { font: inherit; cursor: pointer; }
 .player-status[data-state="blocked"] h2::before { background: var(--warning); }
 .state-hint { margin: 3px 0 0 12px; color: var(--muted); font-size: 12px; }
 
-.details { display: grid; gap: 4px; margin: 7px 0 0; }
+.details { display: grid; gap: 3px; margin: 6px 0 0; font-size: 12px; line-height: 1.4; }
 .details > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; }
 .details dt { color: var(--muted); }
 .details dd { display: flex; justify-content: flex-end; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; margin: 0; text-align: end; font-variant-numeric: tabular-nums; }
@@ -59,7 +65,7 @@ button { font: inherit; cursor: pointer; }
 .gpu-notice p { margin: 0; }
 .text-button { padding: 1px 0 0; border: 0; background: transparent; color: inherit; text-decoration: underline; }
 
-.help { max-height: 370px; overflow-y: auto; scrollbar-width: thin; padding-inline: 13px; }
+.help { padding-inline: 13px; }
 .help details + details { border-top: 1px solid var(--line); }
 .help summary {
   display: flex;
