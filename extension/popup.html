@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Framegen</title>
+  <link rel="stylesheet" href="ui.css">
   <link rel="stylesheet" href="popup.css">
   <script type="module" src="popup.js"></script>
 </head>
@@ -14,7 +15,7 @@
       <h1>Framegen</h1>
       <span id="ver" class="version"></span>
     </div>
-    <button id="tabHelp" class="view-button" type="button" aria-controls="help" aria-expanded="false">
+    <button id="tabHelp" class="button button-quiet view-button" type="button" aria-controls="help" aria-expanded="false">
       <span id="openHelp" data-i18n="help">Help</span>
       <span id="closeHelp" hidden>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -83,7 +84,7 @@
         <select id="interfaceLanguage"></select>
       </div>
       <p id="languageError" class="language-error" role="status" hidden></p>
-      <button id="fullSettings" class="full-settings" type="button">
+      <button id="fullSettings" class="button button-quiet full-settings" type="button">
         <span data-i18n="open_settings">Open settings</span>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="M7 17 17 7M7.5 7H17v9.5"/>
