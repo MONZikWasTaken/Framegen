@@ -512,38 +512,35 @@
   "popup_checking": {
     "message": "Проверяем вкладку…"
   },
-  "popup_no_video": {
-    "message": "Видео не обнаружено"
+  "popup_tab_unavailable": {
+    "message": "Не удалось проверить вкладку"
   },
   "popup_no_video_hint": {
     "message": "Откройте видео. При наведении на него появятся кнопки Framegen."
   },
   "popup_ready": {
-    "message": "Framegen выключен"
+    "message": "Готов к работе"
   },
   "popup_blocked": {
     "message": "Сайт блокирует Framegen"
   },
   "popup_running": {
-    "message": "Framegen активен"
+    "message": "Framegen работает"
   },
-  "popup_output_label": {
-    "message": "Выходной FPS"
+  "popup_gpu_label": {
+    "message": "Видеокарта"
   },
-  "popup_render_label": {
-    "message": "Время отрисовки"
+  "popup_webgpu_available": {
+    "message": "Доступен"
   },
-  "popup_engine_label": {
-    "message": "Движок"
+  "popup_gpu_name_unavailable": {
+    "message": "Найдена (без названия)"
   },
-  "popup_drops_label": {
-    "message": "Пропущено кадров"
+  "popup_gpu_missing": {
+    "message": "Адаптер WebGPU не найден"
   },
-  "popup_time_value": {
-    "message": "{time} мс"
-  },
-  "no_f16_suffix": {
-    "message": " · FP16 не поддерживается"
+  "popup_gpu_missing_hint": {
+    "message": "Проверьте, включено ли графическое ускорение в браузере."
   },
   "popup_integrated": {
     "message": "Браузер использует встроенный GPU."

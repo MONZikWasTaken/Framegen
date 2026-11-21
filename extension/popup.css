@@ -51,16 +51,14 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .player-status { padding: 11px 13px; overflow-wrap: anywhere; }
 .player-status h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; font-weight: 600; }
 .player-status h2::before { content: ""; flex: 0 0 5px; height: 5px; border-radius: 50%; background: #767d86; }
-.player-status[data-state="running"] h2::before { background: var(--accent); }
-.player-status[data-state="blocked"] h2::before { background: var(--warning); }
+.player-status[data-state="ok"] h2::before { background: var(--accent); }
+.player-status[data-state="warning"] h2::before { background: var(--warning); }
 .state-hint { margin: 3px 0 0 12px; color: var(--muted); font-size: 12px; }
 
 .details { display: grid; gap: 3px; margin: 6px 0 0; font-size: 12px; line-height: 1.4; }
 .details > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; }
 .details dt { color: var(--muted); }
-.details dd { display: flex; justify-content: flex-end; align-items: baseline; flex-wrap: wrap; gap: 2px 6px; margin: 0; text-align: end; font-variant-numeric: tabular-nums; }
-.details strong { font-size: inherit; font-weight: 600; }
-.details small { color: var(--muted); font-size: 11px; }
+.details dd { margin: 0; text-align: end; }
 .gpu-notice { margin: 0 13px 10px; padding: 0 0 0 8px; border-inline-start: 2px solid var(--warning); color: var(--warning); font-size: 12px; }
 .gpu-notice p { margin: 0; }
 .text-button { padding: 1px 0 0; border: 0; background: transparent; color: inherit; text-decoration: underline; }

@@ -9,41 +9,28 @@ function writeText(id, text) {
   if (element.textContent !== text) element.textContent = text;
 }
 
+function readout(status) {
+  if (status === undefined) return ['idle', 'popup_checking'];
+  if (!status) return ['idle', 'popup_tab_unavailable', 'popup_no_video_hint'];
+  if (status.blocked) return ['warning', 'popup_blocked', 'blocked_wasm'];
+  if (status.running) return ['ok', 'popup_running'];
+  if (!status.hasAdapter) return ['warning', 'popup_gpu_missing', 'popup_gpu_missing_hint'];
+  return ['ok', 'popup_ready', status.hasVideo ? 'hover_video' : 'popup_no_video_hint'];
+}
+
 function render(status) {
   lastStatus = status;
-  const running = !!status?.running;
-  const blocked = !running && !!status?.blocked;
-  const ready = !running && !blocked && !!status?.hasVideo;
-  const hasGpu = !!status?.gpu && status.gpu !== '-';
-  const state = running ? 'running' : blocked ? 'blocked' : ready ? 'ready' : 'idle';
+  const [state, heading, hint] = readout(status);
   $('playerStatus').dataset.state = state;
-  const heading = {
-    running: 'popup_running', blocked: 'popup_blocked', ready: 'popup_ready',
-    idle: status === undefined ? 'popup_checking' : 'popup_no_video',
-  }[state];
   writeText('state', t(heading));
-  const hint = blocked ? 'blocked_wasm' : ready ? 'hover_video' : status === undefined || running ? '' : 'popup_no_video_hint';
   $('stateHint').hidden = !hint;
   if (hint) writeText('stateHint', t(hint));
 
-  $('details').hidden = !running && !hasGpu;
-  $('fpsRow').hidden = !running;
-  $('renderRow').hidden = !running;
-  $('rateRow').hidden = !running;
-  $('engineRow').hidden = !running;
-  $('dropRow').hidden = !running;
-  $('gpuRow').hidden = !hasGpu;
-  $('gpuNotice').hidden = !status?.integrated;
-  if (running) {
-    writeText('fps', String(status.fps));
-    writeText('factor', `×${status.factor}`);
-    writeText('renderTime', t('popup_time_value', { time: status.midMs }));
-    writeText('resolution', `${status.res}p`);
-    writeText('rate', status.rateState);
-    writeText('engine', status.engine || '–');
-    writeText('drops', String(status.drops));
+  $('details').hidden = !status?.hasAdapter;
+  $('gpuNotice').hidden = !status?.hasAdapter || !status.integrated;
+  if (status?.hasAdapter) {
+    writeText('gpu', status.gpu && status.gpu !== '-' ? status.gpu : t('popup_gpu_name_unavailable'));
   }
-  if (hasGpu) writeText('gpu', status.gpu + (status.f16 ? '' : t('no_f16_suffix')));
 }
 
 function showHelp(open) {

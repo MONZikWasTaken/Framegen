@@ -239,8 +239,11 @@ export async function boot() {
       if (msg?.type === 'fcStatus') {
         const v = player.video || biggestVideo();
         const respond = async () => {
-          await player.probeAdapter();
-          try { sendResponse({ version: VERSION, hasVideo: !!v, ...player.status() }); } catch { /* popup closed */ }
+          const hasAdapter = await player.probeAdapter();
+          const { gpu, integrated } = player.sys;
+          try {
+            sendResponse({ hasAdapter, gpu, integrated, hasVideo: !!v, running: player.isRunning(), blocked: !!player.blocked });
+          } catch { /* popup closed */ }
         };
         if (player.isRunning()) respond();
         else setTimeout(respond, v ? 120 : 250);

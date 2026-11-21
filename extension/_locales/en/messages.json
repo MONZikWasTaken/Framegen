@@ -512,38 +512,35 @@
   "popup_checking": {
     "message": "Checking this tab…"
   },
-  "popup_no_video": {
-    "message": "No video detected"
+  "popup_tab_unavailable": {
+    "message": "This tab couldn’t be checked"
   },
   "popup_no_video_hint": {
     "message": "Open a video and hover over it to see the Framegen buttons."
   },
   "popup_ready": {
-    "message": "Framegen is off"
+    "message": "Ready to use"
   },
   "popup_blocked": {
     "message": "Framegen is blocked on this site"
   },
   "popup_running": {
-    "message": "Framegen is active"
+    "message": "Framegen is running"
   },
-  "popup_output_label": {
-    "message": "Output FPS"
+  "popup_gpu_label": {
+    "message": "Graphics card"
   },
-  "popup_render_label": {
-    "message": "Render time"
+  "popup_webgpu_available": {
+    "message": "Available"
   },
-  "popup_engine_label": {
-    "message": "Engine"
+  "popup_gpu_name_unavailable": {
+    "message": "Detected (name unavailable)"
   },
-  "popup_drops_label": {
-    "message": "Dropped frames"
+  "popup_gpu_missing": {
+    "message": "No WebGPU adapter found"
   },
-  "popup_time_value": {
-    "message": "{time} ms"
-  },
-  "no_f16_suffix": {
-    "message": " · no half-float support"
+  "popup_gpu_missing_hint": {
+    "message": "Check that graphics acceleration is enabled in your browser."
   },
   "popup_integrated": {
     "message": "The browser is using the integrated GPU."

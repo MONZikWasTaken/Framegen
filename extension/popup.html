@@ -32,18 +32,8 @@
         <p id="stateHint" class="state-hint" hidden></p>
 
         <dl id="details" class="details" hidden>
-          <div id="fpsRow" hidden>
-            <dt data-i18n="popup_output_label">Output FPS</dt>
-            <dd><strong id="fps"></strong><small id="factor"></small></dd>
-          </div>
-          <div id="renderRow" hidden>
-            <dt data-i18n="popup_render_label">Render time</dt>
-            <dd><strong id="renderTime"></strong><small id="resolution"></small></dd>
-          </div>
-          <div id="rateRow" hidden><dt data-i18n="output_rate">Output rate</dt><dd id="rate"></dd></div>
-          <div id="engineRow" hidden><dt data-i18n="popup_engine_label">Engine</dt><dd id="engine"></dd></div>
-          <div id="dropRow" hidden><dt data-i18n="popup_drops_label">Dropped frames</dt><dd id="drops"></dd></div>
-          <div id="gpuRow" hidden><dt>GPU</dt><dd id="gpu"></dd></div>
+          <div><dt data-i18n="popup_gpu_label">Graphics card</dt><dd id="gpu"></dd></div>
+          <div><dt>WebGPU</dt><dd data-i18n="popup_webgpu_available">Available</dd></div>
         </dl>
       </section>
       <div id="gpuNotice" class="gpu-notice" hidden>

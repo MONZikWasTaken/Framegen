@@ -150,15 +150,18 @@ export class Player {
 
   // Adapter info for the popup before any device exists: no device, no weights.
   async probeAdapter() {
-    if (this.backend || this.sys.gpu !== '-' || !navigator.gpu) return;
+    if (this.backend || this.sys.gpu !== '-') return true;
+    if (!navigator.gpu) return false;
     try {
       const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-      if (!adapter) return;
+      if (this.backend) return true;
+      if (!adapter) return false;
       const info = adapter.info || {};
       this.sys.gpu = info.description || [info.vendor, info.architecture].filter(Boolean).join(' ');
       this.sys.f16 = adapter.features.has('shader-f16');
       this.sys.integrated = isIntegrated(this.sys.gpu);
-    } catch { /* leave unknown */ }
+      return true;
+    } catch { return !!this.backend; }
   }
 
   prepareInterpolation(backend) {
