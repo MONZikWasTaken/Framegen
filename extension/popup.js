@@ -1,5 +1,5 @@
 // The popup reports the active tab's state. Playback controls live in the player.
-import { getLanguage, initLanguage, onLanguageChange, t, translate } from './src/i18n.js';
+import { bindLanguageSelect, getLanguage, initLanguage, onLanguageChange, t, translate } from './src/i18n.js';
 
 const $ = id => document.getElementById(id);
 let lastStatus;
@@ -66,6 +66,7 @@ async function refreshStatus(tabId) {
 (async () => {
   writeText('ver', 'v' + chrome.runtime.getManifest().version);
   await initLanguage();
+  bindLanguageSelect($('interfaceLanguage'), $('languageError'));
   const localize = () => {
     document.documentElement.lang = getLanguage().replaceAll('_', '-');
     translate(document);

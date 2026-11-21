@@ -1,6 +1,6 @@
 import { Profiles } from './src/profiles.js';
 import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
-import { getAutomaticLanguage, getLanguage, getLanguagePreference, initLanguage, LANGUAGES, LANGUAGE_KEY, onLanguageChange, t, translate } from './src/i18n.js';
+import { bindLanguageSelect, getLanguage, initLanguage, onLanguageChange, t, translate } from './src/i18n.js';
 
 (function framegenOptions() {
   'use strict';
@@ -579,10 +579,6 @@ import { getAutomaticLanguage, getLanguage, getLanguagePreference, initLanguage,
   function localize() {
     document.documentElement.lang = getLanguage().replaceAll('_', '-');
     translate(document);
-    const select = $('interfaceLanguage');
-    select.options[0].textContent = t('language_auto', { language: LANGUAGES[getAutomaticLanguage()] });
-    select.value = getLanguagePreference();
-    $('languageError').textContent = t('language_save_failed');
     for (const group of document.querySelectorAll('[data-choice]')) {
       const options = $(group.dataset.choice).options;
       for (const [index, button] of [...group.children].entries()) {
@@ -601,20 +597,7 @@ import { getAutomaticLanguage, getLanguage, getLanguagePreference, initLanguage,
   async function initialize() {
     $('version').textContent = 'v' + chrome.runtime.getManifest().version;
     await initLanguage();
-    const language = $('interfaceLanguage');
-    language.append(new Option('', 'auto'), ...Object.entries(LANGUAGES).map(([code, name]) => {
-      const option = new Option(name, code);
-      option.lang = code.replaceAll('_', '-');
-      return option;
-    }));
-    language.addEventListener('change', async () => {
-      $('languageError').hidden = true;
-      try { await chrome.storage.local.set({ [LANGUAGE_KEY]: language.value }); }
-      catch {
-        language.value = getLanguagePreference();
-        $('languageError').hidden = false;
-      }
-    });
+    bindLanguageSelect($('interfaceLanguage'), $('languageError'));
     localize();
     onLanguageChange(localize);
     try {

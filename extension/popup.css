@@ -22,7 +22,7 @@ body {
   font: 12.5px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 button { font: inherit; cursor: pointer; }
-:is(button, a, summary):focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+:is(button, a, summary, select):focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
 main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 #status, .help { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
@@ -90,6 +90,26 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .help b { color: var(--text); }
 
 .actions { padding: 4px 6px; border-block: 1px solid var(--line); }
+.popup-language {
+  display: grid;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr);
+  gap: 8px;
+  padding: 3px 7px;
+}
+.popup-language select {
+  width: 100%;
+  min-width: 0;
+  padding: 4px 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.language-error { margin: 3px 7px; color: var(--warning); font-size: 12px; }
 .full-settings {
   justify-content: space-between;
   gap: 8px;

@@ -78,6 +78,32 @@ export function initLanguage() {
 
 export function onLanguageChange(listener) { listeners.add(listener); }
 
+export function bindLanguageSelect(select, error) {
+  const automatic = new Option('', 'auto');
+  const choices = Object.entries(LANGUAGES).map(([code, name]) => {
+    const option = new Option(name, code);
+    option.lang = code.replaceAll('_', '-');
+    return option;
+  });
+  select.replaceChildren(automatic, ...choices);
+
+  const sync = () => {
+    automatic.textContent = t('language_auto', { language: LANGUAGES[getAutomaticLanguage()] });
+    select.value = getLanguagePreference();
+    error.textContent = t('language_save_failed');
+  };
+  select.addEventListener('change', async () => {
+    error.hidden = true;
+    try { await chrome.storage.local.set({ [LANGUAGE_KEY]: select.value }); }
+    catch {
+      sync();
+      error.hidden = false;
+    }
+  });
+  sync();
+  onLanguageChange(sync);
+}
+
 export function t(key, values = {}) {
   const message = messages[key]?.message || english[key]?.message
     || globalThis.chrome?.i18n?.getMessage?.(key) || key;
