@@ -1,7 +1,10 @@
 // Framegen toolbar popup: read-only status for the active tab. The controls live in the player.
+import { getLanguage, initLanguage, onLanguageChange, t, translate } from './src/i18n.js';
+
 const $ = (id) => document.getElementById(id);
 
 let tabId = null;
+let lastStatus = null;
 
 async function askStatus() {
   if (tabId == null) return null;
@@ -11,10 +14,11 @@ async function askStatus() {
 }
 
 function render(s) {
+  lastStatus = s;
   const dot = $('dot'), state = $('state'), stat = $('stat'), sys = $('sys');
   if (!s) {
     dot.classList.remove('on');
-    state.textContent = 'Off';
+    state.textContent = t('off');
     state.className = '';
     stat.textContent = '';
     sys.textContent = '';
@@ -22,16 +26,19 @@ function render(s) {
   }
   $('ver').textContent = 'v' + s.version;
   dot.classList.toggle('on', s.running);
-  state.textContent = s.running ? 'Running' : 'Off';
+  state.textContent = t(s.running ? 'running' : 'off');
   state.className = s.running ? 'on' : '';
   stat.textContent = s.running
-    ? `Output   ${s.fps} fps · ×${s.factor}\n`
-      + `Rate     ${s.rateState}\n`
-      + `Render   ${s.midMs} ms at ${s.res}p · ${s.drops} dropped\n`
-      + `Engine   ${s.engine || '-'}`
-    : (s.blocked || '');
-  sys.textContent = `GPU: ${s.gpu || '-'}${s.f16 ? '' : ' · no half-float support'}`
-    + (s.integrated ? '\nIntegrated GPU in use. Assign the browser to the discrete one: Windows Settings → Display → Graphics.' : '');
+    ? [
+        t('popup_output', { fps: s.fps, factor: s.factor }),
+        t('popup_rate', { rate: s.rateState }),
+        t('popup_render', { time: s.midMs, resolution: s.res, drops: s.drops }),
+        t('popup_engine', { engine: s.engine || '-' }),
+      ].join('\n')
+    : (s.blocked ? t('blocked_wasm') : '');
+  sys.textContent = t('gpu_line', { gpu: s.gpu || t('unknown_gpu') })
+    + (s.f16 ? '' : t('no_f16_suffix'))
+    + (s.integrated ? '\n' + t('popup_integrated') : '');
   sys.className = s.integrated ? 'warn' : '';
 }
 
@@ -51,6 +58,14 @@ $('fullSettings').onclick = async () => {
 };
 
 (async () => {
+  await initLanguage();
+  const localize = () => {
+    document.documentElement.lang = getLanguage().replaceAll('_', '-');
+    translate(document);
+    render(lastStatus);
+  };
+  localize();
+  onLanguageChange(localize);
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   tabId = tab ? tab.id : null;
   const first = await askStatus();

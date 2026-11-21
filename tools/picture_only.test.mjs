@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-globalThis.chrome = { runtime: { getURL: path => path } };
+const english = JSON.parse(readFileSync(new URL('../extension/_locales/en/messages.json', import.meta.url), 'utf8'));
+globalThis.chrome = {
+  runtime: { getURL: path => path },
+  i18n: { getMessage: key => english[key]?.message || '' },
+};
 globalThis.GPUTextureUsage = { TEXTURE_BINDING: 1, COPY_DST: 2, RENDER_ATTACHMENT: 4 };
 const { Player } = await import('../extension/src/player.js');
 

@@ -3,11 +3,12 @@
 import { Profiles } from '../profiles.js';
 import { PICTURE_MODES, PICTURE_SWATCH_FILTERS } from '../picture-modes.js';
 import { svgIcon, GITHUB_PATH, framegenMark } from './icons.js';
+import { getLanguage, t, translate } from '../i18n.js';
 
 const INLINE_SETTINGS_MIN_WIDTH = 300, INLINE_SETTINGS_MIN_HEIGHT = 180;
 const ISLAND_HALF = 57;
 const VIEW_HEIGHT = { settings: 626, picture: 436 };
-const SHARPNESS_LABELS = ['Off', 'Low', 'Medium', 'High'];
+const SHARPNESS_LABELS = ['off', 'low', 'medium', 'sharpness_high'];
 const clampUnit = value => Math.min(1, Math.max(0, value));
 const ease = value => { const t = clampUnit(value); return t * t * (3 - 2 * t); };
 const mix = (from, to, progress) => from + (to - from) * progress;
@@ -229,9 +230,33 @@ export class Controls {
     this.revealUntil = 0;
   }
 
-  setAdvancedLabel(text) {
+  setAdvancedLabel(key) {
     const label = this.panel?.querySelector('#fcOpenSettings span');
-    if (label) label.textContent = text;
+    if (label) {
+      label.dataset.i18n = key;
+      label.textContent = t(key);
+    }
+  }
+
+  localize() {
+    this.root.lang = getLanguage().replaceAll('_', '-');
+    translate(this.root);
+    this.localizePanelTitle();
+    for (const [select, component] of this.customSelects) {
+      const label = this.customSelectLabel(select);
+      component.trigger.setAttribute('aria-label', label);
+      component.menu.setAttribute('aria-label', label);
+      this.rebuildCustomSelect(select);
+    }
+    this.syncRateSlider();
+    if (this.panelOpen) this.updateStatus();
+    this.schedulePlacement();
+  }
+
+  localizePanelTitle() {
+    const picture = this.view === 'picture';
+    this.panel.setAttribute('aria-label', t(picture ? 'framegen_picture' : 'framegen_settings'));
+    this.panel.querySelector('#fcPanelTitle').textContent = picture ? t('picture') : 'Framegen';
   }
 
   revealFor(ms) { this.revealUntil = Math.max(this.revealUntil, performance.now() + ms); }
@@ -267,14 +292,14 @@ export class Controls {
     btn.className = 'fc-side';
     btn.type = 'button';
     btn.dataset.active = 'false';
-    btn.setAttribute('aria-label', 'Toggle Framegen');
+    btn.setAttribute('data-i18n-aria-label', 'toggle_framegen');
     btn.setAttribute('aria-pressed', 'false');
     btn.append(framegenMark());
     const gear = document.createElement('button');
     gear.className = 'fc-side';
     gear.type = 'button';
     gear.dataset.open = 'false';
-    gear.setAttribute('aria-label', 'Open Framegen settings');
+    gear.setAttribute('data-i18n-aria-label', 'open_framegen_settings');
     gear.setAttribute('aria-controls', 'fcSettingsPanel');
     gear.setAttribute('aria-expanded', 'false');
     const gearIcon = svgIcon('gear');
@@ -284,7 +309,7 @@ export class Controls {
     pic.className = 'fc-side';
     pic.type = 'button';
     pic.dataset.open = 'false';
-    pic.setAttribute('aria-label', 'Open picture settings');
+    pic.setAttribute('data-i18n-aria-label', 'open_picture_settings');
     pic.setAttribute('aria-controls', 'fcSettingsPanel');
     pic.setAttribute('aria-expanded', 'false');
     const pictureIcon = svgIcon('picture');
@@ -296,6 +321,7 @@ export class Controls {
     this.pic = pic;
 
     this.buildPanel();
+    this.localize();
     this.applySurfaceProgress(0);
     btn.onclick = () => this.host.onToggle();
     const toggleView = view => {
@@ -441,8 +467,7 @@ export class Controls {
     this.panel.setAttribute('aria-hidden', String(!this.panelOpen));
     if (this.panelOpen) {
       this.panel.dataset.view = this.view;
-      this.panel.setAttribute('aria-label', this.view === 'picture' ? 'Framegen picture' : 'Framegen settings');
-      this.panel.querySelector('#fcPanelTitle').textContent = this.view === 'picture' ? 'Picture' : 'Framegen';
+      this.localizePanelTitle();
       this.panel.scrollTop = 0;
       this.applySurfaceProgress(this.surfaceProgress);
     }
@@ -537,7 +562,7 @@ export class Controls {
     const panel = document.createElement('section');
     panel.className = 'fc-panel';
     panel.id = 'fcSettingsPanel';
-    panel.setAttribute('aria-label', 'Framegen settings');
+    panel.setAttribute('aria-label', t('framegen_settings'));
     panel.setAttribute('aria-hidden', 'true');
     // focusable by a press, so the focus stays inside the controls when the panel's own surface is clicked
     panel.tabIndex = -1;
@@ -550,76 +575,76 @@ export class Controls {
         </div>
         <a class="fc-icon-link" href="https://github.com/MONZikWasTaken/Framegen"
           target="_blank" rel="noopener noreferrer"
-          aria-label="Open Framegen on GitHub">
+          aria-label="Open Framegen on GitHub" data-i18n-aria-label="open_github">
           <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor"/></svg>
         </a>
       </div>
       <div class="fc-view" data-view="picture">
-      <div class="fc-looks" id="fcLooks" role="radiogroup" aria-label="Picture mode"></div>
+      <div class="fc-looks" id="fcLooks" role="radiogroup" aria-label="Picture mode" data-i18n-aria-label="picture_mode"></div>
       <div class="fc-divider"></div>
-      <div class="fc-row"><span>Sharpness</span>
-        <div class="fc-seg" id="fcSharpness" role="radiogroup" aria-label="Sharpness"></div></div>
-      <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
+      <div class="fc-row"><span data-i18n="sharpness">Sharpness</span>
+        <div class="fc-seg" id="fcSharpness" role="radiogroup" aria-label="Sharpness" data-i18n-aria-label="sharpness"></div></div>
+      <label class="fc-row"><span><span data-i18n="upscale">Upscale</span><small data-i18n="upscale_short_hint">2× neural resolution boost</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
-      <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
+      <label class="fc-row"><span>HDR<small data-i18n="hdr_short_hint">Brighter highlights on HDR displays</small></span>
         <input class="fc-sw" type="checkbox" id="fcHDR"></label>
       </div>
       <div class="fc-view" data-view="settings">
-      <div class="fc-row fc-profile-row"><span>Profile<small>Apply a saved setup</small></span>
+      <div class="fc-row fc-profile-row"><span><span data-i18n="profile">Profile</span><small data-i18n="profile_short_hint">Apply a saved setup</small></span>
         <select class="fc-sel fc-profile" id="fcProfile" disabled>
-          <option>Loading profiles…</option>
+          <option data-i18n="loading_profiles">Loading profiles…</option>
         </select></div>
       <div class="fc-divider"></div>
-      <label class="fc-row"><span>Frame generation<small>Create smoother motion</small></span>
+      <label class="fc-row"><span><span data-i18n="generation">Frame generation</span><small data-i18n="generation_short_hint">Create smoother motion</small></span>
         <input class="fc-sw" type="checkbox" id="fcFG"></label>
-      <div class="fc-row"><span>Output rate<small>How playback is paced</small></span>
+      <div class="fc-row"><span><span data-i18n="output_rate">Output rate</span><small data-i18n="output_short_hint">How playback is paced</small></span>
         <select class="fc-sel" id="fcFactor">
-          <option value="auto">Auto · recommended</option>
-          <option value="hz">Match display</option>
-          <option value="target">Custom FPS</option>
-          <option value="2">2× source</option><option value="3">3× source</option>
-          <option value="4">4× source</option><option value="5">5× source</option>
-          <option value="6">6× source</option>
+          <option value="auto" data-i18n="auto_recommended">Auto · recommended</option>
+          <option value="hz" data-i18n="match_display">Match display</option>
+          <option value="target" data-i18n="custom_fps">Custom FPS</option>
+          <option value="2" data-i18n="factor_2">2× source</option><option value="3" data-i18n="factor_3">3× source</option>
+          <option value="4" data-i18n="factor_4">4× source</option><option value="5" data-i18n="factor_5">5× source</option>
+          <option value="6" data-i18n="factor_6">6× source</option>
         </select></div>
       <label class="fc-target-control">
-        <span class="fc-target-head"><span><span id="fcRateSliderTitle">FPS limit</span>
-          <small id="fcRateSliderHint">Common rates · Auto may run lower</small></span>
-          <output id="fcTargetFpsValue" for="fcTargetFps">Unlimited</output></span>
+        <span class="fc-target-head"><span><span id="fcRateSliderTitle" data-i18n="fps_limit">FPS limit</span>
+          <small id="fcRateSliderHint" data-i18n="auto_limit_short_hint">Common rates · Auto may run lower</small></span>
+          <output id="fcTargetFpsValue" for="fcTargetFps" data-i18n="unlimited">Unlimited</output></span>
         <input class="fc-target-slider" id="fcTargetFps" type="range" min="0" max="17"
-          step="1" value="17" aria-label="FPS limit">
+          step="1" value="17" aria-label="FPS limit" data-i18n-aria-label="fps_limit">
         <span class="fc-target-scale" id="fcRateSliderScale" aria-hidden="true">
           <span>15</span><span>60</span><span>120</span><span>240</span><span>∞</span>
         </span>
       </label>
-      <div class="fc-row"><span>Quality<small>Detail against GPU load</small></span>
+      <div class="fc-row"><span><span data-i18n="quality">Quality</span><small data-i18n="quality_short_hint">Detail against GPU load</small></span>
         <select class="fc-sel" id="fcRes">
-          <option value="288">Low power</option><option value="360">Efficient</option>
-          <option value="480">Balanced</option>
-          <option value="720">High</option>
-          <option value="1080">Ultra</option>
+          <option value="288" data-i18n="low_power">Low power</option><option value="360" data-i18n="efficient">Efficient</option>
+          <option value="480" data-i18n="balanced">Balanced</option>
+          <option value="720" data-i18n="high">High</option>
+          <option value="1080" data-i18n="ultra">Ultra</option>
         </select></div>
       <div class="fc-divider"></div>
-      <label class="fc-row"><span>FPS counter<small>Show frame rate and render time</small></span>
+      <label class="fc-row"><span><span data-i18n="fps_counter">FPS counter</span><small data-i18n="fps_counter_short_hint">Show frame rate and render time</small></span>
         <input class="fc-sw" type="checkbox" id="fcShowFps"></label>
-      <label class="fc-row"><span>Watermark<small>Show the Framegen label on video</small></span>
+      <label class="fc-row"><span><span data-i18n="watermark">Watermark</span><small data-i18n="watermark_short_hint">Show the Framegen label on video</small></span>
         <input class="fc-sw" type="checkbox" id="fcWatermark"></label>
-      <label class="fc-row"><span>Warnings<small>Show non-critical notices over video</small></span>
+      <label class="fc-row"><span><span data-i18n="warnings">Warnings</span><small data-i18n="warnings_short_hint">Show non-critical notices over video</small></span>
         <input class="fc-sw" type="checkbox" id="fcWarnings"></label>
       <pre class="fc-status" id="fcStatus"></pre>
       <button class="fc-open-settings" id="fcOpenSettings" type="button">
-        <span>Advanced settings</span>
+        <span data-i18n="advanced_settings">Advanced settings</span>
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
           <path fill="currentColor" d="m6 3 5 5-5 5-1.2-1.2L8.6 8 4.8 4.2 6 3Z"/>
         </svg>
       </button>
       </div>
-      <a class="fc-engine-link" href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">Powered by
-        <b>FlyHigh engine</b></a>`;
+      <a class="fc-engine-link" href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer"><span data-i18n="powered_by">Powered by</span>
+        <b data-i18n="flyhigh_engine">FlyHigh engine</b></a>`;
     const q = id => panel.querySelector(id);
     q('.fc-version').textContent = `v${this.version}`;
     q('.fc-icon-link path').setAttribute('d', GITHUB_PATH);
     const looks = q('#fcLooks');
-    for (const [key, mode] of Object.entries(PICTURE_MODES)) {
+    for (const key of Object.keys(PICTURE_MODES)) {
       const button = radioButton();
       button.className = 'fc-look';
       button.dataset.mode = key;
@@ -628,7 +653,7 @@ export class Controls {
       swatch.style.filter = PICTURE_SWATCH_FILTERS[key];
       const label = document.createElement('span');
       label.className = 'fc-look-name';
-      label.textContent = mode.label;
+      label.dataset.i18n = `look_${key.replaceAll('-', '_')}`;
       button.append(swatch, label);
       looks.append(button);
     }
@@ -636,7 +661,7 @@ export class Controls {
     SHARPNESS_LABELS.forEach((label, value) => {
       const button = radioButton();
       button.dataset.value = String(value);
-      button.textContent = label;
+      button.dataset.i18n = label;
       sharpness.append(button);
     });
     this.clip.appendChild(panel);
@@ -729,7 +754,7 @@ export class Controls {
       ? this.fpsLimitFromSlider(input)
       : Profiles.sanitizeTargetFps(input.value, cfg.targetFps);
     const output = this.panel.querySelector('#fcTargetFpsValue');
-    const label = value === null ? 'Unlimited' : `${Number(value.toFixed(2))} FPS`;
+    const label = value === null ? t('unlimited') : t('fps_value', { rate: Number(value.toFixed(2)) });
     if (output) output.value = label;
     input.setAttribute('aria-valuetext', label);
     const min = Number.isFinite(Number(input.min)) ? Number(input.min) : 2;
@@ -762,25 +787,25 @@ export class Controls {
     const scale = this.panel.querySelector('#fcRateSliderScale');
     const presets = Profiles.FPS_LIMIT_PRESETS;
     if (cfg.factor === 'auto') {
-      title.textContent = 'FPS limit';
-      hint.textContent = 'Common rates · Auto may run lower';
+      title.textContent = t('fps_limit');
+      hint.textContent = t('auto_limit_short_hint');
       input.min = '0';
       input.max = String(presets.length - 1);
       input.step = '1';
       input.value = String(Profiles.fpsLimitPresetIndex(cfg.fpsLimit));
-      input.setAttribute('aria-label', 'FPS limit');
+      input.setAttribute('aria-label', t('fps_limit'));
       this.renderRateScale(scale, [15, 60, 120, 240, null].map(value => ({
         label: value === null ? '∞' : String(value),
         position: Profiles.fpsLimitPresetIndex(value) / (presets.length - 1) * 100,
       })));
     } else {
-      title.textContent = 'Custom FPS';
-      hint.textContent = 'Exact target · minimum 2× source';
+      title.textContent = t('custom_fps');
+      hint.textContent = t('target_short_hint');
       input.min = '2';
       input.max = '1000';
       input.step = '0.01';
       input.value = String(cfg.targetFps);
-      input.setAttribute('aria-label', 'Custom FPS');
+      input.setAttribute('aria-label', t('custom_fps'));
       this.renderRateScale(scale, [
         { label: '2', position: 0 },
         { label: '500', position: 49.9 },
@@ -804,12 +829,14 @@ export class Controls {
     if (!select || !this.profileStore) return;
     const current = document.createElement('option');
     current.value = '';
-    current.textContent = 'Current settings';
+    current.dataset.i18n = 'current_settings';
+    current.textContent = t('current_settings');
     const children = [current];
     const profiles = Profiles.profileList(this.profileStore);
     if (profiles.length) {
       const group = document.createElement('optgroup');
-      group.label = 'My profiles';
+      group.dataset.i18nLabel = 'my_profiles';
+      group.label = t('my_profiles');
       for (const profile of profiles) {
         const option = document.createElement('option');
         option.value = profile.id;
@@ -841,7 +868,8 @@ export class Controls {
       this.profileStore = null;
       if (select) {
         const unavailable = document.createElement('option');
-        unavailable.textContent = 'Profiles unavailable';
+        unavailable.dataset.i18n = 'profiles_unavailable';
+        unavailable.textContent = t('profiles_unavailable');
         select.replaceChildren(unavailable);
         select.disabled = true;
         this.rebuildCustomSelect(select);
@@ -961,9 +989,13 @@ export class Controls {
     this.syncCustomSelect(select);
   }
 
+  customSelectLabel(select) {
+    return select.closest('.fc-row')?.querySelector(':scope > span')?.childNodes[0]?.textContent?.trim() || t('choose_option');
+  }
+
   enhanceCustomSelect(select, index) {
     if (this.customSelects.has(select)) return;
-    const label = select.closest('.fc-row')?.querySelector(':scope > span')?.childNodes[0]?.textContent?.trim() || 'Choose an option';
+    const label = this.customSelectLabel(select);
     const root = document.createElement('div');
     const trigger = document.createElement('button');
     const value = document.createElement('span');

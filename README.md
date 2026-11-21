@@ -126,6 +126,16 @@ maps onto the engine. The previous engine stays in
 `web/rt` and on npm as [`framegen`](https://www.npmjs.com/package/framegen) ([packages/rt](packages/rt)); its notes are
 in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engine directly.
 
+### Translating Framegen
+
+Framegen follows the browser interface language by default and falls back to English. The **Interface language**
+setting overrides that choice for the settings page, toolbar popup, and player controls.
+
+To add a translation, copy [the English catalog](extension/_locales/en/messages.json) to
+`extension/_locales/<locale>/messages.json` using a WebExtensions locale code, then translate the `message` values.
+Keep the keys and placeholders such as `{fps}` and `{name}`. Add the locale and its native language name to
+`LANGUAGES` in [i18n.js](extension/src/i18n.js). Run the tests and open the unpacked extension to review the translation.
+
 ## Support the project
 
 Framegen is built by one person with one mid-range GPU. The extension is free and will stay free; the models behind it

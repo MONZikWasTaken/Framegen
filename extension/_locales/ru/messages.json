@@ -1,0 +1,824 @@
+{
+  "extension_name": {
+    "message": "Framegen — интерполяция кадров"
+  },
+  "extension_description": {
+    "message": "Интерполяция кадров в реальном времени от 2× с настраиваемой частотой кадров. Работает локально на вашем GPU через WebGPU."
+  },
+  "framegen_settings": {
+    "message": "Настройки Framegen"
+  },
+  "settings": {
+    "message": "Настройки"
+  },
+  "loading_settings": {
+    "message": "Загрузка настроек…"
+  },
+  "powered_by": {
+    "message": "На базе"
+  },
+  "flyhigh_engine": {
+    "message": "движка FlyHigh"
+  },
+  "flyhigh_engine_link": {
+    "message": "Движок FlyHigh"
+  },
+  "open_github": {
+    "message": "Открыть Framegen на GitHub"
+  },
+  "sections": {
+    "message": "Разделы"
+  },
+  "generation": {
+    "message": "Генерация кадров"
+  },
+  "motion": {
+    "message": "Движение"
+  },
+  "picture": {
+    "message": "Изображение"
+  },
+  "player": {
+    "message": "Плеер"
+  },
+  "diagnostics": {
+    "message": "Диагностика"
+  },
+  "language": {
+    "message": "Язык интерфейса"
+  },
+  "language_auto": {
+    "message": "Автоматически ({language})"
+  },
+  "language_hint": {
+    "message": "По умолчанию используется язык браузера."
+  },
+  "language_save_failed": {
+    "message": "Не удалось сохранить язык интерфейса."
+  },
+  "profile": {
+    "message": "Профиль"
+  },
+  "profile_actions": {
+    "message": "Действия с профилем"
+  },
+  "duplicate": {
+    "message": "Копировать"
+  },
+  "rename": {
+    "message": "Переименовать"
+  },
+  "delete": {
+    "message": "Удалить"
+  },
+  "new_profile": {
+    "message": "Новый профиль"
+  },
+  "generation_desc": {
+    "message": "Сколько кадров генерировать и как распределять их во времени."
+  },
+  "generation_hint": {
+    "message": "Создавать промежуточные кадры при воспроизведении видео."
+  },
+  "output_rate": {
+    "message": "Частота кадров"
+  },
+  "output_hint": {
+    "message": "Авто выбирает самую плавную частоту, которую поддерживают экран и GPU."
+  },
+  "auto_recommended": {
+    "message": "Авто · рекомендуется"
+  },
+  "match_display": {
+    "message": "По частоте экрана"
+  },
+  "custom_fps": {
+    "message": "Свой FPS"
+  },
+  "factor_source": {
+    "message": "{factor}× от исходной"
+  },
+  "custom_hint": {
+    "message": "От 2 до 1000. Не ниже удвоенной частоты источника, если позволяют экран и GPU."
+  },
+  "fps_limit": {
+    "message": "Лимит FPS"
+  },
+  "fps_limit_hint": {
+    "message": "Верхняя граница для режима «Авто». Частота может быть ниже для плавности."
+  },
+  "unlimited": {
+    "message": "Без лимита"
+  },
+  "full_refresh": {
+    "message": "Полная частота обновления"
+  },
+  "full_refresh_hint": {
+    "message": "Использовать 100% измеренной частоты обновления экрана."
+  },
+  "limit_display": {
+    "message": "Ограничить частотой экрана"
+  },
+  "limit_display_hint": {
+    "message": "Не генерировать больше кадров, чем показывает экран. Если выключить, генерация ограничена GPU, а счётчик показывает частоту генерации."
+  },
+  "motion_auto": {
+    "message": "Авто с учётом движения"
+  },
+  "motion_auto_hint": {
+    "message": "В быстрых сценах «Авто» генерирует меньше кадров, чтобы уменьшить артефакты. Если выключить, всегда используется максимальная частота GPU."
+  },
+  "quality": {
+    "message": "Качество"
+  },
+  "quality_hint": {
+    "message": "Разрешение, в котором работает нейросеть. «Баланс» использует её исходный масштаб. Более высокое разрешение сильнее нагружает GPU и редко улучшает картинку."
+  },
+  "low_power": {
+    "message": "Экономия"
+  },
+  "efficient": {
+    "message": "Экономичное"
+  },
+  "balanced": {
+    "message": "Баланс"
+  },
+  "high": {
+    "message": "Высокое"
+  },
+  "ultra": {
+    "message": "Ультра"
+  },
+  "motion_desc": {
+    "message": "Обработка анимации, повторяющихся узоров и текста на экране."
+  },
+  "animation": {
+    "message": "Режим анимации"
+  },
+  "animation_hint": {
+    "message": "Для рисованной анимации: повторяющиеся кадры сохраняются до смены рисунка."
+  },
+  "cadence": {
+    "message": "Сглаживание ритма аниме"
+  },
+  "experimental": {
+    "message": "Экспериментально"
+  },
+  "cadence_hint": {
+    "message": "Работает с режимом анимации. Распределяет движение между кадрами, на которых один рисунок удерживается по два или три кадра. Все показываемые кадры генерируются. В быстрых сценах возможны размытие и искажения."
+  },
+  "pattern_repair": {
+    "message": "Коррекция повторяющихся узоров"
+  },
+  "pattern_hint": {
+    "message": "Перепроверяет движение оград, перил и рядов окон, которые могут двоиться при панорамировании. Сильнее действует в режиме анимации. Незначительная нагрузка на GPU."
+  },
+  "subtitle_guard": {
+    "message": "Защита субтитров"
+  },
+  "subtitle_guard_hint": {
+    "message": "Вшитые субтитры, логотипы и элементы интерфейса сохраняются из исходных кадров."
+  },
+  "sharper_edges": {
+    "message": "Чёткие контуры"
+  },
+  "sharper_edges_hint": {
+    "message": "Бикубическая выборка для большей чёткости контуров, волос и текстур. Около 0,2 мс на сгенерированный кадр."
+  },
+  "picture_desc": {
+    "message": "Цветовые режимы и обработка изображения."
+  },
+  "picture_mode": {
+    "message": "Режим изображения"
+  },
+  "picture_mode_hint": {
+    "message": "Обработка цвета и деталей поверх видео. «Детализация» повышает резкость и включает масштабирование 2×, когда оно применимо."
+  },
+  "look_original": {
+    "message": "Оригинал"
+  },
+  "look_cinema": {
+    "message": "Кино"
+  },
+  "look_cinema_home": {
+    "message": "Домашнее кино"
+  },
+  "look_noir": {
+    "message": "Нуар"
+  },
+  "look_vivid": {
+    "message": "Яркий"
+  },
+  "look_sports": {
+    "message": "Спорт"
+  },
+  "look_detail": {
+    "message": "Детализация"
+  },
+  "sharpness": {
+    "message": "Резкость"
+  },
+  "sharpness_hint": {
+    "message": "Подчёркивает контуры. Высокий уровень может создавать ореолы."
+  },
+  "off": {
+    "message": "Выкл."
+  },
+  "on": {
+    "message": "Вкл."
+  },
+  "low": {
+    "message": "Низкая"
+  },
+  "medium": {
+    "message": "Средняя"
+  },
+  "sharpness_high": {
+    "message": "Высокая"
+  },
+  "upscale": {
+    "message": "Масштабирование"
+  },
+  "upscale_hint": {
+    "message": "Нейросетевое увеличение в 2×, когда плеер больше исходного видео."
+  },
+  "hdr_hint": {
+    "message": "Более яркие светлые участки на HDR-экране."
+  },
+  "player_desc": {
+    "message": "Что Framegen показывает поверх видео."
+  },
+  "hover_controls": {
+    "message": "Управление при наведении"
+  },
+  "hover_hint": {
+    "message": "Показывать кнопки Framegen при наведении указателя на видео."
+  },
+  "fps_counter": {
+    "message": "Счётчик FPS"
+  },
+  "fps_counter_hint": {
+    "message": "Частота кадров и время отрисовки в углу видео."
+  },
+  "watermark": {
+    "message": "Водяной знак"
+  },
+  "watermark_hint": {
+    "message": "Надпись Framegen при включённой генерации."
+  },
+  "warnings": {
+    "message": "Предупреждения"
+  },
+  "warnings_hint": {
+    "message": "Уведомления о производительности. Ошибки показываются всегда."
+  },
+  "subtitle_overlay": {
+    "message": "Субтитры поверх видео"
+  },
+  "subtitle_overlay_hint": {
+    "message": "Показывать субтитры плеера поверх сгенерированных кадров."
+  },
+  "diagnostics_desc": {
+    "message": "Инструменты для проверки работы Framegen."
+  },
+  "compare": {
+    "message": "Сравнение"
+  },
+  "compare_hint": {
+    "message": "Разделённый экран: оригинал слева, обработанное изображение справа."
+  },
+  "debug": {
+    "message": "Отладочный экран"
+  },
+  "debug_hint": {
+    "message": "Рамка вокруг области обработки и подробные показатели работы."
+  },
+  "up_to_date": {
+    "message": "Изменений нет"
+  },
+  "reset": {
+    "message": "Сбросить"
+  },
+  "save_profile": {
+    "message": "Сохранить профиль"
+  },
+  "apply": {
+    "message": "Применить"
+  },
+  "profile_name": {
+    "message": "Название профиля"
+  },
+  "cancel": {
+    "message": "Отмена"
+  },
+  "create": {
+    "message": "Создать"
+  },
+  "delete_profile_question": {
+    "message": "Удалить профиль?"
+  },
+  "delete_profile_generic": {
+    "message": "Профиль будет удалён. Настройки видео сохранятся."
+  },
+  "status": {
+    "message": "Состояние"
+  },
+  "help": {
+    "message": "Помощь"
+  },
+  "hover_video": {
+    "message": "Наведите указатель на видео. Кнопки Framegen появятся слева."
+  },
+  "no_adapter_title": {
+    "message": "Ошибка «Нет графического адаптера» или сбой запуска"
+  },
+  "webgpu_help_intro": {
+    "message": "Проверьте, включён ли WebGPU в браузере. В Chrome:"
+  },
+  "open": {
+    "message": "Откройте"
+  },
+  "chrome_acceleration": {
+    "message": "Включите «Использовать графическое ускорение (при наличии)»"
+  },
+  "restart_browser": {
+    "message": "Полностью перезапустите браузер"
+  },
+  "driver_update": {
+    "message": "Если это не помогло, обновите драйвер GPU с сайта NVIDIA, AMD или Intel. Браузер может блокировать старые драйверы."
+  },
+  "laptop_gpus": {
+    "message": "Два GPU на ноутбуке"
+  },
+  "laptop_gpus_hint": {
+    "message": "В Windows браузер нередко использует встроенный GPU, из-за чего FPS почти не растёт."
+  },
+  "windows_graphics": {
+    "message": "Параметры Windows → Система → Дисплей → Графика"
+  },
+  "windows_high_performance": {
+    "message": "Добавьте браузер и задайте «Высокая производительность»"
+  },
+  "restart_it": {
+    "message": "Полностью перезапустите браузер"
+  },
+  "check_gpu": {
+    "message": "Проверьте строку GPU на вкладке «Состояние». В ней должна быть указана дискретная видеокарта."
+  },
+  "requirements": {
+    "message": "Требования"
+  },
+  "requirements_hint": {
+    "message": "Chrome или Edge 121+ на ПК либо Firefox 142+ на Windows. Нужен GPU примерно 2016 года выпуска или новее. Safari и телефоны не поддерживаются."
+  },
+  "how_to_use": {
+    "message": "Как пользоваться"
+  },
+  "how_to_use_hint": {
+    "message": "Наведите указатель на видео. Слева появятся кнопки FG, изображения и настроек. Режим «Сравнение» доступен в расширенных настройках и показывает оригинал рядом с обработанным видео."
+  },
+  "limitations": {
+    "message": "Ограничения"
+  },
+  "limitations_hint": {
+    "message": "Браузеры не дают расширению читать кадры видео с DRM на Netflix, Crunchyroll и других площадках. На некоторых сайтах при первом включении FG видео может перезагрузиться из-за CORS."
+  },
+  "open_settings": {
+    "message": "Открыть настройки"
+  },
+  "open_source": {
+    "message": "Открытый код · MIT"
+  },
+  "upscale_short_hint": {
+    "message": "Нейросетевое увеличение в 2×"
+  },
+  "hdr_short_hint": {
+    "message": "Более яркие светлые участки на HDR-экране"
+  },
+  "profile_short_hint": {
+    "message": "Применить сохранённые настройки"
+  },
+  "loading_profiles": {
+    "message": "Загрузка профилей…"
+  },
+  "generation_short_hint": {
+    "message": "Сделать движение плавнее"
+  },
+  "output_short_hint": {
+    "message": "Частота вывода видео"
+  },
+  "auto_limit_short_hint": {
+    "message": "Типовые значения · «Авто» может выбрать ниже"
+  },
+  "quality_short_hint": {
+    "message": "Детализация и нагрузка на GPU"
+  },
+  "fps_counter_short_hint": {
+    "message": "Показывать FPS и время отрисовки"
+  },
+  "watermark_short_hint": {
+    "message": "Показывать надпись Framegen на видео"
+  },
+  "warnings_short_hint": {
+    "message": "Показывать уведомления поверх видео"
+  },
+  "advanced_settings": {
+    "message": "Расширенные настройки"
+  },
+  "compare_original": {
+    "message": "ориг."
+  },
+  "profile_read_only": {
+    "message": "Хранилище профилей доступно только для чтения"
+  },
+  "profile_schema_unsupported": {
+    "message": "Эта версия Framegen не поддерживает формат профилей {version}."
+  },
+  "fps_value": {
+    "message": "{rate} FPS"
+  },
+  "custom_fps_range": {
+    "message": "Введите FPS от 2 до 1000"
+  },
+  "current_settings": {
+    "message": "Текущие настройки"
+  },
+  "my_profiles": {
+    "message": "Мои профили"
+  },
+  "current_profile": {
+    "message": "Текущие: {name}"
+  },
+  "custom_settings": {
+    "message": "Пользовательские настройки"
+  },
+  "current_after": {
+    "message": "{current} · изменены после применения «{name}»"
+  },
+  "changed_another_tab": {
+    "message": "Настройки изменились в другой вкладке"
+  },
+  "unsaved_preview": {
+    "message": "Несохранённые изменения"
+  },
+  "previewing": {
+    "message": "Предпросмотр «{name}»"
+  },
+  "settings_applied": {
+    "message": "Настройки применены"
+  },
+  "apply_failed": {
+    "message": "Не удалось применить настройки"
+  },
+  "custom_profile": {
+    "message": "Пользовательский профиль"
+  },
+  "duplicate_profile": {
+    "message": "Копировать профиль"
+  },
+  "create_copy": {
+    "message": "Создать копию"
+  },
+  "profile_copy_named": {
+    "message": "Копия «{name}»"
+  },
+  "profile_copy": {
+    "message": "Копия профиля"
+  },
+  "rename_profile": {
+    "message": "Переименовать профиль"
+  },
+  "enter_profile_name": {
+    "message": "Введите название профиля."
+  },
+  "profile_renamed": {
+    "message": "Профиль переименован"
+  },
+  "profile_saved": {
+    "message": "Профиль сохранён"
+  },
+  "profile_save_failed": {
+    "message": "Не удалось сохранить профиль"
+  },
+  "delete_profile_named": {
+    "message": "Профиль «{name}» будет удалён. Настройки видео сохранятся."
+  },
+  "profile_deleted": {
+    "message": "Профиль удалён"
+  },
+  "profile_delete_failed": {
+    "message": "Не удалось удалить профиль"
+  },
+  "profile_update_failed": {
+    "message": "Не удалось обновить профили"
+  },
+  "settings_unavailable": {
+    "message": "Настройки недоступны"
+  },
+  "running": {
+    "message": "Работает"
+  },
+  "stopped": {
+    "message": "Остановлено"
+  },
+  "popup_output": {
+    "message": "Выход   {fps} FPS · ×{factor}"
+  },
+  "popup_rate": {
+    "message": "Частота   {rate}"
+  },
+  "popup_render": {
+    "message": "Отрисовка   {time} мс при {resolution}p · пропущено {drops}"
+  },
+  "popup_engine": {
+    "message": "Движок   {engine}"
+  },
+  "gpu_line": {
+    "message": "GPU: {gpu}"
+  },
+  "no_f16_suffix": {
+    "message": " · FP16 не поддерживается"
+  },
+  "popup_integrated": {
+    "message": "Используется встроенный GPU. Выберите дискретную видеокарту для браузера в параметрах Windows: Система → Дисплей → Графика."
+  },
+  "toggle_framegen": {
+    "message": "Включить или выключить Framegen"
+  },
+  "open_framegen_settings": {
+    "message": "Открыть настройки Framegen"
+  },
+  "open_picture_settings": {
+    "message": "Открыть настройки изображения"
+  },
+  "framegen_picture": {
+    "message": "Изображение Framegen"
+  },
+  "target_short_hint": {
+    "message": "Точная частота · минимум 2× от исходной"
+  },
+  "profiles_unavailable": {
+    "message": "Профили недоступны"
+  },
+  "choose_option": {
+    "message": "Выбрать вариант"
+  },
+  "reload_updated": {
+    "message": "Обновите страницу. Framegen был обновлён."
+  },
+  "settings_from_toolbar": {
+    "message": "Откройте настройки через значок на панели браузера"
+  },
+  "no_video": {
+    "message": "Framegen: видео не найдено"
+  },
+  "framegen_error": {
+    "message": "Ошибка Framegen: {detail}"
+  },
+  "blocked_wasm": {
+    "message": "Политика безопасности сайта блокирует WebAssembly для расширений. Framegen не может работать на этом сайте."
+  },
+  "gpu_help": {
+    "message": "WebGPU отключён. Включите графическое ускорение в настройках браузера, перезапустите его и при необходимости обновите драйвер GPU. Старые GPU могут не поддерживаться."
+  },
+  "no_adapter_help": {
+    "message": "Браузер не предоставил GPU для WebGPU. Перезапустите браузер. Если это не помогло, проверьте аппаратное ускорение WebGPU на chrome://gpu, если вы используете Chromium, и обновите драйвер GPU."
+  },
+  "unknown_gpu": {
+    "message": "неизвестный GPU"
+  },
+  "cors_reload": {
+    "message": "Framegen: видео недоступно из-за CORS, выполняется перезагрузка"
+  },
+  "integrated_advice": {
+    "message": "Браузер использует встроенный GPU ({gpu}). В параметрах Windows найдите «Дисплей → Графика», задайте для браузера «Высокая производительность» и перезапустите его."
+  },
+  "cors_unreadable": {
+    "message": "Framegen: не удалось прочитать видео из-за CORS"
+  },
+  "redraw_failed": {
+    "message": "Framegen: не удалось перерисовать кадр на паузе"
+  },
+  "gpu_recovering": {
+    "message": "Framegen: обнаружен сброс GPU, выполняется восстановление"
+  },
+  "gpu_restored": {
+    "message": "Подключение к GPU восстановлено"
+  },
+  "gpu_recovery_failed": {
+    "message": "Framegen: не удалось восстановить работу GPU. Обновите страницу."
+  },
+  "auto": {
+    "message": "Авто"
+  },
+  "auto_limit": {
+    "message": "Авто · до {rate} FPS"
+  },
+  "custom_rate": {
+    "message": "Свои {rate} FPS"
+  },
+  "measuring": {
+    "message": "измерение"
+  },
+  "rate_approx": {
+    "message": " (≈{rate} FPS)"
+  },
+  "state_invalid_target": {
+    "message": "Целевой FPS должен быть больше нуля"
+  },
+  "state_no_two_x_display": {
+    "message": "Частота экрана ниже минимума для генерации кадров"
+  },
+  "state_no_two_x_gpu": {
+    "message": "GPU не выдерживает минимальный FPS при этом качестве"
+  },
+  "state_probing_gpu": {
+    "message": "проверка производительности GPU"
+  },
+  "clamp_display": {
+    "message": "лимит браузера"
+  },
+  "clamp_gpu": {
+    "message": "лимит GPU"
+  },
+  "clamp_runtime": {
+    "message": "лимит планировщика"
+  },
+  "clamp_minimum": {
+    "message": "минимальная частота кадров"
+  },
+  "clamp_gpu_probe": {
+    "message": "проверка производительности GPU"
+  },
+  "warning_gpu_clamp": {
+    "message": "При этом качестве частота снижена с {requested} до {output} FPS"
+  },
+  "warning_old_firefox": {
+    "message": "Эта версия Firefox устарела для плавной генерации кадров. Обновите Firefox."
+  },
+  "warning_drops": {
+    "message": "Кадры пропускаются. Снизьте частоту кадров или качество либо включите режим «Авто»."
+  },
+  "warning_auto_gpu": {
+    "message": "GPU не справляется даже с 2×. Снизьте качество."
+  },
+  "warning_fixed_gpu": {
+    "message": "При этом качестве GPU поддерживает {actual}× из заданных {requested}×"
+  },
+  "hud_fps": {
+    "message": "FG {fps} FPS"
+  },
+  "hud_fps_rate": {
+    "message": "FG {fps} FPS · {rate} · {mid} мс"
+  },
+  "hud_output": {
+    "message": "{width}×{height}@{source} → {fps} FPS ×{factor} ({rate})"
+  },
+  "hud_render": {
+    "message": "пара {pair} + промеж. {mid} мс при {res}p · вывод {present}"
+  },
+  "hud_delay": {
+    "message": "буфер {delay} · rAF {hz} Гц · опозд. {late}"
+  },
+  "hud_drops": {
+    "message": "пропуск {drops} ({pressure}) · штраф {penalty}+{strain}"
+  },
+  "hud_motion": {
+    "message": "склейки {cuts} повторы {holds} · движение {motion} · очередь {queue}"
+  },
+  "hud_pool": {
+    "message": "{engine} · пул {width}×{height}{mode}"
+  },
+  "hud_video_suffix": {
+    "message": " видео"
+  },
+  "sr_unavailable": {
+    "message": "недоступно (нет FP16)"
+  },
+  "sr_loading": {
+    "message": "загрузка"
+  },
+  "sr_on": {
+    "message": "вкл. 2×"
+  },
+  "sr_ready": {
+    "message": "готово, для этого размера не требуется"
+  },
+  "integrated_suffix": {
+    "message": " ⚠ ВСТРОЕННЫЙ"
+  },
+  "engine_unavailable": {
+    "message": "недоступен ({reason})"
+  },
+  "engine_not_loaded": {
+    "message": "не загружен"
+  },
+  "unknown": {
+    "message": "неизвестно"
+  },
+  "hdr_no_display": {
+    "message": "экран без HDR"
+  },
+  "hdr_sdr": {
+    "message": "сбой, используется SDR"
+  },
+  "diag_engine": {
+    "message": "движок: {engine}"
+  },
+  "diag_fg": {
+    "message": "FG: {fg} · масштабирование: {sr}"
+  },
+  "diag_source": {
+    "message": "источник: {size}"
+  },
+  "diag_rate": {
+    "message": "частота кадров: {rate}"
+  },
+  "diag_hdr": {
+    "message": "HDR: {state}"
+  },
+  "diag_sharpness": {
+    "message": "резкость: {value}"
+  },
+  "diag_status": {
+    "message": "состояние: {state}"
+  },
+  "diag_output": {
+    "message": "выход: {fps} FPS · множитель ×{factor}"
+  },
+  "diag_callbacks": {
+    "message": "вызовы браузера: {display} · источник: {source} FPS"
+  },
+  "hz_value": {
+    "message": "{rate} Гц"
+  },
+  "diag_render": {
+    "message": "пара: {pair} мс · промеж. кадр: {mid} мс при {res}p · вывод: {present} мс"
+  },
+  "diag_delay": {
+    "message": "задержка: {delay} мс · пропуски: {drops} · очередь: {queue}"
+  },
+  "diag_vram": {
+    "message": "пул VRAM: ≈{size} МБ{mode}"
+  },
+  "diag_video_suffix": {
+    "message": " · опережающий видеорежим"
+  },
+  "live": {
+    "message": "ЭФИР"
+  },
+  "play": {
+    "message": "Воспроизвести"
+  },
+  "pause": {
+    "message": "Пауза"
+  },
+  "mute": {
+    "message": "Выключить звук"
+  },
+  "unmute": {
+    "message": "Включить звук"
+  },
+  "seek": {
+    "message": "Позиция воспроизведения"
+  },
+  "volume": {
+    "message": "Громкость"
+  },
+  "fullscreen": {
+    "message": "Полноэкранный режим"
+  },
+  "kick_rewind": {
+    "message": "Kick запустил эфир сначала. Возврат к отметке {time}."
+  },
+  "factor_2": {
+    "message": "2× от исходной"
+  },
+  "factor_3": {
+    "message": "3× от исходной"
+  },
+  "factor_4": {
+    "message": "4× от исходной"
+  },
+  "factor_5": {
+    "message": "5× от исходной"
+  },
+  "factor_6": {
+    "message": "6× от исходной"
+  },
+  "quality_low_power": {
+    "message": "Экономия · 288p"
+  },
+  "quality_efficient": {
+    "message": "Экономичное · 360p"
+  },
+  "quality_balanced": {
+    "message": "Баланс · 480p"
+  },
+  "quality_high": {
+    "message": "Высокое · 720p"
+  },
+  "quality_ultra": {
+    "message": "Ультра · 1080p"
+  }
+}

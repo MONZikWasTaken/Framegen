@@ -12,10 +12,12 @@ import { svgIcon } from './ui/icons.js';
 import { usesSiteControls, inFeed, keepTwitchControlsAboveOverlay, biggestVideo } from './sites.js';
 import { installBenchBridge, benchToken } from './bench.js';
 import { watchKickDvr } from './kick-dvr.js';
+import { initLanguage, onLanguageChange, t } from './i18n.js';
 
 export const VERSION = chrome.runtime.getManifest().version;
 
-export function boot() {
+export async function boot() {
+  await initLanguage();
   const bench = benchToken();
   const settings = createSettings({ live: !bench, log });
   const overlay = new Overlay({ log });
@@ -42,6 +44,11 @@ export function boot() {
       onVideoGone: () => { if (inFeed()) reattach(); },
       onUiTick: (now, rect) => uiTick(now, rect),
     },
+  });
+  onLanguageChange(() => {
+    controls?.localize();
+    bar?.localize();
+    split?.localize();
   });
 
   // ---------- the UI tick (15 Hz from the player's display loop) ----------
@@ -90,7 +97,7 @@ export function boot() {
   async function openAdvancedSettings() {
     // after the extension was updated or reloaded, the script already in a page has lost it: nothing it asks for can
     // be answered until the page is loaded again, so say that instead of doing nothing
-    if (!chrome.runtime?.id) { controls?.setAdvancedLabel('Reload the page: Framegen was updated'); return; }
+    if (!chrome.runtime?.id) { controls?.setAdvancedLabel('reload_updated'); return; }
     try {
       const response = await chrome.runtime.sendMessage({ type: 'fcOpenOptions' });
       if (!response?.ok) throw new Error(response?.error || 'Could not open settings');
@@ -98,7 +105,7 @@ export function boot() {
       try { await chrome.runtime.openOptionsPage(); }
       catch (directError) {
         log('open settings', directError || messageError);
-        controls?.setAdvancedLabel(chrome.runtime?.id ? 'Open settings from the toolbar icon' : 'Reload the page: Framegen was updated');
+        controls?.setAdvancedLabel(chrome.runtime?.id ? 'settings_from_toolbar' : 'reload_updated');
       }
     }
   }
@@ -110,9 +117,13 @@ export function boot() {
     try {
       if (player.isRunning()) { player.stop(); return; }
       const video = biggestVideo();
-      if (!video) { notices.showCritical('Framegen: no video found'); return; }
+      if (!video) { notices.showCritical(t('no_video')); return; }
       try { await player.start(video); }
-      catch (e) { player.preparing(false); notices.showCritical('Framegen error: ' + (e?.message || e)); if (!player.blocked) log(e); }
+      catch (e) {
+        player.preparing(false);
+        notices.showCritical(t('framegen_error', { detail: e?.message || e }));
+        if (!player.blocked) log(e);
+      }
     } finally { toggling = false; }
   }
 

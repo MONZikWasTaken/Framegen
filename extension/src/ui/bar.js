@@ -2,6 +2,7 @@
 // it, so instead of revealing the raw video we drive the <video> ourselves (play, seek, volume, fullscreen) as regular
 // DOM above everything. Interpolation is never interrupted.
 import { svgIcon } from './icons.js';
+import { getLanguage, t, translate } from '../i18n.js';
 
 const formatTime = (s) => {
   s = Math.max(0, Math.floor(s || 0));
@@ -57,11 +58,11 @@ export class ControlBar {
     bar.innerHTML = `
       <button id="fcPlay" class="fc-btn"></button>
       <span id="fcCur" style="min-width:34px; text-align:right">0:00</span>
-      <input id="fcSeek" class="fc-range" type="range" min="0" max="1000" value="0" style="flex:1">
+      <input id="fcSeek" class="fc-range" type="range" min="0" max="1000" value="0" style="flex:1" data-i18n-aria-label="seek">
       <span id="fcDur" style="min-width:34px; color:rgba(255,255,255,.55)">0:00</span>
       <button id="fcMute" class="fc-btn"></button>
-      <input id="fcVol" class="fc-range" type="range" min="0" max="100" value="100" style="width:60px">
-      <button id="fcFull" class="fc-btn"></button>`;
+      <input id="fcVol" class="fc-range" type="range" min="0" max="100" value="100" style="width:60px" data-i18n-aria-label="volume">
+      <button id="fcFull" class="fc-btn" data-i18n-aria-label="fullscreen"></button>`;
     const q = (id) => bar.querySelector(id);
     q('#fcPlay').append(svgIcon('play', 19));
     q('#fcMute').append(svgIcon('vol'));
@@ -83,7 +84,17 @@ export class ControlBar {
     bar.addEventListener('mousemove', () => this.onReveal(2000), { passive: true });
     this.el = bar;
     this.els = { play: q('#fcPlay'), mute: q('#fcMute'), vol: q('#fcVol'), cur: q('#fcCur'), dur: q('#fcDur'), seek: q('#fcSeek') };
+    this.localize();
     return bar;
+  }
+
+  localize() {
+    if (!this.el) return;
+    this.el.lang = getLanguage().replaceAll('_', '-');
+    translate(this.el);
+    this.els.play.setAttribute('aria-label', t(this.last.play === 'pause' ? 'pause' : 'play'));
+    this.els.mute.setAttribute('aria-label', t(this.last.mute === 'volX' ? 'unmute' : 'mute'));
+    this.update();
   }
 
   togglePlay() {
@@ -154,12 +165,21 @@ export class ControlBar {
     if (!this.el || this.el.style.display === 'none' || !v) return;
     const e = this.els, last = this.last;
     const playIcon = v.paused ? 'play' : 'pause';
-    if (playIcon !== last.play) { last.play = playIcon; e.play.replaceChildren(svgIcon(playIcon, 19)); }
+    if (playIcon !== last.play) {
+      last.play = playIcon;
+      e.play.replaceChildren(svgIcon(playIcon, 19));
+      e.play.setAttribute('aria-label', t(playIcon));
+    }
     const muteIcon = (v.muted || v.volume === 0) ? 'volX' : 'vol';
-    if (muteIcon !== last.mute) { last.mute = muteIcon; e.mute.replaceChildren(svgIcon(muteIcon)); }
+    if (muteIcon !== last.mute) {
+      last.mute = muteIcon;
+      e.mute.replaceChildren(svgIcon(muteIcon));
+      e.mute.setAttribute('aria-label', t(muteIcon === 'volX' ? 'unmute' : 'mute'));
+    }
     const vol = Math.round((v.muted ? 0 : v.volume) * 100);
     if (vol !== last.vol) { last.vol = vol; e.vol.value = String(vol); rangeFill(e.vol, vol, '#fff'); }
-    const { total, current: cur, end: dur, progress: p } = timeline(v.duration, v.currentTime || 0);
+    const { total, current: cur, end, progress: p } = timeline(v.duration, v.currentTime || 0);
+    const dur = v.duration === Infinity ? t('live') : end;
     if (cur !== last.cur) { last.cur = cur; e.cur.textContent = cur; }
     if (dur !== last.dur) { last.dur = dur; e.dur.textContent = dur; }
     const seekable = total > 0;
@@ -190,7 +210,7 @@ export class CompareSplit {
       <div style="position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px;
         background:rgba(255,255,255,.85); box-shadow:0 0 10px rgba(0,0,0,.7)"></div>
       <div style="position:absolute; right:14px; bottom:10px; color:#fff; font:10px system-ui;
-        background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap">orig.</div>
+        background:rgba(15,15,15,.6); border-radius:6px; padding:2px 6px; white-space:nowrap" data-i18n="compare_original">orig.</div>
       <div style="position:absolute; left:14px; bottom:10px; color:#fff; font:10px system-ui;
         background:rgba(25,150,100,.65); border-radius:6px; padding:2px 6px">FG</div>`;
     el.addEventListener('pointerdown', (e) => {
@@ -208,7 +228,14 @@ export class CompareSplit {
     });
     (document.fullscreenElement || document.body).appendChild(el);
     this.el = el;
+    this.localize();
     return el;
+  }
+
+  localize() {
+    if (!this.el) return;
+    this.el.lang = getLanguage().replaceAll('_', '-');
+    translate(this.el);
   }
 
   mount(host) {

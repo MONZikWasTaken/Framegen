@@ -49,50 +49,50 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="title"><span class="dot" id="dot"></span>Framegen <span class="ver" id="ver"></span><span id="state">Off</span></div>
+  <div class="title"><span class="dot" id="dot"></span>Framegen <span class="ver" id="ver"></span><span id="state" data-i18n="off">Off</span></div>
   <div class="tabs">
-    <button id="tabStatus" class="act">Status</button>
-    <button id="tabHelp">Help</button>
+    <button id="tabStatus" class="act" data-i18n="status">Status</button>
+    <button id="tabHelp" data-i18n="help">Help</button>
   </div>
 
   <div id="status">
     <div id="stat" class="card"></div>
     <div id="sys" class="card"></div>
-    <div class="hint">Hover a video: the Framegen buttons appear on its left edge.</div>
+    <div class="hint" data-i18n="hover_video">Hover a video: the Framegen buttons appear on its left edge.</div>
   </div>
 
   <div id="help" style="display:none">
-    <h4>"No GPU adapter" / does not start</h4>
-    <p>WebGPU is switched off in the browser. In Chrome:</p>
+    <h4 data-i18n="no_adapter_title">"No GPU adapter" / does not start</h4>
+    <p data-i18n="webgpu_help_intro">WebGPU is switched off in the browser. In Chrome:</p>
     <ol>
-      <li>Open <b>chrome://settings/system</b></li>
-      <li>Enable "Use graphics acceleration when available"</li>
-      <li>Fully restart the browser</li>
+      <li><span data-i18n="open">Open</span> <b>chrome://settings/system</b></li>
+      <li data-i18n="chrome_acceleration">Enable "Use graphics acceleration when available"</li>
+      <li data-i18n="restart_browser">Fully restart the browser</li>
     </ol>
-    <p>Still nothing? Update the GPU driver from NVIDIA/AMD/Intel - old drivers
+    <p data-i18n="driver_update">Still nothing? Update the GPU driver from NVIDIA/AMD/Intel - old drivers
        get blocklisted.</p>
-    <h4>Two GPUs (laptop)</h4>
-    <p>Browsers on Windows often land on the integrated GPU - fps barely improves.</p>
+    <h4 data-i18n="laptop_gpus">Two GPUs (laptop)</h4>
+    <p data-i18n="laptop_gpus_hint">Browsers on Windows often land on the integrated GPU - fps barely improves.</p>
     <ol>
-      <li>Windows Settings → System → Display → Graphics</li>
-      <li>Add the browser → High performance</li>
-      <li>Fully restart it</li>
+      <li data-i18n="windows_graphics">Windows Settings → System → Display → Graphics</li>
+      <li data-i18n="windows_high_performance">Add the browser → High performance</li>
+      <li data-i18n="restart_it">Fully restart it</li>
     </ol>
-    <p>Check: the GPU line on the Status tab should show the discrete card.</p>
-    <h4>Requirements</h4>
-    <p>Desktop Chrome or Edge 121+, or Firefox 142+ on Windows, and a GPU from
+    <p data-i18n="check_gpu">Check: the GPU line on the Status tab should show the discrete card.</p>
+    <h4 data-i18n="requirements">Requirements</h4>
+    <p data-i18n="requirements_hint">Desktop Chrome or Edge 121+, or Firefox 142+ on Windows, and a GPU from
        roughly 2016 or newer. Safari and phones - no.</p>
-    <h4>How to use</h4>
-    <p>Hover any video: the FG (on/off), picture and settings buttons appear on its left edge.
+    <h4 data-i18n="how_to_use">How to use</h4>
+    <p data-i18n="how_to_use_hint">Hover any video: the FG (on/off), picture and settings buttons appear on its left edge.
        Compare, an original/processed split view, is in the full settings.</p>
-    <h4>What does not work</h4>
-    <p>Netflix, Crunchyroll and other DRM sites - the browser never hands us their
+    <h4 data-i18n="limitations">What does not work</h4>
+    <p data-i18n="limitations_hint">Netflix, Crunchyroll and other DRM sites - the browser never hands us their
        pixels, a platform limitation. On some sites the video may reload for a couple
        of seconds the first time you enable FG (CORS) - that is normal.</p>
   </div>
 
   <button id="fullSettings" class="full-settings" type="button">
-    <span>Open settings</span>
+    <span data-i18n="open_settings">Open settings</span>
     <svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true">
       <path fill="currentColor" d="M3 2h4v2H4v8h8V9h2v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm6 0h5v5h-2V5.4L7.7 9.7 6.3 8.3 10.6 4H9V2Z"/>
     </svg>
@@ -102,10 +102,10 @@
     <a href="https://github.com/MONZikWasTaken/Framegen" target="_blank">
       <svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.5 7.5 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub</a>
-    <a href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">FlyHigh engine</a>
-    <span class="v">Open source · MIT</span>
+    <a href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer" data-i18n="flyhigh_engine_link">FlyHigh engine</a>
+    <span class="v" data-i18n="open_source">Open source · MIT</span>
   </div>
 </div>
-<script src="popup.js"></script>
+<script type="module" src="popup.js"></script>
 </body>
 </html>

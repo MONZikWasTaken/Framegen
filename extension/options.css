@@ -92,6 +92,8 @@ body {
 .profile-toolbar > label { color: var(--text-2); font-size: 13px; font-weight: 500; }
 .profile-toolbar > select { flex: 1 1 180px; width: auto; min-width: 0; }
 .profile-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.language-toolbar > span { color: var(--text-2); font-size: 12px; }
+.language-toolbar > [role="status"] { flex-basis: 100%; }
 
 /* ---------- sections ---------- */
 .settings-section {

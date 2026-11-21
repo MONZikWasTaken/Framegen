@@ -1,11 +1,11 @@
 export const PICTURE_MODES = Object.freeze({
-  original: { label: 'Original', contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 0 },
-  cinema: { label: 'Cinema', contrast: 0.38, saturation: 0.84, lift: 0, warmth: 0.065, detail: 0 },
-  'cinema-home': { label: 'Cinema Home', contrast: 0.16, saturation: 1.06, lift: 0.28, warmth: 0.045, detail: 0 },
-  noir: { label: 'Noir', contrast: 0.12, saturation: 0, lift: 0.16, warmth: 0, detail: 0 },
-  vivid: { label: 'Vivid', contrast: 0.40, saturation: 1.40, lift: 0.06, warmth: 0, detail: 0 },
-  sports: { label: 'Sports', contrast: 0.22, saturation: 1.22, lift: 0.18, warmth: 0, detail: 0.7 },
-  detail: { label: 'Detail Boost', contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 1.2 },
+  original: { contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 0 },
+  cinema: { contrast: 0.38, saturation: 0.84, lift: 0, warmth: 0.065, detail: 0 },
+  'cinema-home': { contrast: 0.16, saturation: 1.06, lift: 0.28, warmth: 0.045, detail: 0 },
+  noir: { contrast: 0.12, saturation: 0, lift: 0.16, warmth: 0, detail: 0 },
+  vivid: { contrast: 0.40, saturation: 1.40, lift: 0.06, warmth: 0, detail: 0 },
+  sports: { contrast: 0.22, saturation: 1.22, lift: 0.18, warmth: 0, detail: 0.7 },
+  detail: { contrast: 0, saturation: 1, lift: 0, warmth: 0, detail: 1.2 },
 });
 
 // CSS approximations of the looks for the swatches in the UI; the picture itself is graded by the shader below.
