@@ -78,7 +78,7 @@ export function boot() {
     controls.inject();
     bar = new ControlBar({ video: () => player.video, log,
       onReveal: ms => controls.revealFor(ms),
-      onFlash: symbol => { if (player.video) notices.flash(symbol, player.video.getBoundingClientRect()); } });
+      onFlash: icon => { if (player.video) notices.flash(icon, player.video.getBoundingClientRect()); } });
     bar.ensure();
     split = new CompareSplit({ video: () => player.video });
     overlay.onClick = () => { if (player.video?.controls) bar.togglePlay(); };

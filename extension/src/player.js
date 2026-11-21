@@ -10,10 +10,9 @@ import { Upscaler } from './upscale.js';
 
 const url = p => chrome.runtime.getURL(p);
 const ENGINE_URLS = {
-  module: url('engine/flyhigh_web.js'), adapters: url('engine/adapters.js'),
   graph: url('engine/graph.json'), manifest: url('engine/flyhighfg.json'), weights: url('engine/flyhighfg.bin'),
 };
-const SR_URLS = { module: url('rt/sr.js'), weights: url('assets/rt_sr.bin'), manifest: url('assets/rt_sr.json') };
+const SR_URLS = { weights: url('assets/rt_sr.bin'), manifest: url('assets/rt_sr.json') };
 const BLOCKED_MESSAGE = "This site's security policy forbids WebAssembly for extensions, so Framegen cannot run here";
 const GPU_HELP = 'WebGPU is off. Enable "Use graphics acceleration" in the browser settings, restart the browser and update the GPU driver. Very old GPUs are not supported.';
 const NO_ADAPTER_HELP = 'The browser gives WebGPU no GPU right now. Restart the browser (after a driver reset, for example when a game crashed, it stays off until then); if it persists, check that WebGPU is hardware accelerated on chrome://gpu and update the GPU driver.';

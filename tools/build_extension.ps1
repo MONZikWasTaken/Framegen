@@ -206,7 +206,7 @@ try {
     $firefoxManifest | Add-Member -Force -NotePropertyName browser_specific_settings -NotePropertyValue (
         [pscustomobject]@{ gecko = [pscustomobject]@{
             id = 'framegen@flyhigh.dev'
-            strict_min_version = '141.0'
+            strict_min_version = '142.0'
             data_collection_permissions = [pscustomobject]@{ required = @('none') }
         } })
     [System.IO.File]::WriteAllText($firefoxManifestPath, ($firefoxManifest | ConvertTo-Json -Depth 20),

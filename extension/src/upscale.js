@@ -25,7 +25,7 @@ export class Upscaler {
       const [bin, manifest, mod] = await Promise.all([
         fetch(this.urls.weights).then(r => r.arrayBuffer()),
         fetch(this.urls.manifest).then(r => r.json()),
-        import(this.urls.module)]);
+        import('../rt/sr.js')]);
       // the SR convs run at full video resolution, where the w4/v2 kernel variants measured about 2x; sr.js
       // feature-gates the subgroup variant itself
       const sr = await mod.createSR(this.device, { weightsBin: bin, weightsManifest: manifest, convTune: DEFAULT_TUNE });

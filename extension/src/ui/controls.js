@@ -2,7 +2,7 @@
 // settings panel that morphs out of it. Settings changes go through the settings object; the host reacts to them.
 import { Profiles } from '../profiles.js';
 import { PICTURE_MODES, PICTURE_SWATCH_FILTERS } from '../picture-modes.js';
-import { svgIcon, GITHUB_PATH, FRAMEGEN_MARK } from './icons.js';
+import { svgIcon, GITHUB_PATH, framegenMark } from './icons.js';
 
 const INLINE_SETTINGS_MIN_WIDTH = 300, INLINE_SETTINGS_MIN_HEIGHT = 180;
 const ISLAND_HALF = 57;
@@ -12,6 +12,14 @@ const clampUnit = value => Math.min(1, Math.max(0, value));
 const ease = value => { const t = clampUnit(value); return t * t * (3 - 2 * t); };
 const mix = (from, to, progress) => from + (to - from) * progress;
 const coord = value => Number(value.toFixed(3));
+
+function radioButton() {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.setAttribute('role', 'radio');
+  button.setAttribute('aria-checked', 'false');
+  return button;
+}
 
 const CSS = `
   .fc-btn{background:none;border:none;color:#fff;font:13px/1 system-ui;cursor:pointer;
@@ -261,7 +269,7 @@ export class Controls {
     btn.dataset.active = 'false';
     btn.setAttribute('aria-label', 'Toggle Framegen');
     btn.setAttribute('aria-pressed', 'false');
-    btn.innerHTML = FRAMEGEN_MARK;
+    btn.append(framegenMark());
     const gear = document.createElement('button');
     gear.className = 'fc-side';
     gear.type = 'button';
@@ -269,7 +277,9 @@ export class Controls {
     gear.setAttribute('aria-label', 'Open Framegen settings');
     gear.setAttribute('aria-controls', 'fcSettingsPanel');
     gear.setAttribute('aria-expanded', 'false');
-    gear.innerHTML = `<svg class="fc-settings-icon" viewBox="0 0 24 24" aria-hidden="true">${svgIcon('gear').replace(/^<svg[^>]*>|<\/svg>$/g, '')}</svg>`;
+    const gearIcon = svgIcon('gear');
+    gearIcon.classList.add('fc-settings-icon');
+    gear.append(gearIcon);
     const pic = document.createElement('button');
     pic.className = 'fc-side';
     pic.type = 'button';
@@ -277,7 +287,9 @@ export class Controls {
     pic.setAttribute('aria-label', 'Open picture settings');
     pic.setAttribute('aria-controls', 'fcSettingsPanel');
     pic.setAttribute('aria-expanded', 'false');
-    pic.innerHTML = `<svg class="fc-settings-icon" viewBox="0 0 24 24" aria-hidden="true">${svgIcon('picture').replace(/^<svg[^>]*>|<\/svg>$/g, '')}</svg>`;
+    const pictureIcon = svgIcon('picture');
+    pictureIcon.classList.add('fc-settings-icon');
+    pic.append(pictureIcon);
     rail.append(btn, pic, gear);
     this.btn = btn;
     this.gear = gear;
@@ -534,26 +546,19 @@ export class Controls {
       <div class="fc-panel-head">
         <div class="fc-brand">
           <strong id="fcPanelTitle">Framegen</strong>
-          <span class="fc-version">v${this.version}</span>
+          <span class="fc-version"></span>
         </div>
         <a class="fc-icon-link" href="https://github.com/MONZikWasTaken/Framegen"
           target="_blank" rel="noopener noreferrer"
           aria-label="Open Framegen on GitHub">
-          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="${GITHUB_PATH}"/></svg>
+          <svg width="17" height="17" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor"/></svg>
         </a>
       </div>
       <div class="fc-view" data-view="picture">
-      <div class="fc-looks" id="fcLooks" role="radiogroup" aria-label="Picture mode">
-        ${Object.entries(PICTURE_MODES).map(([key, mode]) => `<button class="fc-look" type="button" role="radio"
-          aria-checked="false" data-mode="${key}"><span class="fc-look-swatch"
-          style="filter:${PICTURE_SWATCH_FILTERS[key]}"></span><span class="fc-look-name">${mode.label}</span></button>`).join('')}
-      </div>
+      <div class="fc-looks" id="fcLooks" role="radiogroup" aria-label="Picture mode"></div>
       <div class="fc-divider"></div>
       <div class="fc-row"><span>Sharpness</span>
-        <div class="fc-seg" id="fcSharpness" role="radiogroup" aria-label="Sharpness">
-          ${SHARPNESS_LABELS.map((label, value) => `<button type="button" role="radio" aria-checked="false"
-            data-value="${value}">${label}</button>`).join('')}
-        </div></div>
+        <div class="fc-seg" id="fcSharpness" role="radiogroup" aria-label="Sharpness"></div></div>
       <label class="fc-row"><span>Upscale<small>2× neural resolution boost</small></span>
         <input class="fc-sw" type="checkbox" id="fcSR"></label>
       <label class="fc-row"><span>HDR<small>Brighter highlights on HDR displays</small></span>
@@ -610,10 +615,33 @@ export class Controls {
       </div>
       <a class="fc-engine-link" href="https://github.com/getflyhigh/flyhigh-engine" target="_blank" rel="noopener noreferrer">Powered by
         <b>FlyHigh engine</b></a>`;
+    const q = id => panel.querySelector(id);
+    q('.fc-version').textContent = `v${this.version}`;
+    q('.fc-icon-link path').setAttribute('d', GITHUB_PATH);
+    const looks = q('#fcLooks');
+    for (const [key, mode] of Object.entries(PICTURE_MODES)) {
+      const button = radioButton();
+      button.className = 'fc-look';
+      button.dataset.mode = key;
+      const swatch = document.createElement('span');
+      swatch.className = 'fc-look-swatch';
+      swatch.style.filter = PICTURE_SWATCH_FILTERS[key];
+      const label = document.createElement('span');
+      label.className = 'fc-look-name';
+      label.textContent = mode.label;
+      button.append(swatch, label);
+      looks.append(button);
+    }
+    const sharpness = q('#fcSharpness');
+    SHARPNESS_LABELS.forEach((label, value) => {
+      const button = radioButton();
+      button.dataset.value = String(value);
+      button.textContent = label;
+      sharpness.append(button);
+    });
     this.clip.appendChild(panel);
     this.panel = panel;
     this.enhanceCustomSelects(panel);
-    const q = id => panel.querySelector(id);
     const set = values => this.settings.set(values);
     this.syncPanel();
     this.loadProfiles().catch(e => this.log('profiles', e));

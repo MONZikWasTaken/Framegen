@@ -71,7 +71,7 @@ const nextFrame = () => new Promise(resolve => {
 });
 
 export async function loadEngine(urls) {
-  const [mod, adapters] = await Promise.all([import(urls.module), import(urls.adapters)]);
+  const [mod, adapters] = await Promise.all([import('../engine/flyhigh_web.js'), import('../engine/adapters.js')]);
   try {
     await mod.default();
   } catch (e) {

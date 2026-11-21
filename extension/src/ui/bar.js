@@ -55,15 +55,18 @@ export class ControlBar {
       + 'box-shadow:0 4px 20px rgba(0,0,0,.4); opacity:0; transform:translateY(8px);'
       + 'transition:opacity .18s, transform .18s; pointer-events:none;';
     bar.innerHTML = `
-      <button id="fcPlay" class="fc-btn">${svgIcon('play', 19)}</button>
+      <button id="fcPlay" class="fc-btn"></button>
       <span id="fcCur" style="min-width:34px; text-align:right">0:00</span>
       <input id="fcSeek" class="fc-range" type="range" min="0" max="1000" value="0" style="flex:1">
       <span id="fcDur" style="min-width:34px; color:rgba(255,255,255,.55)">0:00</span>
-      <button id="fcMute" class="fc-btn">${svgIcon('vol')}</button>
+      <button id="fcMute" class="fc-btn"></button>
       <input id="fcVol" class="fc-range" type="range" min="0" max="100" value="100" style="width:60px">
-      <button id="fcFull" class="fc-btn">${svgIcon('full')}</button>`;
-    document.body.appendChild(bar);
+      <button id="fcFull" class="fc-btn"></button>`;
     const q = (id) => bar.querySelector(id);
+    q('#fcPlay').append(svgIcon('play', 19));
+    q('#fcMute').append(svgIcon('vol'));
+    q('#fcFull').append(svgIcon('full'));
+    document.body.appendChild(bar);
     // per-button cooldowns: hammering the buttons must never wedge the player
     const gPlay = cooldown(180), gMute = cooldown(120), gFull = cooldown(400);
     q('#fcPlay').onclick = () => { if (gPlay()) this.togglePlay(); };
@@ -151,9 +154,9 @@ export class ControlBar {
     if (!this.el || this.el.style.display === 'none' || !v) return;
     const e = this.els, last = this.last;
     const playIcon = v.paused ? 'play' : 'pause';
-    if (playIcon !== last.play) { last.play = playIcon; e.play.innerHTML = svgIcon(playIcon, 19); }
+    if (playIcon !== last.play) { last.play = playIcon; e.play.replaceChildren(svgIcon(playIcon, 19)); }
     const muteIcon = (v.muted || v.volume === 0) ? 'volX' : 'vol';
-    if (muteIcon !== last.mute) { last.mute = muteIcon; e.mute.innerHTML = svgIcon(muteIcon); }
+    if (muteIcon !== last.mute) { last.mute = muteIcon; e.mute.replaceChildren(svgIcon(muteIcon)); }
     const vol = Math.round((v.muted ? 0 : v.volume) * 100);
     if (vol !== last.vol) { last.vol = vol; e.vol.value = String(vol); rangeFill(e.vol, vol, '#fff'); }
     const { total, current: cur, end: dur, progress: p } = timeline(v.duration, v.currentTime || 0);

@@ -253,12 +253,17 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
     const lastAppliedMatches = lastApplied
       && Profiles.settingsEqual(lastApplied.settings, runtimeSettings);
 
+    const status = $('runtimeStatus');
+    const name = document.createElement('strong');
     if (lastAppliedMatches) {
-      $('runtimeStatus').innerHTML = `Current: <strong>${escapeHtml(lastApplied.name)}</strong>`;
+      name.textContent = lastApplied.name;
+      status.replaceChildren('Current: ', name);
     } else if (lastApplied) {
-      $('runtimeStatus').innerHTML = `<strong>Current settings</strong> · changed after ${escapeHtml(lastApplied.name)}`;
+      name.textContent = 'Current settings';
+      status.replaceChildren(name, ` · changed after ${lastApplied.name}`);
     } else {
-      $('runtimeStatus').innerHTML = 'Current: <strong>Custom settings</strong>';
+      name.textContent = 'Custom settings';
+      status.replaceChildren('Current: ', name);
     }
 
     const hasDraftEdits = !Profiles.settingsEqual(draftSettings, draftOrigin);
@@ -291,12 +296,6 @@ import { PICTURE_SWATCH_FILTERS } from './src/picture-modes.js';
       $(id).disabled = !selected;
       $(id).hidden = !selected;
     }
-  }
-
-  function escapeHtml(value) {
-    const span = document.createElement('span');
-    span.textContent = String(value);
-    return span.innerHTML;
   }
 
   function renderAll({ write = false } = {}) {

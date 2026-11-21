@@ -30,7 +30,7 @@ sites forbid WebAssembly for extensions through their security policy (reddit.co
 Framegen says so there; on clean film-like footage the new network is slightly below the previous one, on anime and
 games it is above.
 
-Requirements: a WebGPU-capable browser (Chrome or Edge 121+; Firefox 141+ on Windows through the Firefox build).
+Requirements: a WebGPU-capable browser (Chrome or Edge 121+; Firefox 142+ on Windows through the Firefox build).
 GPUs without shader-f16 run the f32 kernels, slower but the same picture. No WebGPU = the extension does nothing.
 
 Privacy: everything runs locally on your GPU. Framegen has no servers, makes no network requests beyond loading its

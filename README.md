@@ -48,7 +48,7 @@ Download the archive for your browser from the [latest release](https://github.c
 - **Firefox** — open `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on**, and select
   `framegen-firefox.zip`.
 
-Requirements: **Chrome or Edge 121+** (Windows, macOS with Apple Silicon, Linux) or **Firefox 141+ on Windows**, and
+Requirements: **Chrome or Edge 121+** (Windows, macOS with Apple Silicon, Linux) or **Firefox 142+ on Windows**, and
 a GPU with WebGPU support. GPUs without `shader-f16` run the engine's f32 kernels, slower but the same picture.
 
 ## How to use
