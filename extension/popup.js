@@ -16,7 +16,7 @@ function render(status) {
   const ready = !running && !blocked && !!status?.hasVideo;
   const hasGpu = !!status?.gpu && status.gpu !== '-';
   const state = running ? 'running' : blocked ? 'blocked' : ready ? 'ready' : 'idle';
-  $('statusCard').dataset.state = state;
+  $('playerStatus').dataset.state = state;
   const heading = {
     running: 'popup_running', blocked: 'popup_blocked', ready: 'popup_ready',
     idle: status === undefined ? 'popup_checking' : 'popup_no_video',
@@ -26,8 +26,9 @@ function render(status) {
   $('stateHint').hidden = !hint;
   if (hint) writeText('stateHint', t(hint));
 
-  $('metrics').hidden = !running;
   $('details').hidden = !running && !hasGpu;
+  $('fpsRow').hidden = !running;
+  $('renderRow').hidden = !running;
   $('rateRow').hidden = !running;
   $('engineRow').hidden = !running;
   $('dropRow').hidden = !running;

@@ -10,20 +10,12 @@
 <body>
   <header class="header">
     <div class="brand">
-      <img src="icons/icon48.png" width="36" height="36" alt="">
-      <div>
-        <h1>Framegen</h1>
-        <span id="ver" class="version"></span>
-      </div>
+      <img src="icons/icon32.png" width="20" height="20" alt="">
+      <h1>Framegen</h1>
+      <span id="ver" class="version"></span>
     </div>
     <button id="tabHelp" class="view-button" type="button" aria-controls="help" aria-expanded="false">
-      <span id="openHelp">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" aria-hidden="true">
-          <circle cx="12" cy="12" r="9"/>
-          <path d="M9.5 9a2.5 2.5 0 1 1 4.1 2c-1 .8-1.6 1.1-1.6 2.5m0 3h.01"/>
-        </svg>
-        <span data-i18n="help">Help</span>
-      </span>
+      <span id="openHelp" data-i18n="help">Help</span>
       <span id="closeHelp" hidden>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <path d="m11 5-7 7 7 7M4 12h16"/>
@@ -35,31 +27,19 @@
 
   <main>
     <div id="status">
-      <section id="statusCard" class="status-card" data-state="idle" aria-labelledby="state">
-        <div class="status-heading">
-          <div class="status-icon" aria-hidden="true">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round">
-              <rect x="2.5" y="4.5" width="19" height="15" rx="3"/>
-              <path d="m10 9 5 3-5 3z" fill="currentColor" stroke="none"/>
-            </svg>
-          </div>
-          <div>
-            <h2 id="state" aria-live="polite">Checking this tab…</h2>
-            <p id="stateHint" class="state-hint" hidden></p>
-          </div>
-        </div>
+      <section id="playerStatus" class="player-status" data-state="idle" aria-labelledby="state">
+        <h2 id="state" aria-live="polite">Checking this tab…</h2>
+        <p id="stateHint" class="state-hint" hidden></p>
 
-        <dl id="metrics" class="metrics" hidden>
-          <div>
+        <dl id="details" class="details" hidden>
+          <div id="fpsRow" hidden>
             <dt data-i18n="popup_output_label">Output FPS</dt>
             <dd><strong id="fps"></strong><small id="factor"></small></dd>
           </div>
-          <div>
+          <div id="renderRow" hidden>
             <dt data-i18n="popup_render_label">Render time</dt>
             <dd><strong id="renderTime"></strong><small id="resolution"></small></dd>
           </div>
-        </dl>
-        <dl id="details" class="details" hidden>
           <div id="rateRow" hidden><dt data-i18n="output_rate">Output rate</dt><dd id="rate"></dd></div>
           <div id="engineRow" hidden><dt data-i18n="popup_engine_label">Engine</dt><dd id="engine"></dd></div>
           <div id="dropRow" hidden><dt data-i18n="popup_drops_label">Dropped frames</dt><dd id="drops"></dd></div>
@@ -72,8 +52,7 @@
       </div>
     </div>
 
-    <section id="help" class="help" aria-labelledby="helpTitle" hidden>
-      <h2 id="helpTitle" data-i18n="help">Help</h2>
+    <section id="help" class="help" data-i18n-aria-label="help" hidden>
       <details name="help-topic" open>
         <summary data-i18n="how_to_use">How to use</summary>
         <p data-i18n="how_to_use_hint"></p>
@@ -108,12 +87,14 @@
       </details>
     </section>
 
-    <button id="fullSettings" class="full-settings" type="button">
-      <span data-i18n="open_settings">Open settings</span>
-      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M7 17 17 7M7.5 7H17v9.5"/>
-      </svg>
-    </button>
+    <div class="actions">
+      <button id="fullSettings" class="full-settings" type="button">
+        <span data-i18n="open_settings">Open settings</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M7 17 17 7M7.5 7H17v9.5"/>
+        </svg>
+      </button>
+    </div>
   </main>
 
   <footer class="footer">
