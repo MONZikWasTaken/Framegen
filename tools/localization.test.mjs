@@ -42,9 +42,10 @@ test('each packaged locale has the English keys and preserves placeholders', () 
   }
 });
 
-test('settings changes switch catalogs, interpolate text and use English for a missing message', async () => {
+test('settings changes switch catalogs, interpolate text and use English for a missing message', async context => {
   let storageChanged;
   globalThis.chrome = {
+    runtime: { getURL: path => path },
     i18n: { getUILanguage: () => 'en-US' },
     storage: {
       local: { get: async () => ({ [LANGUAGE_KEY]: 'en' }) },
@@ -67,6 +68,38 @@ test('settings changes switch catalogs, interpolate text and use English for a m
     assert.equal(getLanguage(), 'ru');
     assert.equal(t('previewing', { name: '<Film> & TV' }), 'Предпросмотр «<Film> & TV»');
     assert.equal(t('debug'), 'Debug overlay');
+    await context.test('technical player diagnostics stay in English in the Russian interface', async () => {
+      const { Player } = await import('../extension/src/player.js');
+      const cfg = { fg: true, factor: 'auto', fpsLimit: 120, sharpness: 0, res: 480 };
+      const video = { videoWidth: 2560, videoHeight: 1440 };
+      const player = new Player({ settings: { cfg }, hooks: { candidateVideo: () => video } });
+      player.sys.gpu = 'nvidia lovelace';
+      player.backend = { class: 'portable-f16' };
+      assert.deepEqual(player.statusLines(), [
+        'GPU: nvidia lovelace',
+        'engine: portable-f16',
+        'FG: on · upscale: off',
+        'source: 2560×1440',
+        'output rate: Auto · max 120 FPS',
+        'HDR: display not HDR',
+        'sharpness: off',
+        'status: stopped',
+      ]);
+      assert.match(player.hudText(), /Авто/);
+
+      cfg.debug = true;
+      player.running = true;
+      player.video = video;
+      player.pacer = { report: () => ({
+        plan: { state: 'active', clamp: 'display', interpolation_allowed: true, output_hz: 60 },
+        pair_cost_ms: 2, mid_cost_ms: 1, present_cost_ms: 0.5, delay_ms: 42, late_avg_ms: 0,
+        source_hz: 30, display: { display_hz: 60, measured: true },
+        pressure: 0, penalty: 0, strain_penalty: 0, counters: { cuts: 0, holds: 0 }, motion_avg: 0, queued: 0,
+      }) };
+      assert.match(player.hudText(), /\(Auto · max 120 FPS\).*pair 2\.0.*queue 0/);
+      assert.match(player.statusLines().join('\n'), /output rate: Auto · max 120 FPS \(~60 FPS\) · browser callback limit/);
+      assert.match(player.status().rateState, /Авто.*лимит браузера/);
+    });
   } finally {
     globalThis.fetch = fetchCatalog;
     delete globalThis.chrome;

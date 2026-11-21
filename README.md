@@ -129,7 +129,8 @@ in [docs/TECHNICAL.md](docs/TECHNICAL.md). New integrations should use the engin
 ### Translating Framegen
 
 Framegen follows the browser interface language by default and falls back to English. The **Interface language**
-setting overrides that choice for the settings page, toolbar popup, and player controls.
+setting overrides that choice for the settings page, toolbar popup, and player controls. Technical diagnostics in the
+player use English in every locale.
 
 To add a translation, copy [the English catalog](extension/_locales/en/messages.json) to
 `extension/_locales/<locale>/messages.json` using a WebExtensions locale code, then translate the `message` values.

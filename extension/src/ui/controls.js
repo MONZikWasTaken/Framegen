@@ -630,7 +630,7 @@ export class Controls {
         <input class="fc-sw" type="checkbox" id="fcWatermark"></label>
       <label class="fc-row"><span><span data-i18n="warnings">Warnings</span><small data-i18n="warnings_short_hint">Show non-critical notices over video</small></span>
         <input class="fc-sw" type="checkbox" id="fcWarnings"></label>
-      <pre class="fc-status" id="fcStatus"></pre>
+      <pre class="fc-status" id="fcStatus" lang="en"></pre>
       <button class="fc-open-settings" id="fcOpenSettings" type="button">
         <span data-i18n="advanced_settings">Advanced settings</span>
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">

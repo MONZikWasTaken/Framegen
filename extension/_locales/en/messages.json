@@ -224,9 +224,6 @@
   "off": {
     "message": "Off"
   },
-  "on": {
-    "message": "On"
-  },
   "low": {
     "message": "Low"
   },
@@ -518,9 +515,6 @@
   "running": {
     "message": "Running"
   },
-  "stopped": {
-    "message": "Stopped"
-  },
   "popup_output": {
     "message": "Output   {fps} fps · ×{factor}"
   },
@@ -665,104 +659,8 @@
   "warning_fixed_gpu": {
     "message": "The GPU sustains {actual}× at this quality, not {requested}×"
   },
-  "hud_fps": {
-    "message": "FG {fps} fps"
-  },
   "hud_fps_rate": {
     "message": "FG {fps}fps · {rate} · {mid}ms"
-  },
-  "hud_output": {
-    "message": "{width}×{height}@{source} → {fps}fps ×{factor} ({rate})"
-  },
-  "hud_render": {
-    "message": "pair {pair} + mid {mid}ms@{res}p · present {present}"
-  },
-  "hud_delay": {
-    "message": "buf {delay} · rAF {hz}Hz · late {late}"
-  },
-  "hud_drops": {
-    "message": "drop {drops} ({pressure}) · penalty {penalty}+{strain}"
-  },
-  "hud_motion": {
-    "message": "cut {cuts} hold {holds} · motion {motion} · queue {queue}"
-  },
-  "hud_pool": {
-    "message": "{engine} · pool {width}×{height}{mode}"
-  },
-  "hud_video_suffix": {
-    "message": " video"
-  },
-  "sr_unavailable": {
-    "message": "unavailable (no f16)"
-  },
-  "sr_loading": {
-    "message": "loading"
-  },
-  "sr_on": {
-    "message": "on x2"
-  },
-  "sr_ready": {
-    "message": "ready, not needed at this size"
-  },
-  "integrated_suffix": {
-    "message": " ⚠ INTEGRATED"
-  },
-  "engine_unavailable": {
-    "message": "unavailable ({reason})"
-  },
-  "engine_not_loaded": {
-    "message": "not loaded"
-  },
-  "unknown": {
-    "message": "unknown"
-  },
-  "hdr_no_display": {
-    "message": "display not HDR"
-  },
-  "hdr_sdr": {
-    "message": "failed, SDR"
-  },
-  "diag_engine": {
-    "message": "engine: {engine}"
-  },
-  "diag_fg": {
-    "message": "FG: {fg} · upscale: {sr}"
-  },
-  "diag_source": {
-    "message": "source: {size}"
-  },
-  "diag_rate": {
-    "message": "output rate: {rate}"
-  },
-  "diag_hdr": {
-    "message": "HDR: {state}"
-  },
-  "diag_sharpness": {
-    "message": "sharpness: {value}"
-  },
-  "diag_status": {
-    "message": "status: {state}"
-  },
-  "diag_output": {
-    "message": "out: {fps}fps · factor ×{factor}"
-  },
-  "diag_callbacks": {
-    "message": "browser callbacks: {display} · source: {source}fps"
-  },
-  "hz_value": {
-    "message": "{rate} Hz"
-  },
-  "diag_render": {
-    "message": "pair: {pair}ms · mid: {mid}ms @ {res}p · present: {present}ms"
-  },
-  "diag_delay": {
-    "message": "delay: {delay}ms · drops: {drops} · queue: {queue}"
-  },
-  "diag_vram": {
-    "message": "VRAM pool: ~{size}MB{mode}"
-  },
-  "diag_video_suffix": {
-    "message": " · video mode (lookahead)"
   },
   "live": {
     "message": "LIVE"

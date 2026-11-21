@@ -224,9 +224,6 @@
   "off": {
     "message": "Выкл."
   },
-  "on": {
-    "message": "Вкл."
-  },
   "low": {
     "message": "Низкая"
   },
@@ -518,9 +515,6 @@
   "running": {
     "message": "Работает"
   },
-  "stopped": {
-    "message": "Остановлено"
-  },
   "popup_output": {
     "message": "Выход   {fps} FPS · ×{factor}"
   },
@@ -665,104 +659,8 @@
   "warning_fixed_gpu": {
     "message": "При этом качестве GPU поддерживает {actual}× из заданных {requested}×"
   },
-  "hud_fps": {
-    "message": "FG {fps} FPS"
-  },
   "hud_fps_rate": {
     "message": "FG {fps} FPS · {rate} · {mid} мс"
-  },
-  "hud_output": {
-    "message": "{width}×{height}@{source} → {fps} FPS ×{factor} ({rate})"
-  },
-  "hud_render": {
-    "message": "пара {pair} + промеж. {mid} мс при {res}p · вывод {present}"
-  },
-  "hud_delay": {
-    "message": "буфер {delay} · rAF {hz} Гц · опозд. {late}"
-  },
-  "hud_drops": {
-    "message": "пропуск {drops} ({pressure}) · штраф {penalty}+{strain}"
-  },
-  "hud_motion": {
-    "message": "склейки {cuts} повторы {holds} · движение {motion} · очередь {queue}"
-  },
-  "hud_pool": {
-    "message": "{engine} · пул {width}×{height}{mode}"
-  },
-  "hud_video_suffix": {
-    "message": " видео"
-  },
-  "sr_unavailable": {
-    "message": "недоступно (нет FP16)"
-  },
-  "sr_loading": {
-    "message": "загрузка"
-  },
-  "sr_on": {
-    "message": "вкл. 2×"
-  },
-  "sr_ready": {
-    "message": "готово, для этого размера не требуется"
-  },
-  "integrated_suffix": {
-    "message": " ⚠ ВСТРОЕННЫЙ"
-  },
-  "engine_unavailable": {
-    "message": "недоступен ({reason})"
-  },
-  "engine_not_loaded": {
-    "message": "не загружен"
-  },
-  "unknown": {
-    "message": "неизвестно"
-  },
-  "hdr_no_display": {
-    "message": "экран без HDR"
-  },
-  "hdr_sdr": {
-    "message": "сбой, используется SDR"
-  },
-  "diag_engine": {
-    "message": "движок: {engine}"
-  },
-  "diag_fg": {
-    "message": "FG: {fg} · масштабирование: {sr}"
-  },
-  "diag_source": {
-    "message": "источник: {size}"
-  },
-  "diag_rate": {
-    "message": "частота кадров: {rate}"
-  },
-  "diag_hdr": {
-    "message": "HDR: {state}"
-  },
-  "diag_sharpness": {
-    "message": "резкость: {value}"
-  },
-  "diag_status": {
-    "message": "состояние: {state}"
-  },
-  "diag_output": {
-    "message": "выход: {fps} FPS · множитель ×{factor}"
-  },
-  "diag_callbacks": {
-    "message": "вызовы браузера: {display} · источник: {source} FPS"
-  },
-  "hz_value": {
-    "message": "{rate} Гц"
-  },
-  "diag_render": {
-    "message": "пара: {pair} мс · промеж. кадр: {mid} мс при {res}p · вывод: {present} мс"
-  },
-  "diag_delay": {
-    "message": "задержка: {delay} мс · пропуски: {drops} · очередь: {queue}"
-  },
-  "diag_vram": {
-    "message": "пул VRAM: ≈{size} МБ{mode}"
-  },
-  "diag_video_suffix": {
-    "message": " · опережающий видеорежим"
   },
   "live": {
     "message": "ЭФИР"

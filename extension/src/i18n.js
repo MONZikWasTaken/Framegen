@@ -81,6 +81,14 @@ export function onLanguageChange(listener) { listeners.add(listener); }
 export function t(key, values = {}) {
   const message = messages[key]?.message || english[key]?.message
     || globalThis.chrome?.i18n?.getMessage?.(key) || key;
+  return interpolate(message, values);
+}
+
+export function tEnglish(key, values = {}) {
+  return interpolate(english[key]?.message || key, values);
+}
+
+function interpolate(message, values) {
   return message.replace(/\{([a-z_][a-z0-9_]*)\}/gi, (token, name) => Object.hasOwn(values, name) ? String(values[name]) : token);
 }
 

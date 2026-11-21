@@ -7,7 +7,7 @@ import { loadEngine, tuneStore, SIZES } from './engine.js';
 import { makeReadable, isCorsError } from './capture.js';
 import { Presenter } from './present.js';
 import { Upscaler } from './upscale.js';
-import { t } from './i18n.js';
+import { t, tEnglish } from './i18n.js';
 
 const url = p => chrome.runtime.getURL(p);
 const ENGINE_URLS = {
@@ -22,15 +22,15 @@ const HUD_INTERVAL_MS = 400;
 const TUNE_IDLE_POLL_MS = 3000, TUNE_FORCE_AFTER_MS = 120000;
 const rateNumber = value => Number(value.toFixed(2));
 
-function planWarning(plan) {
+function planWarning(plan, message = t) {
   switch (plan.state) {
-    case 'no_two_x_gpu': return t('state_no_two_x_gpu');
-    case 'no_two_x_display': return t('state_no_two_x_display');
-    case 'invalid_target': return t('state_invalid_target');
-    case 'probing_gpu': return t('state_probing_gpu');
+    case 'no_two_x_gpu': return message('state_no_two_x_gpu');
+    case 'no_two_x_display': return message('state_no_two_x_display');
+    case 'invalid_target': return message('state_invalid_target');
+    case 'probing_gpu': return message('state_probing_gpu');
   }
   if (plan.clamp === 'gpu' && plan.requested_hz != null && plan.output_hz != null) {
-    return t('warning_gpu_clamp', {
+    return message('warning_gpu_clamp', {
       requested: rateNumber(plan.requested_hz), output: rateNumber(plan.output_hz),
     });
   }
@@ -918,22 +918,22 @@ export class Player {
     try { return this.pacer ? this.pacer.report() : null; } catch { return null; }
   }
 
-  rateLabel() {
+  rateLabel(message = t) {
     const c = this.cfg;
-    if (c.factor === 'auto') return c.fpsLimit !== null ? t('auto_limit', { rate: rateNumber(c.fpsLimit) }) : t('auto');
-    if (c.factor === 'hz') return t('match_display');
-    if (c.factor === 'target') return t('custom_rate', { rate: rateNumber(c.targetFps) });
-    return t('factor_source', { factor: c.factor });
+    if (c.factor === 'auto') return c.fpsLimit !== null ? message('auto_limit', { rate: rateNumber(c.fpsLimit) }) : message('auto');
+    if (c.factor === 'hz') return message('match_display');
+    if (c.factor === 'target') return message('custom_rate', { rate: rateNumber(c.targetFps) });
+    return message('factor_source', { factor: c.factor });
   }
 
-  rateState(r) {
-    const label = this.rateLabel();
+  rateState(r, message = t) {
+    const label = this.rateLabel(message);
     const plan = r?.plan;
     if (!plan || plan.state === 'factor') return label;
-    const hz = plan.output_hz ? t('rate_approx', { rate: rateNumber(plan.output_hz) }) : '';
-    if (plan.state === 'measuring') return `${label} · ${t('measuring')}`;
-    if (!plan.interpolation_allowed) return `${label} · ${planWarning(plan) || plan.state.replaceAll('_', ' ')}`;
-    if (plan.clamp) return `${label}${hz} · ${t(`clamp_${plan.clamp}`)}`;
+    const hz = plan.output_hz ? message('rate_approx', { rate: rateNumber(plan.output_hz) }) : '';
+    if (plan.state === 'measuring') return `${label} · ${message('measuring')}`;
+    if (!plan.interpolation_allowed) return `${label} · ${planWarning(plan, message) || plan.state.replaceAll('_', ' ')}`;
+    if (plan.clamp) return `${label}${hz} · ${message(`clamp_${plan.clamp}`)}`;
     return `${label}${hz}`;
   }
 
@@ -963,15 +963,15 @@ export class Player {
     const v = this.video;
     const mid = r ? r.mid_cost_ms : 0;
     if (!this.cfg.debug) return t('hud_fps_rate', { fps, rate: this.rateLabel(), mid: mid.toFixed(0) });
-    if (!r) return t('hud_fps', { fps });
+    if (!r) return `FG ${fps}fps`;
     const srcHz = r.source_hz ? r.source_hz.toFixed(0) : '?';
     return [
-      t('hud_output', { width: v.videoWidth, height: v.videoHeight, source: srcHz, fps, factor: this.stats.factor, rate: this.rateLabel() }),
-      t('hud_render', { pair: r.pair_cost_ms.toFixed(1), mid: mid.toFixed(1), res: this.cfg.res, present: r.present_cost_ms.toFixed(1) }),
-      t('hud_delay', { delay: r.delay_ms.toFixed(0), hz: r.display.display_hz, late: r.late_avg_ms.toFixed(1) }),
-      t('hud_drops', { drops: this.stats.drops, pressure: r.pressure.toFixed(1), penalty: r.penalty, strain: r.strain_penalty }),
-      t('hud_motion', { cuts: r.counters.cuts, holds: r.counters.holds, motion: r.motion_avg.toFixed(0), queue: r.queued }),
-      t('hud_pool', { engine: this.backend.class, width: this.spec?.width, height: this.spec?.height, mode: this.spec?.video ? t('hud_video_suffix') : '' }),
+      `${v.videoWidth}x${v.videoHeight}@${srcHz} → ${fps}fps ×${this.stats.factor} (${this.rateLabel(tEnglish)})`,
+      `pair ${r.pair_cost_ms.toFixed(1)} + mid ${mid.toFixed(1)}ms@${this.cfg.res}p · present ${r.present_cost_ms.toFixed(1)}`,
+      `buf ${r.delay_ms.toFixed(0)} · rAF ${r.display.display_hz}Hz · late ${r.late_avg_ms.toFixed(1)}`,
+      `drop ${this.stats.drops} (${r.pressure.toFixed(1)}) · penalty ${r.penalty}+${r.strain_penalty}`,
+      `cut ${r.counters.cuts} hold ${r.counters.holds} · motion ${r.motion_avg.toFixed(0)} · queue ${r.queued}`,
+      `${this.backend.class} · pool ${this.spec?.width}x${this.spec?.height}${this.spec?.video ? ' video' : ''}`,
     ].join('  ·  ');
   }
 
@@ -983,34 +983,31 @@ export class Player {
     const srNeeded = !frameSize || Upscaler.needed(frameSize.width, frameSize.height, this.overlay.width, this.overlay.height);
     let srState = 'off';
     if (this.wantsUpscale()) {
-      if (this.backend && !this.backend.f16) srState = 'sr_unavailable';
-      else if (!this.upscaler?.ready) srState = 'sr_loading';
-      else srState = srNeeded ? 'sr_on' : 'sr_ready';
+      if (this.backend && !this.backend.f16) srState = 'unavailable (no f16)';
+      else if (!this.upscaler?.ready) srState = 'loading';
+      else srState = srNeeded ? 'on x2' : 'ready, not needed at this size';
     }
     const engine = this.backend?.class || (this.blocked
-      ? t('engine_unavailable', { reason: t('blocked_wasm') }) : t('engine_not_loaded'));
-    const hdr = !this.sys.hdrOk ? 'hdr_no_display' : c.hdr ? (this.sys.hdrOn ? 'on' : 'hdr_sdr') : 'off';
+      ? `unavailable (${tEnglish('blocked_wasm')})` : 'not loaded');
+    const hdr = !this.sys.hdrOk ? 'display not HDR' : c.hdr ? (this.sys.hdrOn ? 'on' : 'failed, SDR') : 'off';
     const lines = [
-      t('gpu_line', { gpu: this.sys.gpu || t('unknown_gpu') }) + (this.sys.integrated ? t('integrated_suffix') : ''),
-      t('diag_engine', { engine }),
-      t('diag_fg', { fg: t(c.fg ? 'on' : 'off'), sr: t(srState) }),
-      t('diag_source', { size: video?.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : t('unknown') }),
-      t('diag_rate', { rate: this.rateState(r) }),
-      t('diag_hdr', { state: t(hdr) }),
-      t('diag_sharpness', { value: c.sharpness === 0 ? t('off') : c.sharpness }),
-      t('diag_status', { state: t(this.running ? 'running' : 'stopped') }),
+      `GPU: ${this.sys.gpu || 'unknown GPU'}${this.sys.integrated ? ' ⚠ INTEGRATED' : ''}`,
+      `engine: ${engine}`,
+      `FG: ${c.fg ? 'on' : 'OFF'} · upscale: ${srState}`,
+      `source: ${video?.videoWidth ? `${video.videoWidth}×${video.videoHeight}` : 'unknown'}`,
+      `output rate: ${this.rateState(r, tEnglish)}`,
+      `HDR: ${hdr}`,
+      `sharpness: ${c.sharpness === 0 ? 'off' : c.sharpness}`,
+      `status: ${this.running ? 'running' : 'stopped'}`,
     ];
     if (this.running && r) {
       const pool = this.spec ? this.spec.width * this.spec.height * 4 * (this.stream?.report().inputs + this.stream?.report().outputs) / 1048576 : 0;
       lines.push(
-        t('diag_output', { fps: this.stats.fpsWin.length, factor: this.stats.factor }),
-        t('diag_callbacks', {
-          display: r.display.measured ? t('hz_value', { rate: r.display.display_hz }) : t('measuring'),
-          source: r.source_hz ? r.source_hz.toFixed(2) : '?',
-        }),
-        t('diag_render', { pair: r.pair_cost_ms.toFixed(1), mid: r.mid_cost_ms.toFixed(1), res: c.res, present: r.present_cost_ms.toFixed(1) }),
-        t('diag_delay', { delay: r.delay_ms.toFixed(0), drops: this.stats.drops, queue: r.queued }),
-        t('diag_vram', { size: pool.toFixed(0), mode: this.spec?.video ? t('diag_video_suffix') : '' }));
+        `out: ${this.stats.fpsWin.length}fps · factor ×${this.stats.factor}`,
+        `browser callbacks: ${r.display.measured ? r.display.display_hz + 'Hz' : 'measuring'} · source: ${r.source_hz ? r.source_hz.toFixed(2) : '?'}fps`,
+        `pair: ${r.pair_cost_ms.toFixed(1)}ms · mid: ${r.mid_cost_ms.toFixed(1)}ms @ ${c.res}p · present: ${r.present_cost_ms.toFixed(1)}ms`,
+        `delay: ${r.delay_ms.toFixed(0)}ms · drops: ${this.stats.drops} · queue: ${r.queued}`,
+        `VRAM pool: ~${pool.toFixed(0)}MB${this.spec?.video ? ' · video mode (lookahead)' : ''}`);
     }
     return lines;
   }
