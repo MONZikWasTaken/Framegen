@@ -242,7 +242,7 @@ export async function boot() {
           const hasAdapter = await player.probeAdapter();
           const { gpu, integrated } = player.sys;
           try {
-            sendResponse({ hasAdapter, gpu, integrated, hasVideo: !!v, running: player.isRunning(), blocked: !!player.blocked });
+            sendResponse({ hasAdapter, gpu, integrated, blocked: !!player.blocked });
           } catch { /* popup closed */ }
         };
         if (player.isRunning()) respond();

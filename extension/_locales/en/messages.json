@@ -323,9 +323,6 @@
   "help": {
     "message": "Help"
   },
-  "hover_video": {
-    "message": "Hover a video: the Framegen buttons appear on its left edge."
-  },
   "no_adapter_title": {
     "message": "GPU adapter and startup issues"
   },
@@ -515,17 +512,8 @@
   "popup_tab_unavailable": {
     "message": "This tab couldn’t be checked"
   },
-  "popup_no_video_hint": {
-    "message": "Open a video and hover over it to see the Framegen buttons."
-  },
-  "popup_ready": {
-    "message": "Ready to use"
-  },
   "popup_blocked": {
     "message": "Framegen is blocked on this site"
-  },
-  "popup_running": {
-    "message": "Framegen is running"
   },
   "popup_gpu_label": {
     "message": "Graphics card"

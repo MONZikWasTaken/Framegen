@@ -51,11 +51,11 @@ main { display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .player-status { padding: 11px 13px; overflow-wrap: anywhere; }
 .player-status h2 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 13px; font-weight: 600; }
 .player-status h2::before { content: ""; flex: 0 0 5px; height: 5px; border-radius: 50%; background: #767d86; }
-.player-status[data-state="ok"] h2::before { background: var(--accent); }
 .player-status[data-state="warning"] h2::before { background: var(--warning); }
 .state-hint { margin: 3px 0 0 12px; color: var(--muted); font-size: 12px; }
 
-.details { display: grid; gap: 3px; margin: 6px 0 0; font-size: 12px; line-height: 1.4; }
+.details { display: grid; gap: 3px; margin: 0; font-size: 12px; line-height: 1.4; }
+.player-status h2:not([hidden]) ~ .details { margin-top: 6px; }
 .details > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 10px; }
 .details dt { color: var(--muted); }
 .details dd { margin: 0; text-align: end; }

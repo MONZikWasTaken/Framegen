@@ -323,9 +323,6 @@
   "help": {
     "message": "Помощь"
   },
-  "hover_video": {
-    "message": "Наведите указатель на видео. Кнопки Framegen появятся слева."
-  },
   "no_adapter_title": {
     "message": "Проблемы с GPU и запуском"
   },
@@ -515,17 +512,8 @@
   "popup_tab_unavailable": {
     "message": "Не удалось проверить вкладку"
   },
-  "popup_no_video_hint": {
-    "message": "Откройте видео. При наведении на него появятся кнопки Framegen."
-  },
-  "popup_ready": {
-    "message": "Готов к работе"
-  },
   "popup_blocked": {
     "message": "Сайт блокирует Framegen"
-  },
-  "popup_running": {
-    "message": "Framegen работает"
   },
   "popup_gpu_label": {
     "message": "Видеокарта"

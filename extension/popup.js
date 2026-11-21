@@ -11,18 +11,18 @@ function writeText(id, text) {
 
 function readout(status) {
   if (status === undefined) return ['idle', 'popup_checking'];
-  if (!status) return ['idle', 'popup_tab_unavailable', 'popup_no_video_hint'];
+  if (!status) return ['idle', 'popup_tab_unavailable'];
   if (status.blocked) return ['warning', 'popup_blocked', 'blocked_wasm'];
-  if (status.running) return ['ok', 'popup_running'];
   if (!status.hasAdapter) return ['warning', 'popup_gpu_missing', 'popup_gpu_missing_hint'];
-  return ['ok', 'popup_ready', status.hasVideo ? 'hover_video' : 'popup_no_video_hint'];
+  return ['idle'];
 }
 
 function render(status) {
   lastStatus = status;
   const [state, heading, hint] = readout(status);
   $('playerStatus').dataset.state = state;
-  writeText('state', t(heading));
+  $('state').hidden = !heading;
+  if (heading) writeText('state', t(heading));
   $('stateHint').hidden = !hint;
   if (hint) writeText('stateHint', t(hint));
 
