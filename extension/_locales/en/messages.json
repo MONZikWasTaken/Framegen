@@ -327,7 +327,7 @@
     "message": "Hover a video: the Framegen buttons appear on its left edge."
   },
   "no_adapter_title": {
-    "message": "\"No GPU adapter\" / does not start"
+    "message": "GPU adapter and startup issues"
   },
   "webgpu_help_intro": {
     "message": "WebGPU is switched off in the browser. In Chrome:"
@@ -382,9 +382,6 @@
   },
   "open_settings": {
     "message": "Open settings"
-  },
-  "open_source": {
-    "message": "Open source · MIT"
   },
   "upscale_short_hint": {
     "message": "2× neural resolution boost"
@@ -512,29 +509,47 @@
   "settings_unavailable": {
     "message": "Settings unavailable"
   },
-  "running": {
-    "message": "Running"
+  "popup_checking": {
+    "message": "Checking this tab…"
   },
-  "popup_output": {
-    "message": "Output   {fps} fps · ×{factor}"
+  "popup_no_video": {
+    "message": "No video detected"
   },
-  "popup_rate": {
-    "message": "Rate     {rate}"
+  "popup_no_video_hint": {
+    "message": "Open a video and hover over it to see the Framegen buttons."
   },
-  "popup_render": {
-    "message": "Render   {time} ms at {resolution}p · {drops} dropped"
+  "popup_ready": {
+    "message": "Framegen is off"
   },
-  "popup_engine": {
-    "message": "Engine   {engine}"
+  "popup_blocked": {
+    "message": "Framegen is blocked on this site"
   },
-  "gpu_line": {
-    "message": "GPU: {gpu}"
+  "popup_running": {
+    "message": "Framegen is active"
+  },
+  "popup_output_label": {
+    "message": "Output FPS"
+  },
+  "popup_render_label": {
+    "message": "Render time"
+  },
+  "popup_engine_label": {
+    "message": "Engine"
+  },
+  "popup_drops_label": {
+    "message": "Dropped frames"
+  },
+  "popup_time_value": {
+    "message": "{time} ms"
   },
   "no_f16_suffix": {
     "message": " · no half-float support"
   },
   "popup_integrated": {
-    "message": "Integrated GPU in use. Assign the browser to the discrete one: Windows Settings → Display → Graphics."
+    "message": "The browser is using the integrated GPU."
+  },
+  "popup_switch_gpu": {
+    "message": "How to switch GPUs"
   },
   "toggle_framegen": {
     "message": "Toggle Framegen"

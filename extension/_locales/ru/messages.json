@@ -327,7 +327,7 @@
     "message": "Наведите указатель на видео. Кнопки Framegen появятся слева."
   },
   "no_adapter_title": {
-    "message": "Ошибка «Нет графического адаптера» или сбой запуска"
+    "message": "Проблемы с GPU и запуском"
   },
   "webgpu_help_intro": {
     "message": "Проверьте, включён ли WebGPU в браузере. В Chrome:"
@@ -382,9 +382,6 @@
   },
   "open_settings": {
     "message": "Открыть настройки"
-  },
-  "open_source": {
-    "message": "Открытый код · MIT"
   },
   "upscale_short_hint": {
     "message": "Нейросетевое увеличение в 2×"
@@ -512,29 +509,47 @@
   "settings_unavailable": {
     "message": "Настройки недоступны"
   },
-  "running": {
-    "message": "Работает"
+  "popup_checking": {
+    "message": "Проверяем вкладку…"
   },
-  "popup_output": {
-    "message": "Выход   {fps} FPS · ×{factor}"
+  "popup_no_video": {
+    "message": "Видео не обнаружено"
   },
-  "popup_rate": {
-    "message": "Частота   {rate}"
+  "popup_no_video_hint": {
+    "message": "Откройте видео. При наведении на него появятся кнопки Framegen."
   },
-  "popup_render": {
-    "message": "Отрисовка   {time} мс при {resolution}p · пропущено {drops}"
+  "popup_ready": {
+    "message": "Framegen выключен"
   },
-  "popup_engine": {
-    "message": "Движок   {engine}"
+  "popup_blocked": {
+    "message": "Сайт блокирует Framegen"
   },
-  "gpu_line": {
-    "message": "GPU: {gpu}"
+  "popup_running": {
+    "message": "Framegen активен"
+  },
+  "popup_output_label": {
+    "message": "Выходной FPS"
+  },
+  "popup_render_label": {
+    "message": "Время отрисовки"
+  },
+  "popup_engine_label": {
+    "message": "Движок"
+  },
+  "popup_drops_label": {
+    "message": "Пропущено кадров"
+  },
+  "popup_time_value": {
+    "message": "{time} мс"
   },
   "no_f16_suffix": {
     "message": " · FP16 не поддерживается"
   },
   "popup_integrated": {
-    "message": "Используется встроенный GPU. Выберите дискретную видеокарту для браузера в параметрах Windows: Система → Дисплей → Графика."
+    "message": "Браузер использует встроенный GPU."
+  },
+  "popup_switch_gpu": {
+    "message": "Как переключить видеокарту"
   },
   "toggle_framegen": {
     "message": "Включить или выключить Framegen"
