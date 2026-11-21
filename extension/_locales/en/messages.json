@@ -377,9 +377,6 @@
   "limitations_hint": {
     "message": "Netflix, Crunchyroll and other DRM sites - the browser never hands us their pixels, a platform limitation. On some sites the video may reload for a couple of seconds the first time you enable FG (CORS) - that is normal."
   },
-  "open_settings": {
-    "message": "Open settings"
-  },
   "upscale_short_hint": {
     "message": "2× neural resolution boost"
   },
