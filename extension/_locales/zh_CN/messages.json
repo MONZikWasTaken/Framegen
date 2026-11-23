@@ -1,0 +1,719 @@
+{
+  "extension_name": {
+    "message": "Framegen - 视频插帧"
+  },
+  "extension_description": {
+    "message": "使用 WebGPU 在本地 GPU 上实时为视频插帧，帧率可提升至两倍以上，并支持自定义目标 FPS。"
+  },
+  "framegen_settings": {
+    "message": "Framegen 设置"
+  },
+  "settings": {
+    "message": "设置"
+  },
+  "loading_settings": {
+    "message": "正在加载设置…"
+  },
+  "powered_by": {
+    "message": "技术支持"
+  },
+  "flyhigh_engine": {
+    "message": "FlyHigh 引擎"
+  },
+  "flyhigh_engine_link": {
+    "message": "FlyHigh 引擎"
+  },
+  "open_github": {
+    "message": "在 GitHub 上打开 Framegen"
+  },
+  "sections": {
+    "message": "设置分类"
+  },
+  "generation": {
+    "message": "帧生成"
+  },
+  "motion": {
+    "message": "运动"
+  },
+  "picture": {
+    "message": "画质"
+  },
+  "player": {
+    "message": "播放器"
+  },
+  "diagnostics": {
+    "message": "诊断"
+  },
+  "language": {
+    "message": "界面语言"
+  },
+  "language_auto": {
+    "message": "自动（{language}）"
+  },
+  "language_hint": {
+    "message": "默认使用浏览器语言。"
+  },
+  "language_save_failed": {
+    "message": "无法保存语言设置。"
+  },
+  "profile": {
+    "message": "配置文件"
+  },
+  "profile_actions": {
+    "message": "配置文件操作"
+  },
+  "duplicate": {
+    "message": "复制"
+  },
+  "rename": {
+    "message": "重命名"
+  },
+  "delete": {
+    "message": "删除"
+  },
+  "new_profile": {
+    "message": "新建配置文件"
+  },
+  "generation_desc": {
+    "message": "设置生成帧的数量和显示节奏。"
+  },
+  "generation_hint": {
+    "message": "在视频播放时生成中间帧。"
+  },
+  "output_rate": {
+    "message": "输出帧率"
+  },
+  "output_hint": {
+    "message": "自动选择显示器和 GPU 能稳定维持的最流畅帧率。"
+  },
+  "auto_recommended": {
+    "message": "自动（推荐）"
+  },
+  "match_display": {
+    "message": "匹配显示器"
+  },
+  "custom_fps": {
+    "message": "自定义 FPS"
+  },
+  "factor_source": {
+    "message": "源帧率的 {factor} 倍"
+  },
+  "custom_hint": {
+    "message": "2～1000 FPS。至少达到源帧率的两倍，并受显示器和 GPU 性能限制。"
+  },
+  "fps_limit": {
+    "message": "FPS 上限"
+  },
+  "fps_limit_hint": {
+    "message": "自动模式的帧率上限。为保持流畅，实际帧率可能更低。"
+  },
+  "unlimited": {
+    "message": "无限制"
+  },
+  "full_refresh": {
+    "message": "使用完整刷新率"
+  },
+  "full_refresh_hint": {
+    "message": "使用显示器实测刷新率的 100%，默认使用 97%。"
+  },
+  "limit_display": {
+    "message": "限制在显示器刷新率以内"
+  },
+  "limit_display_hint": {
+    "message": "将生成帧数限制在屏幕能显示的范围内。关闭后按 GPU 性能生成，计数器显示生成帧数。"
+  },
+  "motion_auto": {
+    "message": "运动自适应自动模式"
+  },
+  "motion_auto_hint": {
+    "message": "快速运动场景中减少生成帧数，以降低画面伪影。关闭后始终使用 GPU 能维持的最高帧率。"
+  },
+  "quality": {
+    "message": "生成画质"
+  },
+  "quality_hint": {
+    "message": "模型处理时使用的分辨率。“均衡”是模型的原生分辨率。更高档位会增加 GPU 开销，画质改善通常有限。"
+  },
+  "low_power": {
+    "message": "低功耗"
+  },
+  "efficient": {
+    "message": "高效率"
+  },
+  "balanced": {
+    "message": "均衡"
+  },
+  "high": {
+    "message": "高"
+  },
+  "ultra": {
+    "message": "超高"
+  },
+  "motion_desc": {
+    "message": "设置补帧时对动画、重复图案和屏幕文字的处理方式。"
+  },
+  "animation": {
+    "message": "动画模式"
+  },
+  "animation_hint": {
+    "message": "适用于手绘动画。避免重复的画面与下一张画混在一起。"
+  },
+  "cadence": {
+    "message": "平滑动画帧节奏"
+  },
+  "experimental": {
+    "message": "实验功能"
+  },
+  "cadence_hint": {
+    "message": "与动画模式配合使用。在一拍二或一拍三的动画中，将运动均匀分布到同一张画的持续时间。所有显示帧均由插帧生成，快速动作可能模糊或产生异常。"
+  },
+  "pattern_repair": {
+    "message": "重复图案修复"
+  },
+  "pattern_hint": {
+    "message": "重新检查栏杆、围栏和窗格的运动，减少镜头横移时的重影。动画模式下效果更明显，GPU 开销较小。"
+  },
+  "subtitle_guard": {
+    "message": "字幕保护"
+  },
+  "subtitle_guard_hint": {
+    "message": "保留源帧中内嵌的字幕、标志和 HUD，避免它们随背景画面一起移动。"
+  },
+  "sharper_edges": {
+    "message": "增强边缘清晰度"
+  },
+  "sharper_edges_hint": {
+    "message": "对生成帧使用双三次采样，让轮廓、头发和纹理更清晰。每个生成帧约耗时 0.2 ms。"
+  },
+  "picture_desc": {
+    "message": "设置画面风格和图像处理效果。"
+  },
+  "picture_mode": {
+    "message": "画质模式"
+  },
+  "picture_mode_hint": {
+    "message": "调整视频的色彩和细节风格。“细节增强”会锐化，并在符合条件时进行两倍超分辨率放大。"
+  },
+  "look_original": {
+    "message": "原始"
+  },
+  "look_cinema": {
+    "message": "影院"
+  },
+  "look_cinema_home": {
+    "message": "家庭影院"
+  },
+  "look_noir": {
+    "message": "黑色电影"
+  },
+  "look_vivid": {
+    "message": "鲜艳"
+  },
+  "look_sports": {
+    "message": "体育"
+  },
+  "look_detail": {
+    "message": "细节增强"
+  },
+  "sharpness": {
+    "message": "锐度"
+  },
+  "sharpness_hint": {
+    "message": "增强画面边缘。高档位可能产生光晕。"
+  },
+  "off": {
+    "message": "关闭"
+  },
+  "low": {
+    "message": "低"
+  },
+  "medium": {
+    "message": "中"
+  },
+  "sharpness_high": {
+    "message": "高"
+  },
+  "upscale": {
+    "message": "超分辨率"
+  },
+  "upscale_hint": {
+    "message": "当播放器尺寸大于视频时，使用神经网络进行两倍放大。"
+  },
+  "hdr_hint": {
+    "message": "在 HDR 显示器上提升高光亮度。"
+  },
+  "player_desc": {
+    "message": "设置显示在视频上方的叠加内容。"
+  },
+  "hover_controls": {
+    "message": "悬停时显示控件"
+  },
+  "hover_hint": {
+    "message": "鼠标指针移到视频上时显示 Framegen 控件。"
+  },
+  "fps_counter": {
+    "message": "FPS 计数器"
+  },
+  "fps_counter_hint": {
+    "message": "在画面角落显示输出帧率和渲染时间。"
+  },
+  "watermark": {
+    "message": "水印"
+  },
+  "watermark_hint": {
+    "message": "插帧时显示 Framegen 标记。"
+  },
+  "warnings": {
+    "message": "警告"
+  },
+  "warnings_hint": {
+    "message": "显示性能提示。错误始终显示。"
+  },
+  "subtitle_overlay": {
+    "message": "字幕叠加"
+  },
+  "subtitle_overlay_hint": {
+    "message": "将播放器的字幕显示在插帧画面上方。"
+  },
+  "diagnostics_desc": {
+    "message": "用于检查 Framegen 运行情况的工具。"
+  },
+  "compare": {
+    "message": "对比"
+  },
+  "compare_hint": {
+    "message": "分屏显示，左侧为原画面，右侧为处理后的画面。"
+  },
+  "debug": {
+    "message": "调试叠加层"
+  },
+  "debug_hint": {
+    "message": "标出处理区域并显示详细运行数据。"
+  },
+  "up_to_date": {
+    "message": "设置已同步"
+  },
+  "reset": {
+    "message": "重置"
+  },
+  "save_profile": {
+    "message": "保存配置文件"
+  },
+  "apply": {
+    "message": "应用"
+  },
+  "profile_name": {
+    "message": "配置文件名称"
+  },
+  "cancel": {
+    "message": "取消"
+  },
+  "create": {
+    "message": "创建"
+  },
+  "delete_profile_question": {
+    "message": "删除配置文件？"
+  },
+  "delete_profile_generic": {
+    "message": "此配置文件将被删除，当前视频设置保持不变。"
+  },
+  "status": {
+    "message": "状态"
+  },
+  "help": {
+    "message": "帮助"
+  },
+  "no_adapter_title": {
+    "message": "GPU 适配器和启动问题"
+  },
+  "webgpu_help_intro": {
+    "message": "浏览器已禁用 WebGPU。请在 Chrome 中尝试以下步骤。"
+  },
+  "open": {
+    "message": "打开"
+  },
+  "chrome_acceleration": {
+    "message": "启用“如果可用，请使用图形加速”"
+  },
+  "restart_browser": {
+    "message": "完全退出并重启浏览器"
+  },
+  "driver_update": {
+    "message": "如果仍无法使用，请更新 NVIDIA、AMD 或 Intel 的 GPU 驱动。旧版驱动可能被浏览器屏蔽。"
+  },
+  "laptop_gpus": {
+    "message": "配有两个 GPU 的电脑"
+  },
+  "laptop_gpus_hint": {
+    "message": "Windows 上的浏览器可能会使用集成 GPU，导致帧率提升有限。"
+  },
+  "windows_graphics": {
+    "message": "Windows 设置 → 系统 → 显示 → 图形"
+  },
+  "windows_high_performance": {
+    "message": "添加浏览器并选择“高性能”"
+  },
+  "restart_it": {
+    "message": "完全退出并重启浏览器"
+  },
+  "check_gpu": {
+    "message": "在“状态”标签页中检查 GPU 一栏是否显示独立显卡。"
+  },
+  "requirements": {
+    "message": "运行要求"
+  },
+  "requirements_hint": {
+    "message": "需要桌面版 Chrome 或 Edge 121 及以上版本，或 Windows 版 Firefox 142 及以上版本，以及约 2016 年或更新的 GPU。不支持 Safari 和手机。"
+  },
+  "how_to_use": {
+    "message": "使用方法"
+  },
+  "how_to_use_hint": {
+    "message": "将鼠标移到视频上，左侧会显示 FG 开关、画质和设置按钮。“对比”功能可分屏查看原始和处理后的画面，位于详细设置中。"
+  },
+  "limitations": {
+    "message": "使用限制"
+  },
+  "limitations_hint": {
+    "message": "Netflix、Crunchyroll 等网站的 DRM 内容受浏览器限制，无法读取画面。部分网站首次开启 FG 时，出于 CORS 限制，视频可能重新加载数秒。"
+  },
+  "upscale_short_hint": {
+    "message": "神经网络两倍超分"
+  },
+  "hdr_short_hint": {
+    "message": "提升 HDR 画面的高光亮度"
+  },
+  "profile_short_hint": {
+    "message": "应用已保存的设置"
+  },
+  "loading_profiles": {
+    "message": "正在加载配置文件…"
+  },
+  "generation_short_hint": {
+    "message": "让运动更流畅"
+  },
+  "output_short_hint": {
+    "message": "画面的显示节奏"
+  },
+  "auto_limit_short_hint": {
+    "message": "常用帧率。自动模式下实际帧率可能更低"
+  },
+  "quality_short_hint": {
+    "message": "画面细节与 GPU 开销"
+  },
+  "fps_counter_short_hint": {
+    "message": "显示帧率和渲染时间"
+  },
+  "watermark_short_hint": {
+    "message": "在视频上显示 Framegen 标记"
+  },
+  "warnings_short_hint": {
+    "message": "在画面上显示非关键提示"
+  },
+  "advanced_settings": {
+    "message": "详细设置"
+  },
+  "compare_original": {
+    "message": "原画面"
+  },
+  "profile_read_only": {
+    "message": "配置文件存储为只读"
+  },
+  "profile_schema_unsupported": {
+    "message": "此版本的 Framegen 不支持版本为 {version} 的配置格式。"
+  },
+  "fps_value": {
+    "message": "{rate} FPS"
+  },
+  "custom_fps_range": {
+    "message": "请输入 2～1000 之间的自定义 FPS"
+  },
+  "current_settings": {
+    "message": "当前设置"
+  },
+  "my_profiles": {
+    "message": "我的配置文件"
+  },
+  "current_profile": {
+    "message": "当前：{name}"
+  },
+  "custom_settings": {
+    "message": "自定义设置"
+  },
+  "current_after": {
+    "message": "{current} · 已在 {name} 的基础上修改"
+  },
+  "changed_another_tab": {
+    "message": "设置已在其他标签页中更改"
+  },
+  "unsaved_preview": {
+    "message": "未保存的预览"
+  },
+  "previewing": {
+    "message": "正在预览“{name}”"
+  },
+  "settings_applied": {
+    "message": "设置已应用"
+  },
+  "apply_failed": {
+    "message": "无法应用设置"
+  },
+  "custom_profile": {
+    "message": "自定义配置文件"
+  },
+  "duplicate_profile": {
+    "message": "复制配置文件"
+  },
+  "create_copy": {
+    "message": "创建副本"
+  },
+  "profile_copy_named": {
+    "message": "{name}的副本"
+  },
+  "profile_copy": {
+    "message": "配置文件副本"
+  },
+  "rename_profile": {
+    "message": "重命名配置文件"
+  },
+  "enter_profile_name": {
+    "message": "请输入配置文件名称。"
+  },
+  "profile_renamed": {
+    "message": "配置文件已重命名"
+  },
+  "profile_saved": {
+    "message": "配置文件已保存"
+  },
+  "profile_save_failed": {
+    "message": "无法保存配置文件"
+  },
+  "delete_profile_named": {
+    "message": "将删除“{name}”，当前视频设置保持不变。"
+  },
+  "profile_deleted": {
+    "message": "配置文件已删除"
+  },
+  "profile_delete_failed": {
+    "message": "无法删除配置文件"
+  },
+  "profile_update_failed": {
+    "message": "无法更新配置文件"
+  },
+  "settings_unavailable": {
+    "message": "无法读取设置"
+  },
+  "popup_checking": {
+    "message": "正在检查此标签页…"
+  },
+  "popup_tab_unavailable": {
+    "message": "无法检查此标签页"
+  },
+  "popup_blocked": {
+    "message": "此网站已阻止 Framegen"
+  },
+  "popup_gpu_label": {
+    "message": "显卡"
+  },
+  "popup_webgpu_available": {
+    "message": "可用"
+  },
+  "popup_gpu_name_unavailable": {
+    "message": "已检测到（无法获取名称）"
+  },
+  "popup_gpu_missing": {
+    "message": "未找到 WebGPU 适配器"
+  },
+  "popup_gpu_missing_hint": {
+    "message": "请检查浏览器是否已启用图形加速。"
+  },
+  "popup_integrated": {
+    "message": "浏览器正在使用集成 GPU。"
+  },
+  "popup_switch_gpu": {
+    "message": "如何切换 GPU"
+  },
+  "toggle_framegen": {
+    "message": "切换 Framegen 开关"
+  },
+  "open_framegen_settings": {
+    "message": "打开 Framegen 设置"
+  },
+  "open_picture_settings": {
+    "message": "打开画质设置"
+  },
+  "framegen_picture": {
+    "message": "Framegen 画质"
+  },
+  "target_short_hint": {
+    "message": "目标帧率，至少为源帧率的两倍"
+  },
+  "profiles_unavailable": {
+    "message": "配置文件不可用"
+  },
+  "choose_option": {
+    "message": "选择一个选项"
+  },
+  "reload_updated": {
+    "message": "Framegen 已更新，请重新加载页面。"
+  },
+  "settings_from_toolbar": {
+    "message": "从工具栏图标打开设置"
+  },
+  "no_video": {
+    "message": "Framegen：未找到视频"
+  },
+  "framegen_error": {
+    "message": "Framegen 错误：{detail}"
+  },
+  "blocked_wasm": {
+    "message": "此网站的安全策略禁止扩展使用 WebAssembly，Framegen 无法在此运行。"
+  },
+  "gpu_help": {
+    "message": "WebGPU 已禁用。请在浏览器设置中启用图形加速，重启浏览器并更新 GPU 驱动。较旧的 GPU 不受支持。"
+  },
+  "no_adapter_help": {
+    "message": "WebGPU 当前无法使用 GPU。驱动重置后（例如游戏崩溃）请重启浏览器。若问题持续，请在 chrome://gpu 检查硬件加速并更新 GPU 驱动。"
+  },
+  "unknown_gpu": {
+    "message": "未知 GPU"
+  },
+  "cors_reload": {
+    "message": "Framegen：视频缺少 CORS 支持，正在重新加载"
+  },
+  "integrated_advice": {
+    "message": "浏览器正在使用集成 GPU（{gpu}）。请在 Windows“设置 → 显示 → 图形”中将浏览器设为“高性能”，然后重启浏览器。"
+  },
+  "cors_unreadable": {
+    "message": "Framegen：因 CORS 限制无法读取视频"
+  },
+  "redraw_failed": {
+    "message": "Framegen：无法重新绘制已暂停的视频"
+  },
+  "gpu_recovering": {
+    "message": "Framegen：检测到 GPU 重置，正在恢复"
+  },
+  "gpu_restored": {
+    "message": "GPU 连接已恢复"
+  },
+  "gpu_recovery_failed": {
+    "message": "Framegen：GPU 恢复失败，请重新加载页面"
+  },
+  "auto": {
+    "message": "自动"
+  },
+  "auto_limit": {
+    "message": "自动 · 上限 {rate} FPS"
+  },
+  "custom_rate": {
+    "message": "自定义 {rate} FPS"
+  },
+  "measuring": {
+    "message": "测量中"
+  },
+  "rate_approx": {
+    "message": "（约 {rate} FPS）"
+  },
+  "state_invalid_target": {
+    "message": "目标 FPS 必须为正数"
+  },
+  "state_no_two_x_display": {
+    "message": "显示器刷新率低于插帧所需的最低值"
+  },
+  "state_no_two_x_gpu": {
+    "message": "当前画质下 GPU 无法维持最低 FPS"
+  },
+  "state_probing_gpu": {
+    "message": "正在测试 GPU 性能"
+  },
+  "clamp_display": {
+    "message": "浏览器回调频率上限"
+  },
+  "clamp_gpu": {
+    "message": "GPU 性能上限"
+  },
+  "clamp_runtime": {
+    "message": "调度器上限"
+  },
+  "clamp_minimum": {
+    "message": "最低输出帧率"
+  },
+  "clamp_gpu_probe": {
+    "message": "正在测试 GPU 性能"
+  },
+  "warning_gpu_clamp": {
+    "message": "当前画质下，帧率从 {requested} FPS 限制为 {output} FPS"
+  },
+  "warning_old_firefox": {
+    "message": "当前 Firefox 版本过旧，请更新以获得流畅的插帧体验"
+  },
+  "warning_drops": {
+    "message": "出现丢帧。请降低输出帧率或画质，或切换为自动模式"
+  },
+  "warning_auto_gpu": {
+    "message": "GPU 无法维持两倍帧率，请降低画质"
+  },
+  "warning_fixed_gpu": {
+    "message": "当前画质下 GPU 能维持 {actual} 倍帧率，设置值为 {requested} 倍。"
+  },
+  "hud_fps_rate": {
+    "message": "FG {fps}fps · {rate} · {mid}ms"
+  },
+  "live": {
+    "message": "直播"
+  },
+  "play": {
+    "message": "播放"
+  },
+  "pause": {
+    "message": "暂停"
+  },
+  "mute": {
+    "message": "静音"
+  },
+  "unmute": {
+    "message": "取消静音"
+  },
+  "seek": {
+    "message": "播放进度"
+  },
+  "volume": {
+    "message": "音量"
+  },
+  "fullscreen": {
+    "message": "全屏"
+  },
+  "kick_rewind": {
+    "message": "Kick 从头重新加载了直播，已恢复到 {time}"
+  },
+  "factor_2": {
+    "message": "源帧率的 2 倍"
+  },
+  "factor_3": {
+    "message": "源帧率的 3 倍"
+  },
+  "factor_4": {
+    "message": "源帧率的 4 倍"
+  },
+  "factor_5": {
+    "message": "源帧率的 5 倍"
+  },
+  "factor_6": {
+    "message": "源帧率的 6 倍"
+  },
+  "quality_low_power": {
+    "message": "低功耗 · 288p"
+  },
+  "quality_efficient": {
+    "message": "高效率 · 360p"
+  },
+  "quality_balanced": {
+    "message": "均衡 · 480p"
+  },
+  "quality_high": {
+    "message": "高 · 720p"
+  },
+  "quality_ultra": {
+    "message": "超高 · 1080p"
+  }
+}
