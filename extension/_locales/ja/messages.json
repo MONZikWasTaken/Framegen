@@ -1,0 +1,719 @@
+{
+  "extension_name": {
+    "message": "Framegen - フレーム補間"
+  },
+  "extension_description": {
+    "message": "WebGPUを使って、動画をGPU上でリアルタイムに2倍以上にフレーム補間します。目標FPSを指定できます。"
+  },
+  "framegen_settings": {
+    "message": "Framegenの設定"
+  },
+  "settings": {
+    "message": "設定"
+  },
+  "loading_settings": {
+    "message": "設定を読み込み中…"
+  },
+  "powered_by": {
+    "message": "搭載エンジン"
+  },
+  "flyhigh_engine": {
+    "message": "FlyHighエンジン"
+  },
+  "flyhigh_engine_link": {
+    "message": "FlyHighエンジン"
+  },
+  "open_github": {
+    "message": "GitHubでFramegenを開く"
+  },
+  "sections": {
+    "message": "設定項目"
+  },
+  "generation": {
+    "message": "フレーム生成"
+  },
+  "motion": {
+    "message": "動き"
+  },
+  "picture": {
+    "message": "画質"
+  },
+  "player": {
+    "message": "プレーヤー"
+  },
+  "diagnostics": {
+    "message": "診断"
+  },
+  "language": {
+    "message": "表示言語"
+  },
+  "language_auto": {
+    "message": "自動（{language}）"
+  },
+  "language_hint": {
+    "message": "既定ではブラウザの言語を使用します。"
+  },
+  "language_save_failed": {
+    "message": "言語設定を保存できませんでした。"
+  },
+  "profile": {
+    "message": "プロファイル"
+  },
+  "profile_actions": {
+    "message": "プロファイル操作"
+  },
+  "duplicate": {
+    "message": "複製"
+  },
+  "rename": {
+    "message": "名前を変更"
+  },
+  "delete": {
+    "message": "削除"
+  },
+  "new_profile": {
+    "message": "新しいプロファイル"
+  },
+  "generation_desc": {
+    "message": "生成するフレーム数と表示間隔を設定します。"
+  },
+  "generation_hint": {
+    "message": "動画の再生中に中間フレームを生成します。"
+  },
+  "output_rate": {
+    "message": "出力フレームレート"
+  },
+  "output_hint": {
+    "message": "自動では、ディスプレイとGPUで安定して維持できる滑らかなレートを選びます。"
+  },
+  "auto_recommended": {
+    "message": "自動（推奨）"
+  },
+  "match_display": {
+    "message": "ディスプレイに合わせる"
+  },
+  "custom_fps": {
+    "message": "カスタムFPS"
+  },
+  "factor_source": {
+    "message": "元動画の{factor}倍"
+  },
+  "custom_hint": {
+    "message": "2～1000 FPS。元動画の2倍以上で、ディスプレイとGPUが対応できる範囲に収めます。"
+  },
+  "fps_limit": {
+    "message": "FPS上限"
+  },
+  "fps_limit_hint": {
+    "message": "自動モードでの上限です。滑らかさを保つために下回ることがあります。"
+  },
+  "unlimited": {
+    "message": "上限なし"
+  },
+  "full_refresh": {
+    "message": "リフレッシュレートを最大限使う"
+  },
+  "full_refresh_hint": {
+    "message": "ディスプレイで実測したリフレッシュレートを100%使います。通常は97%です。"
+  },
+  "limit_display": {
+    "message": "ディスプレイのリフレッシュレートを上限にする"
+  },
+  "limit_display_hint": {
+    "message": "画面に表示できるフレーム数を上限にします。オフにするとGPUの性能に応じて生成し、カウンターには生成フレーム数を表示します。"
+  },
+  "motion_auto": {
+    "message": "動きに応じた自動調整"
+  },
+  "motion_auto_hint": {
+    "message": "動きの速い場面では、映像の乱れを抑えるために生成フレーム数を減らします。オフではGPUが維持できる最大レートを使います。"
+  },
+  "quality": {
+    "message": "生成品質"
+  },
+  "quality_hint": {
+    "message": "モデルが処理する解像度です。「標準」がモデル本来の解像度です。それ以上ではGPU負荷が増え、画質の向上はわずかです。"
+  },
+  "low_power": {
+    "message": "省電力"
+  },
+  "efficient": {
+    "message": "軽量"
+  },
+  "balanced": {
+    "message": "標準"
+  },
+  "high": {
+    "message": "高"
+  },
+  "ultra": {
+    "message": "最高"
+  },
+  "motion_desc": {
+    "message": "アニメーション、繰り返し模様、画面内の文字を補間するときの設定です。"
+  },
+  "animation": {
+    "message": "アニメーションモード"
+  },
+  "animation_hint": {
+    "message": "手描きアニメ向け。同じ絵を繰り返し表示するコマが、次の絵ににじむのを抑えます。"
+  },
+  "cadence": {
+    "message": "アニメのコマ間隔を平滑化"
+  },
+  "experimental": {
+    "message": "試験機能"
+  },
+  "cadence_hint": {
+    "message": "アニメーションモードと併用します。2コマ・3コマ打ちで同じ絵を表示する間に動きを均等に割り振ります。表示する全フレームを生成するため、激しい動きでぼやけたり不自然に見えたりすることがあります。"
+  },
+  "pattern_repair": {
+    "message": "繰り返し模様の補正"
+  },
+  "pattern_hint": {
+    "message": "パンで二重になりやすい柵や窓枠の動きを再確認します。アニメーションモードで効果が強まります。GPU負荷はわずかです。"
+  },
+  "subtitle_guard": {
+    "message": "字幕の保護"
+  },
+  "subtitle_guard_hint": {
+    "message": "焼き付け字幕、ロゴ、HUDには元のフレームを使い、背景の動きに引きずられるのを防ぎます。"
+  },
+  "sharper_edges": {
+    "message": "輪郭をくっきりさせる"
+  },
+  "sharper_edges_hint": {
+    "message": "生成フレームをバイキュービック法でサンプリングし、輪郭や髪、質感をくっきりさせます。生成フレーム1枚あたり約0.2 msかかります。"
+  },
+  "picture_desc": {
+    "message": "映像の色調や画質補正を設定します。"
+  },
+  "picture_mode": {
+    "message": "画質モード"
+  },
+  "picture_mode_hint": {
+    "message": "映像の色調と細部の見え方を変えます。「ディテール強調」は輪郭を強調し、適用条件を満たすときに2倍アップスケールも行います。"
+  },
+  "look_original": {
+    "message": "オリジナル"
+  },
+  "look_cinema": {
+    "message": "シネマ"
+  },
+  "look_cinema_home": {
+    "message": "ホームシネマ"
+  },
+  "look_noir": {
+    "message": "ノワール"
+  },
+  "look_vivid": {
+    "message": "鮮やか"
+  },
+  "look_sports": {
+    "message": "スポーツ"
+  },
+  "look_detail": {
+    "message": "ディテール強調"
+  },
+  "sharpness": {
+    "message": "シャープネス"
+  },
+  "sharpness_hint": {
+    "message": "輪郭を強調します。「高」では輪郭のまわりに縁取りが出ることがあります。"
+  },
+  "off": {
+    "message": "オフ"
+  },
+  "low": {
+    "message": "低"
+  },
+  "medium": {
+    "message": "中"
+  },
+  "sharpness_high": {
+    "message": "高"
+  },
+  "upscale": {
+    "message": "アップスケール"
+  },
+  "upscale_hint": {
+    "message": "プレーヤーが動画より大きいときに、ニューラルネットワークで2倍に拡大します。"
+  },
+  "hdr_hint": {
+    "message": "HDR対応ディスプレイで明るい部分の輝度を引き上げます。"
+  },
+  "player_desc": {
+    "message": "映像の上に表示する項目を設定します。"
+  },
+  "hover_controls": {
+    "message": "マウスを重ねたときの操作表示"
+  },
+  "hover_hint": {
+    "message": "動画にマウスを重ねるとFramegenの操作ボタンを表示します。"
+  },
+  "fps_counter": {
+    "message": "FPSカウンター"
+  },
+  "fps_counter_hint": {
+    "message": "画面の隅に出力FPSと描画時間を表示します。"
+  },
+  "watermark": {
+    "message": "透かし"
+  },
+  "watermark_hint": {
+    "message": "フレーム生成中にFramegenのロゴを表示します。"
+  },
+  "warnings": {
+    "message": "警告"
+  },
+  "warnings_hint": {
+    "message": "パフォーマンスの通知を表示します。エラーは常に表示します。"
+  },
+  "subtitle_overlay": {
+    "message": "字幕を前面に表示"
+  },
+  "subtitle_overlay_hint": {
+    "message": "プレーヤーの字幕を補間映像より手前に表示します。"
+  },
+  "diagnostics_desc": {
+    "message": "Framegenの動作を確認するための機能です。"
+  },
+  "compare": {
+    "message": "比較"
+  },
+  "compare_hint": {
+    "message": "画面を分割して左に元映像、右に処理後の映像を表示します。"
+  },
+  "debug": {
+    "message": "デバッグ情報の表示"
+  },
+  "debug_hint": {
+    "message": "処理範囲を枠で囲み、詳しい動作情報を表示します。"
+  },
+  "up_to_date": {
+    "message": "変更なし"
+  },
+  "reset": {
+    "message": "リセット"
+  },
+  "save_profile": {
+    "message": "プロファイルを保存"
+  },
+  "apply": {
+    "message": "適用"
+  },
+  "profile_name": {
+    "message": "プロファイル名"
+  },
+  "cancel": {
+    "message": "キャンセル"
+  },
+  "create": {
+    "message": "作成"
+  },
+  "delete_profile_question": {
+    "message": "プロファイルを削除する？"
+  },
+  "delete_profile_generic": {
+    "message": "このプロファイルを削除します。現在の動画設定はそのままです。"
+  },
+  "status": {
+    "message": "状態"
+  },
+  "help": {
+    "message": "ヘルプ"
+  },
+  "no_adapter_title": {
+    "message": "GPUの検出・起動時の問題"
+  },
+  "webgpu_help_intro": {
+    "message": "ブラウザのWebGPUが無効になっています。Chromeでは次の手順を試してください。"
+  },
+  "open": {
+    "message": "開く"
+  },
+  "chrome_acceleration": {
+    "message": "「グラフィック アクセラレーションが使用可能な場合は使用する」を有効にする"
+  },
+  "restart_browser": {
+    "message": "ブラウザを完全に終了して再起動する"
+  },
+  "driver_update": {
+    "message": "改善しない場合は、NVIDIA・AMD・IntelのGPUドライバーを更新してください。古いドライバーではWebGPUが無効になることがあります。"
+  },
+  "laptop_gpus": {
+    "message": "GPUが2基あるPC"
+  },
+  "laptop_gpus_hint": {
+    "message": "Windowsでブラウザが内蔵GPUを使うと、FPSがほとんど上がらない場合があります。"
+  },
+  "windows_graphics": {
+    "message": "Windowsの「設定」→「システム」→「ディスプレイ」→「グラフィックス」"
+  },
+  "windows_high_performance": {
+    "message": "ブラウザを追加して「高パフォーマンス」を選ぶ"
+  },
+  "restart_it": {
+    "message": "ブラウザを完全に終了して再起動する"
+  },
+  "check_gpu": {
+    "message": "「状態」タブのGPU欄に、専用GPUが表示されているか確認してください。"
+  },
+  "requirements": {
+    "message": "動作環境"
+  },
+  "requirements_hint": {
+    "message": "デスクトップ版Chrome・Edge 121以降、またはWindows版Firefox 142以降と、おおむね2016年以降のGPUが必要です。Safari・スマートフォンには対応していません。"
+  },
+  "how_to_use": {
+    "message": "使い方"
+  },
+  "how_to_use_hint": {
+    "message": "動画にマウスを重ねると、左端にFGのオン・オフ、画質、設定のボタンが出ます。元映像と処理後の映像を並べる「比較」は詳細設定にあります。"
+  },
+  "limitations": {
+    "message": "利用上の制限"
+  },
+  "limitations_hint": {
+    "message": "NetflixやCrunchyrollなどのDRM保護された映像は、ブラウザの制限で処理できません。サイトによっては、最初にFGをオンにしたときにCORSの都合で映像の再読み込みに数秒かかります。"
+  },
+  "upscale_short_hint": {
+    "message": "AIで解像度を2倍に拡大"
+  },
+  "hdr_short_hint": {
+    "message": "HDR画面の明部を明るく"
+  },
+  "profile_short_hint": {
+    "message": "保存した設定を適用"
+  },
+  "loading_profiles": {
+    "message": "プロファイルを読み込み中…"
+  },
+  "generation_short_hint": {
+    "message": "動きを滑らかにする"
+  },
+  "output_short_hint": {
+    "message": "フレームの表示間隔"
+  },
+  "auto_limit_short_hint": {
+    "message": "代表的な上限値。自動では下回ることがあります"
+  },
+  "quality_short_hint": {
+    "message": "細部の品質とGPU負荷"
+  },
+  "fps_counter_short_hint": {
+    "message": "FPSと描画時間を表示"
+  },
+  "watermark_short_hint": {
+    "message": "映像にFramegenのロゴを表示"
+  },
+  "warnings_short_hint": {
+    "message": "映像の上に警告を表示"
+  },
+  "advanced_settings": {
+    "message": "詳細設定"
+  },
+  "compare_original": {
+    "message": "元映像"
+  },
+  "profile_read_only": {
+    "message": "プロファイルの保存領域は読み取り専用です"
+  },
+  "profile_schema_unsupported": {
+    "message": "このバージョンのFramegenはプロファイル形式{version}に対応していません。"
+  },
+  "fps_value": {
+    "message": "{rate} FPS"
+  },
+  "custom_fps_range": {
+    "message": "2～1000の範囲でFPSを入力してください"
+  },
+  "current_settings": {
+    "message": "現在の設定"
+  },
+  "my_profiles": {
+    "message": "マイプロファイル"
+  },
+  "current_profile": {
+    "message": "適用中「{name}」"
+  },
+  "custom_settings": {
+    "message": "カスタム設定"
+  },
+  "current_after": {
+    "message": "{current} · {name}から変更済み"
+  },
+  "changed_another_tab": {
+    "message": "別のタブで設定が変わりました"
+  },
+  "unsaved_preview": {
+    "message": "未保存のプレビュー"
+  },
+  "previewing": {
+    "message": "「{name}」をプレビュー中"
+  },
+  "settings_applied": {
+    "message": "設定を適用しました"
+  },
+  "apply_failed": {
+    "message": "設定を適用できませんでした"
+  },
+  "custom_profile": {
+    "message": "カスタムプロファイル"
+  },
+  "duplicate_profile": {
+    "message": "プロファイルを複製"
+  },
+  "create_copy": {
+    "message": "複製を作成"
+  },
+  "profile_copy_named": {
+    "message": "{name}のコピー"
+  },
+  "profile_copy": {
+    "message": "プロファイルのコピー"
+  },
+  "rename_profile": {
+    "message": "プロファイル名を変更"
+  },
+  "enter_profile_name": {
+    "message": "プロファイル名を入力してください。"
+  },
+  "profile_renamed": {
+    "message": "プロファイル名を変更しました"
+  },
+  "profile_saved": {
+    "message": "プロファイルを保存しました"
+  },
+  "profile_save_failed": {
+    "message": "プロファイルを保存できませんでした"
+  },
+  "delete_profile_named": {
+    "message": "「{name}」を削除します。現在の動画設定はそのままです。"
+  },
+  "profile_deleted": {
+    "message": "プロファイルを削除しました"
+  },
+  "profile_delete_failed": {
+    "message": "プロファイルを削除できませんでした"
+  },
+  "profile_update_failed": {
+    "message": "プロファイルを更新できませんでした"
+  },
+  "settings_unavailable": {
+    "message": "設定を読み込めません"
+  },
+  "popup_checking": {
+    "message": "このタブを確認中…"
+  },
+  "popup_tab_unavailable": {
+    "message": "このタブを確認できませんでした"
+  },
+  "popup_blocked": {
+    "message": "このサイトではFramegenがブロックされています"
+  },
+  "popup_gpu_label": {
+    "message": "グラフィックスカード"
+  },
+  "popup_webgpu_available": {
+    "message": "利用可能"
+  },
+  "popup_gpu_name_unavailable": {
+    "message": "検出済み（名前を取得できません）"
+  },
+  "popup_gpu_missing": {
+    "message": "WebGPUアダプターが見つかりません"
+  },
+  "popup_gpu_missing_hint": {
+    "message": "ブラウザのグラフィックアクセラレーションが有効か確認してください。"
+  },
+  "popup_integrated": {
+    "message": "ブラウザは内蔵GPUを使用しています。"
+  },
+  "popup_switch_gpu": {
+    "message": "使用するGPUの切替方法"
+  },
+  "toggle_framegen": {
+    "message": "Framegenのオン・オフを切り替える"
+  },
+  "open_framegen_settings": {
+    "message": "Framegenの設定を開く"
+  },
+  "open_picture_settings": {
+    "message": "画質設定を開く"
+  },
+  "framegen_picture": {
+    "message": "Framegenの画質"
+  },
+  "target_short_hint": {
+    "message": "目標FPS。元動画の2倍以上"
+  },
+  "profiles_unavailable": {
+    "message": "プロファイルを利用できません"
+  },
+  "choose_option": {
+    "message": "項目を選ぶ"
+  },
+  "reload_updated": {
+    "message": "Framegenが更新されました。ページを再読み込みしてください。"
+  },
+  "settings_from_toolbar": {
+    "message": "ツールバーのアイコンから設定を開く"
+  },
+  "no_video": {
+    "message": "Framegen：動画が見つかりません"
+  },
+  "framegen_error": {
+    "message": "Framegenエラー：{detail}"
+  },
+  "blocked_wasm": {
+    "message": "このサイトのセキュリティポリシーで拡張機能のWebAssemblyが禁止されているため、Framegenを実行できません。"
+  },
+  "gpu_help": {
+    "message": "WebGPUが無効です。ブラウザ設定でグラフィックアクセラレーションを有効にして再起動し、GPUドライバーを更新してください。古いGPUは対象外です。"
+  },
+  "no_adapter_help": {
+    "message": "WebGPUで利用できるGPUが見つかりません。GPUドライバーのリセット後などは、ブラウザを再起動してください。続く場合はchrome://gpuでハードウェアアクセラレーションを確認し、GPUドライバーを更新してください。"
+  },
+  "unknown_gpu": {
+    "message": "不明なGPU"
+  },
+  "cors_reload": {
+    "message": "Framegen：CORSに対応していないため動画を再読み込みしています"
+  },
+  "integrated_advice": {
+    "message": "ブラウザは内蔵GPU（{gpu}）を使用しています。Windowsの「設定」→「ディスプレイ」→「グラフィックス」でブラウザを「高パフォーマンス」に設定し、再起動してください。"
+  },
+  "cors_unreadable": {
+    "message": "Framegen：CORSの制限により動画を読み取れません"
+  },
+  "redraw_failed": {
+    "message": "Framegen：一時停止中の動画を再描画できませんでした"
+  },
+  "gpu_recovering": {
+    "message": "Framegen：GPUのリセットを検出しました。復旧中です"
+  },
+  "gpu_restored": {
+    "message": "GPUとの接続が復旧しました"
+  },
+  "gpu_recovery_failed": {
+    "message": "Framegen：GPUの復旧に失敗しました。ページを再読み込みしてください"
+  },
+  "auto": {
+    "message": "自動"
+  },
+  "auto_limit": {
+    "message": "自動 · 上限 {rate} FPS"
+  },
+  "custom_rate": {
+    "message": "カスタム {rate} FPS"
+  },
+  "measuring": {
+    "message": "計測中"
+  },
+  "rate_approx": {
+    "message": "（約{rate} FPS）"
+  },
+  "state_invalid_target": {
+    "message": "目標FPSには正の数を指定してください"
+  },
+  "state_no_two_x_display": {
+    "message": "ディスプレイのリフレッシュレートがフレーム生成に必要な最低値を下回っています"
+  },
+  "state_no_two_x_gpu": {
+    "message": "この生成品質ではGPUが最低限のFPSを維持できません"
+  },
+  "state_probing_gpu": {
+    "message": "GPUの性能を計測中"
+  },
+  "clamp_display": {
+    "message": "ブラウザのコールバック頻度の上限"
+  },
+  "clamp_gpu": {
+    "message": "GPUの性能上限"
+  },
+  "clamp_runtime": {
+    "message": "スケジューラーの上限"
+  },
+  "clamp_minimum": {
+    "message": "最低出力レート"
+  },
+  "clamp_gpu_probe": {
+    "message": "GPUの性能を計測中"
+  },
+  "warning_gpu_clamp": {
+    "message": "この生成品質では{requested} FPSから{output} FPSに制限されます"
+  },
+  "warning_old_firefox": {
+    "message": "滑らかにフレーム生成するにはFirefoxを更新してください"
+  },
+  "warning_drops": {
+    "message": "フレームが落ちています。出力FPSか生成品質を下げるか、自動に切り替えてください"
+  },
+  "warning_auto_gpu": {
+    "message": "GPUが2倍の生成にも追いつきません。生成品質を下げてください"
+  },
+  "warning_fixed_gpu": {
+    "message": "この品質ではGPUが維持できるのは{actual}倍です（設定は{requested}倍）。"
+  },
+  "hud_fps_rate": {
+    "message": "FG {fps}fps · {rate} · {mid}ms"
+  },
+  "live": {
+    "message": "ライブ"
+  },
+  "play": {
+    "message": "再生"
+  },
+  "pause": {
+    "message": "一時停止"
+  },
+  "mute": {
+    "message": "ミュート"
+  },
+  "unmute": {
+    "message": "ミュート解除"
+  },
+  "seek": {
+    "message": "再生位置"
+  },
+  "volume": {
+    "message": "音量"
+  },
+  "fullscreen": {
+    "message": "全画面"
+  },
+  "kick_rewind": {
+    "message": "Kickが配信を最初から再開したため、{time}の位置に戻しました"
+  },
+  "factor_2": {
+    "message": "元動画の2倍"
+  },
+  "factor_3": {
+    "message": "元動画の3倍"
+  },
+  "factor_4": {
+    "message": "元動画の4倍"
+  },
+  "factor_5": {
+    "message": "元動画の5倍"
+  },
+  "factor_6": {
+    "message": "元動画の6倍"
+  },
+  "quality_low_power": {
+    "message": "省電力 · 288p"
+  },
+  "quality_efficient": {
+    "message": "軽量 · 360p"
+  },
+  "quality_balanced": {
+    "message": "標準 · 480p"
+  },
+  "quality_high": {
+    "message": "高 · 720p"
+  },
+  "quality_ultra": {
+    "message": "最高 · 1080p"
+  }
+}

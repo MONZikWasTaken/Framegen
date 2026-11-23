@@ -1,11 +1,16 @@
 export const DEFAULT_LANGUAGE = 'en';
-export const LANGUAGES = Object.freeze({ en: 'English', ru: 'Русский' });
+export const LANGUAGES = Object.freeze({ en: 'English', ru: 'Русский', ja: '日本語', zh_CN: '简体中文' });
 export const LANGUAGE_KEY = 'fcLanguage';
 
 export function chooseLanguage(preference, browserLanguages) {
   if (Object.hasOwn(LANGUAGES, preference)) return preference;
   for (const language of browserLanguages) {
     const parts = language.toLowerCase().replaceAll('_', '-').split('-');
+    // Chrome uses zh_CN for Simplified Chinese; browsers may report a script or region.
+    // Leave Traditional Chinese to the remaining browser preferences until it is translated.
+    if (parts[0] === 'zh' && !parts.includes('hant') && !parts.some(part => ['tw', 'hk', 'mo'].includes(part))) {
+      if (parts.length === 1 || parts.includes('hans') || parts.includes('cn') || parts.includes('sg')) return 'zh_CN';
+    }
     while (parts.length) {
       const match = Object.keys(LANGUAGES).find(code => code.toLowerCase().replaceAll('_', '-') === parts.join('-'));
       if (match) return match;

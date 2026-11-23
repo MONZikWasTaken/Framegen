@@ -19,6 +19,16 @@ test('browser languages, regional variants and explicit overrides select the int
   assert.equal(chooseLanguage('ru', ['en-US']), 'ru');
   assert.equal(chooseLanguage('en', ['ru']), 'en');
   assert.equal(chooseLanguage('../en', ['ru']), 'ru');
+  assert.equal(chooseLanguage('auto', ['ja-JP', 'en-US']), 'ja');
+  for (const variant of ['zh-CN', 'zh_CN', 'zh-Hans', 'zh-Hans-CN', 'zh-SG', 'zh']) {
+    assert.equal(chooseLanguage('auto', [variant, 'en-US']), 'zh_CN', variant);
+  }
+  for (const variant of ['zh-TW', 'zh-HK', 'zh-MO', 'zh-Hant', 'zh-Hant-CN']) {
+    assert.equal(chooseLanguage('auto', [variant, 'en-US']), 'en', variant);
+  }
+  assert.equal(chooseLanguage('auto', ['zh-Hant', 'ja-JP']), 'ja');
+  assert.equal(chooseLanguage('ja', ['ru']), 'ja');
+  assert.equal(chooseLanguage('zh_CN', ['ja-JP']), 'zh_CN');
 });
 
 test('each packaged locale has the English keys and preserves placeholders', () => {
@@ -100,6 +110,19 @@ test('settings changes switch catalogs, interpolate text and use English for a m
       assert.match(player.statusLines().join('\n'), /output rate: Auto · max 120 FPS \(~60 FPS\) · browser callback limit/);
       assert.match(player.status().rateState, /Авто.*лимит браузера/);
     });
+    for (const [locale, settings, preview] of [
+      ['ja', '設定', '「<Film> & TV」をプレビュー中'],
+      ['zh_CN', '设置', '正在预览“<Film> & TV”'],
+      ['en', 'Settings', 'Previewing <Film> & TV'],
+      ['ru', 'Настройки', 'Предпросмотр «<Film> & TV»'],
+    ]) {
+      const switched = new Promise(resolve => onLanguageChange(resolve));
+      storageChanged({ [LANGUAGE_KEY]: { newValue: locale } }, 'local');
+      await switched;
+      assert.equal(getLanguage(), locale);
+      assert.equal(t('settings'), settings);
+      assert.equal(t('previewing', { name: '<Film> & TV' }), preview);
+    }
   } finally {
     globalThis.fetch = fetchCatalog;
     delete globalThis.chrome;
