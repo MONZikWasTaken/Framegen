@@ -39,9 +39,11 @@ on every display tick. A generated frame costs about a millisecond on a mid-rang
 
 ## Install
 
-**[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)**.
+- **[Add to Chrome from the Web Store](https://chromewebstore.google.com/detail/framegen-frame-interpolat/hpdpcjakhclhljfdkpjolonjlopbdhfk)** (Chrome and Edge).
+- **[Add to Firefox from Firefox Add-ons](https://addons.mozilla.org/firefox/addon/framegen-frame-interpolation/)**.
 
-Download the archive for your browser from the [latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest).
+To install by hand instead, download the archive for your browser from the
+[latest release](https://github.com/MONZikWasTaken/Framegen/releases/latest).
 
 - **Chrome and Edge** — extract `framegen-chrome.zip` to a folder. Open `chrome://extensions` or `edge://extensions`,
   enable **Developer mode**, click **Load unpacked**, and select the folder containing `manifest.json`.
